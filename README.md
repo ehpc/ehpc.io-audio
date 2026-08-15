@@ -69,8 +69,9 @@ sees their live position in it.
 ### Using Nix
 
 If you have [Nix](https://nixos.org/) with flakes enabled, `flake.nix`
-provides a devShell with Python 3.13, `uv`, `ruff`, and `ty` pinned
-(Linux and macOS, x86_64 and arm64):
+provides a devShell with Python 3.13, `uv`, `ffmpeg`, and `deno` pinned
+(Linux and macOS, x86_64 and arm64). `ruff` and `ty` come from the dev
+dependency group, so `make lint` runs them via `uv run`:
 
 ```sh
 nix develop

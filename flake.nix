@@ -14,11 +14,11 @@
             packages = [
               pkgs.python313
               pkgs.uv
-              pkgs.ruff
-              pkgs.ty
               pkgs.gnumake
               pkgs.ffmpeg
               pkgs.deno
+              # ruff and ty come from the dev dependency group (uv run ruff / ty)
+              # so CI and local use identical versions.
             ];
 
             shellHook = ''

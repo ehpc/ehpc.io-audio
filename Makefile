@@ -7,9 +7,9 @@ init:
 	cd frontend && npm install
 
 lint:
-	ruff format .
-	ruff check --fix .
-	ty check
+	uv run ruff format .
+	uv run ruff check --fix .
+	uv run ty check
 
 test:
 	uv run pytest
