@@ -1,18 +1,31 @@
-.PHONY: lint run
+SHELL := /bin/bash
+
+.PHONY: init lint test test-frontend smoke dev deploy-modal
+
+init:
+	uv sync
+	cd frontend && npm install
 
 lint:
 	ruff format .
 	ruff check --fix .
 	ty check
 
-run:
-	@test -n "$(URL)$(FILE)" || (echo "usage: make run URL=https://... or FILE=/file.mp3 [DECROWD=1] [DEREVERB=1] [CHORUS=1] [VOCALISTS=1] [DRUMS=1] [NOCACHE=1]" && exit 1)
-	uv run modal run modal_separate.py \
-		$(if $(URL),--url "$(URL)") \
-		$(if $(FILE),--path "$(FILE)") \
-		$(if $(DECROWD),--decrowd) \
-		$(if $(DEREVERB),--dereverb) \
-		$(if $(CHORUS),--chorus) \
-		$(if $(VOCALISTS),--vocalists) \
-		$(if $(DRUMS),--drums) \
-		$(if $(NOCACHE),--no-cache)
+test:
+	uv run pytest
+
+test-frontend:
+	cd frontend && npm run test
+
+smoke:
+	uv run pytest -m smoke
+
+dev:
+	mkdir -p dev-data
+	trap 'kill 0' EXIT; \
+	(DATA_DIR=$(CURDIR)/dev-data QUEUE_CONCURRENCY=1 uv run uvicorn backend.main:app --reload --reload-dir backend --reload-dir separator --port 8000 2>&1 | sed -e 's/^/[backend] /') & \
+	(cd frontend && npm run dev 2>&1 | sed -e 's/^/[frontend] /') & \
+	wait
+
+deploy-modal:
+	uv run modal deploy separator/modal_app.py

@@ -17,7 +17,17 @@ result-*
 .direnv/
 
 # Project output
-modal-output/
+dev-data*/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Playwright
+playwright-report/
+test-results/
+.playwright-mcp/
+.playwright-cli/
 
 # Editor / OS
 .vscode/

@@ -1,0 +1,37 @@
+{
+  "name": "vocal-separation-frontend",
+  "version": "0.0.0",
+  "description": "SolidJS frontend for the vocal-separation web app",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kobalte/core": "^0.13.12",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "solid-js": "^1.9.3",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^22.20.1",
+    "autoprefixer": "^10.4.20",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vite-plugin-solid": "^2.11.0",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}
