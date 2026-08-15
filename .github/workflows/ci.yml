@@ -60,8 +60,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/ehpc/audio:prod
-            ghcr.io/ehpc/audio:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:prod
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

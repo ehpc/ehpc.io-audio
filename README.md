@@ -135,8 +135,8 @@ make lint
 1. **Build and push the image:**
 
    ```sh
-   docker build -t ghcr.io/ehpc/audio:prod .
-   docker push ghcr.io/ehpc/audio:prod
+   docker build -t ghcr.io/ehpc/ehpc.io-audio:prod .
+   docker push ghcr.io/ehpc/ehpc.io-audio:prod
    ```
 
 2. **Deploy the Modal GPU function** (once, and again after any
@@ -162,7 +162,7 @@ make lint
        spec:
          containers:
            - name: audio
-             image: ghcr.io/ehpc/audio:prod
+             image: ghcr.io/ehpc/ehpc.io-audio:prod
              ports:
                - containerPort: 8000
              env:
