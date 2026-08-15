@@ -65,12 +65,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Redeploy the Modal GPU function so the deployed code matches main. Opt-in:
-  # set repo variable DEPLOY_MODAL=true and secrets MODAL_TOKEN_ID / _SECRET.
+  # Redeploy the Modal GPU function so the deployed code matches main. Requires
+  # secrets MODAL_TOKEN_ID / MODAL_TOKEN_SECRET — fails loudly if they're unset.
   deploy-modal:
     runs-on: ubuntu-latest
     needs: [backend, frontend]
-    if: ${{ github.ref == 'refs/heads/main' && vars.DEPLOY_MODAL == 'true' }}
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
