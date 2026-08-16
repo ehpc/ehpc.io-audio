@@ -58,9 +58,16 @@ export interface DiskUsage {
   total_bytes: number;
   used_bytes: number;
   free_bytes: number;
-  uploads_bytes: number;
   results_bytes: number;
   db_bytes: number;
+}
+
+export interface RecentJob {
+  id: number;
+  status: JobStatus;
+  title: string | null;
+  source_value: string;
+  created_at: number;
 }
 
 export interface StatusDTO {
@@ -68,7 +75,7 @@ export interface StatusDTO {
   counts: Record<string, number>;
   queue_concurrency: number;
   disk: DiskUsage;
-  recent: JobDTO[];
+  recent: RecentJob[];
   modal_app: string;
 }
 

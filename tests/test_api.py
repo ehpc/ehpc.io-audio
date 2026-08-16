@@ -101,4 +101,10 @@ def test_status_aggregates_all_sessions(
     assert body["counts"]["queued"] == 2
     assert len(body["recent"]) == 2
     assert body["queue_concurrency"] == 0  # workers disabled in tests
-    assert set(body["disk"]) >= {"total_bytes", "used_bytes", "results_bytes"}
+    assert set(body["disk"]) == {
+        "total_bytes",
+        "used_bytes",
+        "free_bytes",
+        "results_bytes",
+        "db_bytes",
+    }

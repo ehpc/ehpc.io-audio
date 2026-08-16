@@ -1,6 +1,6 @@
 import { createSignal, For, onMount, Show, type Component } from "solid-js";
-import type { JobDTO, JobStatus, StatusDTO } from "./api";
-import { getStatus, jobLabel } from "./api";
+import type { JobStatus, RecentJob, StatusDTO } from "./api";
+import { getStatus } from "./api";
 import { Button } from "~/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
 
@@ -102,14 +102,10 @@ const StatusPage: Component = () => {
                   {formatBytes(s.disk.total_bytes)} ({usedPct()}%) —{" "}
                   {formatBytes(s.disk.free_bytes)} free
                 </p>
-                <dl class="grid grid-cols-3 gap-3 text-sm">
+                <dl class="grid grid-cols-2 gap-3 text-sm">
                   <div>
-                    <dt class="text-xs text-muted-foreground">Results</dt>
+                    <dt class="text-xs text-muted-foreground">Result stems</dt>
                     <dd class="tabular-nums">{formatBytes(s.disk.results_bytes)}</dd>
-                  </div>
-                  <div>
-                    <dt class="text-xs text-muted-foreground">Uploads / originals</dt>
-                    <dd class="tabular-nums">{formatBytes(s.disk.uploads_bytes)}</dd>
                   </div>
                   <div>
                     <dt class="text-xs text-muted-foreground">Database</dt>
@@ -129,11 +125,13 @@ const StatusPage: Component = () => {
               >
                 <div class="space-y-2">
                   <For each={s.recent}>
-                    {(job: JobDTO) => (
+                    {(job: RecentJob) => (
                       <Card>
                         <CardContent class="flex items-center justify-between gap-4 p-3">
                           <div class="min-w-0 flex-1">
-                            <p class="truncate text-sm font-medium">{jobLabel(job)}</p>
+                            <p class="truncate text-sm font-medium">
+                              {job.title ?? job.source_value}
+                            </p>
                             <p class="text-xs text-muted-foreground">
                               #{job.id} · {formatTimestamp(job.created_at)}
                             </p>

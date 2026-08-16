@@ -155,6 +155,18 @@ def status_counts() -> dict[str, int]:
         return {row["status"]: row["n"] for row in rows}
 
 
+def total_result_bytes() -> int:
+    """Sum of stem sizes across all manifests — from the DB, no filesystem walk."""
+    with _session() as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(json_extract(entry.value, '$.size_bytes')), 0) AS total
+            FROM jobs, json_each(COALESCE(jobs.result_manifest_json, '[]')) AS entry
+            """
+        ).fetchone()
+        return int(row["total"])
+
+
 def queue_position(job_id: int) -> int:
     """1-based position among queued jobs (a job with no one ahead of it is #1)."""
     with _session() as conn:

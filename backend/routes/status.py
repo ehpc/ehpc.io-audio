@@ -1,19 +1,12 @@
 import asyncio
 import shutil
-from pathlib import Path
 
 from fastapi import APIRouter
 
 from backend import config, db
-from backend.models import DiskUsage, StatusDTO, job_to_dto
+from backend.models import DiskUsage, RecentJob, StatusDTO
 
 router = APIRouter(tags=["status"])
-
-
-def _dir_size(path: Path) -> int:
-    if not path.is_dir():
-        return 0
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
 def _disk_usage() -> DiskUsage:
@@ -22,8 +15,8 @@ def _disk_usage() -> DiskUsage:
         total_bytes=usage.total,
         used_bytes=usage.used,
         free_bytes=usage.free,
-        uploads_bytes=_dir_size(config.UPLOADS_DIR),
-        results_bytes=_dir_size(config.RESULTS_DIR),
+        # From the DB (manifest sizes), not a filesystem walk — keeps this fast.
+        results_bytes=db.total_result_bytes(),
         db_bytes=config.DB_PATH.stat().st_size if config.DB_PATH.is_file() else 0,
     )
 
@@ -38,6 +31,15 @@ async def get_status() -> StatusDTO:
         counts=counts,
         queue_concurrency=config.QUEUE_CONCURRENCY,
         disk=disk,
-        recent=[job_to_dto(job, None) for job in recent],
+        recent=[
+            RecentJob(
+                id=job.id,
+                status=job.status,
+                title=job.title,
+                source_value=job.source_value,
+                created_at=job.created_at,
+            )
+            for job in recent
+        ],
         modal_app=config.MODAL_APP_NAME,
     )

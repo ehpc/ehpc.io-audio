@@ -104,9 +104,18 @@ class DiskUsage(BaseModel):
     total_bytes: int
     used_bytes: int
     free_bytes: int
-    uploads_bytes: int
     results_bytes: int
     db_bytes: int
+
+
+class RecentJob(BaseModel):
+    """Lightweight job row for the status list — no per-job filesystem lookups."""
+
+    id: int
+    status: JobStatus
+    title: str | None
+    source_value: str
+    created_at: int
 
 
 class StatusDTO(BaseModel):
@@ -116,5 +125,5 @@ class StatusDTO(BaseModel):
     counts: dict[str, int]
     queue_concurrency: int
     disk: DiskUsage
-    recent: list[JobDTO]
+    recent: list[RecentJob]
     modal_app: str
