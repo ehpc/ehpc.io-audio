@@ -80,10 +80,14 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy-modal:
-    name: Deploy Modal GPU function
+    name: Deploy & smoke-test Modal function
     runs-on: ubuntu-latest
     needs: [backend, frontend]
     if: github.ref == 'refs/heads/main'
+    # Requires secrets MODAL_TOKEN_ID / MODAL_TOKEN_SECRET; the job fails if unset.
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
     steps:
       - uses: actions/checkout@v5
       - name: Set up uv + Python
@@ -93,8 +97,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
       - name: Deploy to Modal
-        # Requires secrets MODAL_TOKEN_ID / MODAL_TOKEN_SECRET; fails if unset.
         run: uv run modal deploy separator/modal_app.py
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      - name: Smoke test (spawns the deployed function)
+        run: uv run pytest -m smoke
