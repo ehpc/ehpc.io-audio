@@ -98,3 +98,23 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         created_at=job.created_at,
         has_original=_has_original(job.id),
     )
+
+
+class DiskUsage(BaseModel):
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+    uploads_bytes: int
+    results_bytes: int
+    db_bytes: int
+
+
+class StatusDTO(BaseModel):
+    """Ops overview shown at /status — spans all sessions, no auth."""
+
+    total_jobs: int
+    counts: dict[str, int]
+    queue_concurrency: int
+    disk: DiskUsage
+    recent: list[JobDTO]
+    modal_app: str

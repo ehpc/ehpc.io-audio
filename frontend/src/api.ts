@@ -54,6 +54,24 @@ export interface SubmitResult {
   position: number;
 }
 
+export interface DiskUsage {
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+  uploads_bytes: number;
+  results_bytes: number;
+  db_bytes: number;
+}
+
+export interface StatusDTO {
+  total_jobs: number;
+  counts: Record<string, number>;
+  queue_concurrency: number;
+  disk: DiskUsage;
+  recent: JobDTO[];
+  modal_app: string;
+}
+
 export interface SubmitInput {
   url?: string;
   file?: File;
@@ -146,6 +164,14 @@ export async function listJobs(): Promise<JobDTO[]> {
     throw new Error(await readError(res));
   }
   return (await res.json()) as JobDTO[];
+}
+
+export async function getStatus(): Promise<StatusDTO> {
+  const res = await fetch(`${API_BASE}/status`, { credentials: "include" });
+  if (!res.ok) {
+    throw new Error(await readError(res));
+  }
+  return (await res.json()) as StatusDTO;
 }
 
 export function resultUrl(id: number, label: string): string {

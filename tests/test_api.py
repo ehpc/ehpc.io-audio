@@ -87,3 +87,18 @@ def test_original_requires_ownership(
         "/api/jobs", files={"file": ("s.mp3", b"x", "audio/mpeg")}
     ).json()["id"]
     assert other_client.get(f"/api/jobs/{jid}/original").status_code == 404
+
+
+def test_status_aggregates_all_sessions(
+    client: TestClient, other_client: TestClient
+) -> None:
+    client.post("/api/jobs", data={"url": "https://example.com/1"})
+    other_client.post("/api/jobs", data={"url": "https://example.com/2"})
+
+    # No cookie needed — status is unauthenticated and spans every session.
+    body = TestClient(client.app).get("/api/status").json()
+    assert body["total_jobs"] == 2
+    assert body["counts"]["queued"] == 2
+    assert len(body["recent"]) == 2
+    assert body["queue_concurrency"] == 0  # workers disabled in tests
+    assert set(body["disk"]) >= {"total_bytes", "used_bytes", "results_bytes"}

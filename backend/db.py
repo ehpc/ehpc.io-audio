@@ -138,6 +138,23 @@ def get_latest_job_for_session(session_id: str) -> JobRecord | None:
     return jobs[0] if jobs else None
 
 
+def list_recent_jobs(limit: int = 50) -> list[JobRecord]:
+    """All jobs across every session, newest first — for the ops status page."""
+    with _session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [_row_to_job(row) for row in rows]
+
+
+def status_counts() -> dict[str, int]:
+    with _session() as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM jobs GROUP BY status"
+        ).fetchall()
+        return {row["status"]: row["n"] for row in rows}
+
+
 def queue_position(job_id: int) -> int:
     """1-based position among queued jobs (a job with no one ahead of it is #1)."""
     with _session() as conn:
