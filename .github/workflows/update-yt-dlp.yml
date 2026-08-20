@@ -1,0 +1,32 @@
+name: Update yt-dlp
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Bump yt-dlp in uv.lock
+        run: uv lock --upgrade-package yt-dlp
+      - name: Open PR if lock changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: bump yt-dlp"
+          title: "chore: bump yt-dlp"
+          body: |
+            Weekly automated bump of `yt-dlp` in `uv.lock`. Merging triggers a
+            fresh image build with the newer version.
+          branch: chore/bump-yt-dlp
+          delete-branch: true

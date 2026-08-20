@@ -17,6 +17,7 @@
               pkgs.gnumake
               pkgs.ffmpeg
               pkgs.deno
+              pkgs.nodejs
               # ruff and ty come from the dev dependency group (uv run ruff / ty)
               # so CI and local use identical versions.
             ];

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import dataclasses
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -70,7 +71,21 @@ def _persist_results(
 async def _run_job(job: JobRecord) -> None:
     await _publish_status(job.id)
     try:
+        log.info(
+            "job %s starting (source=%s value=%s options=%s)",
+            job.id,
+            job.source_type,
+            job.source_value,
+            dataclasses.asdict(job.options),
+        )
+        log.info("job %s loading source", job.id)
         audio_bytes, filename = await asyncio.to_thread(_load_source_bytes, job)
+        log.info(
+            "job %s source ready (%s, %.1f MB)",
+            job.id,
+            filename,
+            len(audio_bytes) / 1_048_576,
+        )
         # For URL jobs the downloaded filename is the track title (yt-dlp names the
         # file after it); surface it so history reads nicer than a raw URL.
         if job.source_type == "url":
@@ -78,16 +93,32 @@ async def _run_job(job: JobRecord) -> None:
         call = await asyncio.to_thread(
             modal_client.spawn, audio_bytes, filename, job.options
         )
+        log.info("job %s spawned on modal (call_id=%s)", job.id, call.object_id)
         await asyncio.to_thread(db.set_modal_call_id, job.id, call.object_id)
 
         result = None
+        polls = 0
         while result is None:
+            polls += 1
             result = await asyncio.to_thread(
                 modal_client.poll, call, config.MODAL_CALL_POLL_TIMEOUT_S
             )
+            if result is None:
+                log.info(
+                    "job %s still running (waited %.0fs)",
+                    job.id,
+                    polls * config.MODAL_CALL_POLL_TIMEOUT_S,
+                )
 
+        log.info(
+            "job %s modal returned %d stems: %s",
+            job.id,
+            len(result),
+            ", ".join(sorted(result.keys())),
+        )
         manifest = await asyncio.to_thread(_persist_results, job.id, result)
         await asyncio.to_thread(db.mark_done, job.id, manifest)
+        log.info("job %s done", job.id)
     except Exception as exc:
         log.exception("job %s failed", job.id)
         message = str(exc).strip() or "Separation failed. Please try again."
