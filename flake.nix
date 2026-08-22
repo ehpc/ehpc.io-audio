@@ -25,6 +25,10 @@
             shellHook = ''
               export UV_PYTHON_DOWNLOADS=never
               export UV_PYTHON=${pkgs.python313}/bin/python3.13
+              # Keep the venv out of the (Dropbox-synced) project tree. A venv is
+              # platform-specific — absolute shebangs, native binaries — so
+              # syncing it between machines corrupts it.
+              export UV_PROJECT_ENVIRONMENT="$HOME/.cache/vocals-tools/venv"
             '';
           };
         });

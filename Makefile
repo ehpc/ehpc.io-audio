@@ -1,5 +1,11 @@
 SHELL := $(shell which bash)
 
+# The project lives in a Dropbox-synced folder; a venv is platform-specific
+# (absolute shebangs, native binaries), so syncing it between machines corrupts
+# it. Keep it outside the synced tree. CI doesn't use make, so it's unaffected.
+UV_PROJECT_ENVIRONMENT ?= $(HOME)/.cache/vocals-tools/venv
+export UV_PROJECT_ENVIRONMENT
+
 .PHONY: init lint test test-frontend smoke dev deploy-modal update-yt-dlp dropbox-ignore
 
 init:
@@ -7,12 +13,11 @@ init:
 	cd frontend && npm install
 	$(MAKE) dropbox-ignore
 
-# Keep build artifacts out of Dropbox sync. When this repo lives in a synced
-# folder, Dropbox strips the executable bit off .venv scripts (uvicorn ->
-# "Permission denied") and breaks node_modules symlinks (vite -> not found).
-# macOS/Dropbox only; a no-op everywhere else.
+# Keep node_modules out of Dropbox sync — syncing it between machines breaks the
+# .bin symlinks (vite -> not found) and installs the wrong-platform binaries.
+# (.venv lives outside the tree via UV_PROJECT_ENVIRONMENT.) macOS/Dropbox only.
 dropbox-ignore:
-	-command -v xattr >/dev/null 2>&1 && xattr -w com.dropbox.ignored 1 .venv frontend/node_modules 2>/dev/null || true
+	-command -v xattr >/dev/null 2>&1 && xattr -w com.dropbox.ignored 1 frontend/node_modules 2>/dev/null || true
 
 update-yt-dlp:
 	uv lock --upgrade-package yt-dlp
