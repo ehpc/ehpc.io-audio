@@ -30,6 +30,30 @@ def _labels(opts: SeparationOptions, monkeypatch: pytest.MonkeyPatch) -> list[st
     return list(result.keys())
 
 
+def _sources_by_model(
+    opts: SeparationOptions, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    calls: dict[str, Path] = {}
+
+    def capture(
+        input_path: Path,
+        stem: Stem,
+        out_dir: Path,
+        model_cache: str,
+        stem_cache: str,
+        use_cache: bool = True,
+    ) -> dict[str, tuple[StemResult, Path]]:
+        calls[stem.model] = input_path
+        return {
+            o.label: (StemResult(data=b"x", duration_s=0.0), Path(f"{o.label}.mp3"))
+            for o in stem.outputs
+        }
+
+    monkeypatch.setattr(stems, "run_separator", capture)
+    stems.run_separation(Path("in.mp3"), opts, Path("/tmp"), "mc", "sc")
+    return calls
+
+
 def test_base_stems(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _labels(SeparationOptions(), monkeypatch) == ["vocals", "instruments"]
 
@@ -45,6 +69,27 @@ def test_dereverb_pairs_with_vocals(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_no_dry_stems_without_dereverb(monkeypatch: pytest.MonkeyPatch) -> None:
     labels = _labels(SeparationOptions(genders=True, lead_backing=True), monkeypatch)
     assert not any(label.endswith("-dry") for label in labels)
+
+
+def test_splits_run_on_decrowded_vocals_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _sources_by_model(
+        SeparationOptions(decrowd_vocals=True, genders=True, lead_backing=True),
+        monkeypatch,
+    )
+    assert sources[stems.GENDER_STEMS[0].model] == Path("vocals-decrowded.mp3")
+    assert sources[stems.LEAD_BACKING_STEMS[0].model] == Path("vocals-decrowded.mp3")
+
+
+def test_splits_run_on_raw_vocals_without_decrowd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = _sources_by_model(
+        SeparationOptions(genders=True, lead_backing=True), monkeypatch
+    )
+    assert sources[stems.GENDER_STEMS[0].model] == Path("vocals.mp3")
+    assert sources[stems.LEAD_BACKING_STEMS[0].model] == Path("vocals.mp3")
 
 
 def test_decrowd_vocals_pairs_with_dry(monkeypatch: pytest.MonkeyPatch) -> None:

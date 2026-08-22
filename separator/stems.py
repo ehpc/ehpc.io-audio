@@ -200,15 +200,21 @@ def run_separation(
     # running all dereverb passes as one batch at the end.
     run([VOCALS_STEM], input_path)
     dereverb("vocals")
+
+    # Downstream vocal splits run on the decrowded vocals when decrowding is on,
+    # so male/female and lead/backing are derived from the cleaner track.
+    vocal_source = "vocals"
     if options.decrowd_vocals:
         run(DECROWD_VOCALS_STEMS, paths["vocals"])
         dereverb("vocals-decrowded")
+        vocal_source = "vocals-decrowded"
+
     if options.genders:
-        run(GENDER_STEMS, paths["vocals"])
+        run(GENDER_STEMS, paths[vocal_source])
         dereverb("vocals-male")
         dereverb("vocals-female")
     if options.lead_backing:
-        run(LEAD_BACKING_STEMS, paths["vocals"])
+        run(LEAD_BACKING_STEMS, paths[vocal_source])
         dereverb("lead")
         dereverb("backing")
 
