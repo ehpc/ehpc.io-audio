@@ -1,10 +1,18 @@
 SHELL := $(shell which bash)
 
-.PHONY: init lint test test-frontend smoke dev deploy-modal update-yt-dlp
+.PHONY: init lint test test-frontend smoke dev deploy-modal update-yt-dlp dropbox-ignore
 
 init:
 	uv sync
 	cd frontend && npm install
+	$(MAKE) dropbox-ignore
+
+# Keep build artifacts out of Dropbox sync. When this repo lives in a synced
+# folder, Dropbox strips the executable bit off .venv scripts (uvicorn ->
+# "Permission denied") and breaks node_modules symlinks (vite -> not found).
+# macOS/Dropbox only; a no-op everywhere else.
+dropbox-ignore:
+	-command -v xattr >/dev/null 2>&1 && xattr -w com.dropbox.ignored 1 .venv frontend/node_modules 2>/dev/null || true
 
 update-yt-dlp:
 	uv lock --upgrade-package yt-dlp
