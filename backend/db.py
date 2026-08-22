@@ -3,11 +3,26 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 from backend import config
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
 from separator.options import SeparationOptions
+
+_OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
+# Renamed options in older stored jobs → current field names.
+_RENAMED_OPTIONS = {"chorus": "genders", "vocalists": "lead_backing"}
+
+
+def _load_options(options_json: str) -> SeparationOptions:
+    """Deserialize options tolerantly: map renamed keys, drop any unknown ones,
+    so jobs written by an older schema still load."""
+    data = json.loads(options_json)
+    for old, new in _RENAMED_OPTIONS.items():
+        if old in data:
+            data.setdefault(new, data.pop(old))
+    return SeparationOptions(**{k: v for k, v in data.items() if k in _OPTION_FIELDS})
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -69,7 +84,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         source_type=row["source_type"],
         source_value=row["source_value"],
         title=row["title"],
-        options=SeparationOptions(**json.loads(row["options_json"])),
+        options=_load_options(row["options_json"]),
         modal_call_id=row["modal_call_id"],
         result_manifest=(
             [

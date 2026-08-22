@@ -115,6 +115,17 @@ def test_run_job_marks_failed_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
     assert failed.error_message == "spawn failed"  # real reason, not a generic message
 
 
+def test_load_options_maps_renamed_and_ignores_unknown() -> None:
+    # A job stored under the old schema (chorus/vocalists, plus a dropped field).
+    opts = db._load_options(
+        '{"decrowd": true, "chorus": true, "vocalists": true, "gone": true}'
+    )
+    assert opts.genders is True  # chorus -> genders
+    assert opts.lead_backing is True  # vocalists -> lead_backing
+    assert opts.decrowd is True
+    assert opts.drums is False  # default for a field the old row lacked
+
+
 def test_reap_running_to_queued() -> None:
     job_id = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
     claimed = db.claim_oldest_queued()
