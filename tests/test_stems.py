@@ -47,15 +47,34 @@ def test_no_dry_stems_without_dereverb(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not any(label.endswith("-dry") for label in labels)
 
 
+def test_decrowd_vocals_pairs_with_dry(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _labels(
+        SeparationOptions(decrowd_vocals=True, dereverb=True), monkeypatch
+    ) == [
+        "vocals",
+        "vocals-dry",
+        "vocals-decrowded",
+        "vocals-decrowded-dry",
+        "instruments",
+    ]
+
+
 def test_all_options_keep_wet_dry_adjacent(monkeypatch: pytest.MonkeyPatch) -> None:
     opts = SeparationOptions(
-        decrowd=True, dereverb=True, genders=True, lead_backing=True, drums=True
+        decrowd=True,
+        decrowd_vocals=True,
+        dereverb=True,
+        genders=True,
+        lead_backing=True,
+        drums=True,
     )
     # A split model emits both of its stems in one pass, so the wet pair comes
     # out together, then the dry pair — dry stays grouped with its wet source.
     assert _labels(opts, monkeypatch) == [
         "vocals",
         "vocals-dry",
+        "vocals-decrowded",
+        "vocals-decrowded-dry",
         "vocals-male",
         "vocals-female",
         "vocals-male-dry",

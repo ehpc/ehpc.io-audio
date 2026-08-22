@@ -4,6 +4,7 @@ import { expectedStems } from "./expectedStems";
 
 const NONE: SeparationOptions = {
   decrowd: false,
+  decrowd_vocals: false,
   dereverb: false,
   genders: false,
   lead_backing: false,
@@ -35,6 +36,7 @@ describe("expectedStems", () => {
   it("orders all options with wet groups followed by their dry stems", () => {
     const all: SeparationOptions = {
       decrowd: true,
+      decrowd_vocals: true,
       dereverb: true,
       genders: true,
       lead_backing: true,
@@ -44,6 +46,8 @@ describe("expectedStems", () => {
     expect(expectedStems(all)).toEqual([
       "vocals",
       "vocals-dry",
+      "vocals-decrowded",
+      "vocals-decrowded-dry",
       "vocals-male",
       "vocals-female",
       "vocals-male-dry",

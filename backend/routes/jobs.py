@@ -34,6 +34,7 @@ async def submit_job(
     url: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
     decrowd: Annotated[bool, Form()] = False,
+    decrowd_vocals: Annotated[bool, Form()] = False,
     dereverb: Annotated[bool, Form()] = False,
     genders: Annotated[bool, Form()] = False,
     lead_backing: Annotated[bool, Form()] = False,
@@ -47,6 +48,7 @@ async def submit_job(
 
     options = SeparationOptions(
         decrowd=decrowd,
+        decrowd_vocals=decrowd_vocals,
         dereverb=dereverb,
         genders=genders,
         lead_backing=lead_backing,

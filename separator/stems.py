@@ -29,13 +29,13 @@ INSTRUMENTS_STEM = Stem(
     "melband_roformer_inst_v2.ckpt", [StemOutput("instruments", "Instrumental")]
 )
 
-# Run on the extracted instruments to strip crowd noise.
-DECROWD_STEMS = [
-    Stem(
-        "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt",
-        [StemOutput("instruments-decrowded", "Other")],
-    ),
-]
+# The crowd model keeps the non-crowd part ("Other"). Run it on the extracted
+# instruments or vocals to strip crowd noise from either.
+_CROWD_MODEL = "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt"
+
+DECROWD_STEMS = [Stem(_CROWD_MODEL, [StemOutput("instruments-decrowded", "Other")])]
+
+DECROWD_VOCALS_STEMS = [Stem(_CROWD_MODEL, [StemOutput("vocals-decrowded", "Other")])]
 
 # Applied as a final pass on top of whichever vocal-ish tracks were actually
 # produced (vocals, and male/female or lead/backing splits if selected) — never
@@ -200,6 +200,9 @@ def run_separation(
     # running all dereverb passes as one batch at the end.
     run([VOCALS_STEM], input_path)
     dereverb("vocals")
+    if options.decrowd_vocals:
+        run(DECROWD_VOCALS_STEMS, paths["vocals"])
+        dereverb("vocals-decrowded")
     if options.genders:
         run(GENDER_STEMS, paths["vocals"])
         dereverb("vocals-male")

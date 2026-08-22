@@ -9,6 +9,7 @@ export interface StemManifestEntry {
 
 export interface SeparationOptions {
   decrowd: boolean;
+  decrowd_vocals: boolean;
   dereverb: boolean;
   genders: boolean;
   lead_backing: boolean;
@@ -89,6 +90,7 @@ const API_BASE = "/api";
 
 const OPTION_KEYS: (keyof SeparationOptions)[] = [
   "decrowd",
+  "decrowd_vocals",
   "dereverb",
   "genders",
   "lead_backing",

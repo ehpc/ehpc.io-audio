@@ -19,6 +19,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     title: "Great Song",
     options: {
       decrowd: false,
+      decrowd_vocals: false,
       dereverb: false,
       genders: false,
       lead_backing: false,

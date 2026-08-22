@@ -9,6 +9,10 @@ export function expectedStems(options: SeparationOptions): string[] {
   const labels: string[] = ["vocals"];
   if (dry) labels.push("vocals-dry");
 
+  if (options.decrowd_vocals) {
+    labels.push("vocals-decrowded");
+    if (dry) labels.push("vocals-decrowded-dry");
+  }
   if (options.genders) {
     labels.push("vocals-male", "vocals-female");
     if (dry) labels.push("vocals-male-dry", "vocals-female-dry");

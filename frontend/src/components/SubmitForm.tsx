@@ -18,6 +18,7 @@ interface OptionDescriptor {
 
 const PROCESSING_OPTIONS: OptionDescriptor[] = [
   { key: "decrowd", label: "Remove crowd noise from instrumental" },
+  { key: "decrowd_vocals", label: "Remove crowd noise from vocals" },
   { key: "dereverb", label: "Dereverb (remove reverb)" },
   { key: "genders", label: "Split by gender (male/female)" },
   { key: "lead_backing", label: "Split lead & backing vocals" },
@@ -26,6 +27,7 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
 
 const DEFAULT_OPTIONS: SeparationOptions = {
   decrowd: false,
+  decrowd_vocals: false,
   dereverb: false,
   genders: false,
   lead_backing: false,
