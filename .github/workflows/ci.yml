@@ -76,11 +76,23 @@ jobs:
     name: Deploy & smoke-test Modal function
     runs-on: ubuntu-latest
     needs: [backend, frontend]
-    if: github.ref == 'refs/heads/main'
-    # Requires secrets MODAL_TOKEN_ID / MODAL_TOKEN_SECRET; the job fails if unset.
+    # Runs on PRs too, so a change can't go green without a real separation
+    # having run on the GPU. Requires secrets MODAL_TOKEN_ID /
+    # MODAL_TOKEN_SECRET; the job fails if unset (including on fork PRs, which
+    # GitHub denies secrets — those need a maintainer to run the smoke test).
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      # A PR deploys under a throwaway app name and stops it afterwards, so
+      # testing unmerged code never overwrites the app the production backend
+      # talks to. backend/config.py reads MODAL_APP_NAME, so the smoke tests
+      # look up whichever app this run deployed.
+      MODAL_APP_NAME: ${{ github.event_name == 'pull_request' && format('audio-separator-pr-{0}', github.event.number) || 'audio-separator' }}
+    # Two runs for the same ref would deploy the same app name and stop it out
+    # from under each other; let a superseded run be cancelled instead.
+    concurrency:
+      group: modal-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -91,6 +103,12 @@ jobs:
         # uv downloads the pinned Python (>=3.13) itself; no setup-python needed.
         run: uv sync --frozen
       - name: Deploy to Modal
-        run: uv run modal deploy separator/modal_app.py
+        run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME"
       - name: Smoke test (spawns the deployed function)
         run: uv run pytest -m smoke
+      - name: Stop the PR's app
+        # Always, so a failed smoke test still cleans up; `|| true` because the
+        # app won't exist if the deploy step is what failed, and this step must
+        # not mask that.
+        if: always() && github.event_name == 'pull_request'
+        run: uv run modal app stop -y "$MODAL_APP_NAME" || true
