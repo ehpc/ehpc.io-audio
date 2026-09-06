@@ -54,7 +54,11 @@ jobs:
   image:
     name: Build & push image to GHCR
     runs-on: ubuntu-latest
-    needs: [backend, frontend]
+    # Waits on deploy-modal, not just the unit tests: :prod is the tag the
+    # cluster pulls, so it must not be published until a real separation has
+    # run against the function this commit deployed. Costs the smoke test's
+    # duration in wall clock — a cold separation is minutes, not seconds.
+    needs: [backend, frontend, deploy-modal]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
