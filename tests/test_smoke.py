@@ -13,10 +13,17 @@ import modal
 import pytest
 
 from backend import config
+from separator.modal_app import TIMEOUT as MODAL_FUNCTION_TIMEOUT_S
 from separator.options import SeparationOptions
 from separator.stems import StemResult
 
-pytestmark = pytest.mark.smoke
+# The suite-wide --timeout is sized for local tests; a cold run here waits on a
+# container boot, a model download and the GPU pass. Allow more than the Modal
+# function's own timeout so its error surfaces instead of a pytest timeout.
+pytestmark = [
+    pytest.mark.smoke,
+    pytest.mark.timeout(MODAL_FUNCTION_TIMEOUT_S + 300),
+]
 
 _SAMPLE_RATE = 44_100
 _TONE_SECONDS = 5
