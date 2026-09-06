@@ -45,3 +45,17 @@ def other_client() -> Iterator[TestClient]:
     """A client with its own cookie jar — i.e. a different browser session."""
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def worker_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """A client whose app runs a real queue worker, for end-to-end tests.
+
+    `client` above keeps QUEUE_CONCURRENCY at 0 so jobs stay queued; here the
+    lifespan starts a worker that picks them up (and polls tightly, so tests
+    don't wait on the production 2s idle interval).
+    """
+    monkeypatch.setattr(config, "QUEUE_CONCURRENCY", 1)
+    monkeypatch.setattr(config, "QUEUE_POLL_INTERVAL_S", 0.01)
+    with TestClient(app) as c:
+        yield c

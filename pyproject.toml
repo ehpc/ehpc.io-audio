@@ -41,7 +41,9 @@ include = ["**/*.py"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-m 'not smoke'"
+# --timeout: the SSE endpoint streams until the job ends, so a regression in the
+# event bus would hang a test forever instead of failing it. Cap every test.
+addopts = "-m 'not smoke' --timeout=60"
 markers = [
     "smoke: opt-in tests that hit the deployed Modal app (needs auth; run via `make smoke`)",
 ]
@@ -54,6 +56,7 @@ markers = [
 dev = [
     "httpx>=0.28.1",
     "pytest>=8",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.16.3",
     "ty>=0.0.72",
 ]
