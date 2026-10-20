@@ -33,6 +33,11 @@ async def submit_job(
     session_id: Annotated[str, Depends(get_session_id)],
     url: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
+    extract_vocals: Annotated[bool, Form()] = False,
+    extract_instruments: Annotated[bool, Form()] = False,
+    mix_female_instruments: Annotated[bool, Form()] = False,
+    mix_male_instruments: Annotated[bool, Form()] = False,
+    mix_backing_instruments: Annotated[bool, Form()] = False,
     decrowd: Annotated[bool, Form()] = False,
     decrowd_vocals: Annotated[bool, Form()] = False,
     dereverb: Annotated[bool, Form()] = False,
@@ -40,6 +45,8 @@ async def submit_job(
     lead_backing: Annotated[bool, Form()] = False,
     drums: Annotated[bool, Form()] = False,
     no_cache: Annotated[bool, Form()] = False,
+    pitch_semitones: Annotated[float, Form(allow_inf_nan=False)] = 0.0,
+    tempo_percent: Annotated[float, Form(gt=0, allow_inf_nan=False)] = 100.0,
 ) -> dict:
     has_url = bool(url and url.strip())
     has_file = file is not None and bool(file.filename)
@@ -47,6 +54,11 @@ async def submit_job(
         raise HTTPException(400, "provide exactly one of url or file")
 
     options = SeparationOptions(
+        extract_vocals=extract_vocals,
+        extract_instruments=extract_instruments,
+        mix_female_instruments=mix_female_instruments,
+        mix_male_instruments=mix_male_instruments,
+        mix_backing_instruments=mix_backing_instruments,
         decrowd=decrowd,
         decrowd_vocals=decrowd_vocals,
         dereverb=dereverb,
@@ -54,6 +66,8 @@ async def submit_job(
         lead_backing=lead_backing,
         drums=drums,
         no_cache=no_cache,
+        pitch_semitones=pitch_semitones,
+        tempo_percent=tempo_percent,
     )
 
     if has_file:

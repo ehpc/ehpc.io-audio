@@ -16,6 +16,8 @@
               pkgs.uv
               pkgs.gnumake
               pkgs.ffmpeg
+              pkgs.rubberband
+              pkgs.keyfinder-cli
               pkgs.deno
               pkgs.nodejs
               # ruff and ty come from the dev dependency group (uv run ruff / ty)

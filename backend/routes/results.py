@@ -51,5 +51,5 @@ async def get_result(
     return FileResponse(
         path,
         media_type="audio/mpeg",
-        filename=download_filename(job.title, job_id, label),
+        filename=download_filename(job.title, job_id, label, job.options),
     )

@@ -1,12 +1,11 @@
 # Vocal Tools
 
-A web app for pulling a song apart into vocal and instrument stems. Submit a
-track by URL or upload, optionally strip crowd noise from the instrumental,
-remove reverb, split vocals by gender (male/female), separate lead from
-backing vocals, or split the instrumental into drums, bass, and other
-instruments — then download or play back the resulting stems. Multiple
-people can use it at once; submissions go through a queue, and each visitor
-sees their live position in it.
+A web app for downloading a song, transforming its pitch/tempo, or extracting
+selected vocal and instrument tracks. Submit a URL or upload a file: by default,
+only the original song is kept, with **no GPU separation**. Explicitly choose
+vocals, instruments, cleanup/split outputs, or female/male/backing vocals mixed
+with instruments. Play or download the results. Multiple people can use it at
+once; submissions go through a queue, and each visitor sees their live position.
 
 ## Architecture
 
@@ -30,15 +29,16 @@ sees their live position in it.
 ```
 
 - **`separator/`** — pure domain logic (stem-model configs, the actual
-  separation pipeline, URL download) plus `modal_app.py`, which defines the
-  Modal app and GPU function. This is the only place that knows about CUDA
-  images, GPUs, or the `audio-separator[gpu]` package.
-- **`backend/`** — the always-on FastAPI app. It never runs the GPU pipeline
-  itself; it downloads/reads the source audio, submits it to the *deployed*
-  Modal function (`modal.Function.from_name(...).spawn(...)`), polls for
-  completion, and persists results. A small job queue (SQLite-backed) caps
-  how many separations run concurrently, since GPU time isn't free — users
-  see their live position in that queue.
+  separation pipeline, URL download, and CPU audio analysis/postprocessing)
+  plus `modal_app.py`, which defines the Modal app and GPU function. This is
+  the only place that knows about CUDA images, GPUs, or `audio-separator[gpu]`.
+- **`backend/`** — the always-on FastAPI app. It downloads/reads the source and
+  detects its key with libkeyfinder. Download-only jobs and whole-song pitch/tempo
+  changes run locally, without calling Modal (even with cache bypass enabled).
+  When separation outputs are selected, it submits to the *deployed* Modal
+  function, polls for completion, and persists results. Rubber Band R3 applies
+  pitch/tempo changes locally to each final output, after any mixing. A small
+  SQLite-backed queue caps concurrent jobs.
 - **`frontend/`** — SolidJS + Vite + Tailwind + Solid UI. Built to static
   assets at image-build time and served by the backend from the same origin,
   so there's exactly one port to expose.
@@ -49,6 +49,91 @@ sees their live position in it.
   writer), the in-process job-claim lock, and the SSE pub/sub used for live
   updates all assume exactly one running process. Don't scale the Deployment
   horizontally or pass `--workers` to uvicorn.
+
+## Choosing outputs
+
+The original source remains downloadable and unchanged by processing, preserving
+the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
+workflow. A completed download-only job has an empty result manifest; its original
+download is still available in Results and History.
+
+| Selection | Output labels |
+|---|---|
+| Extract vocals | `vocals` |
+| Extract instruments | `instruments` |
+| Remove crowd noise from vocals | `vocals-decrowded` |
+| Remove crowd noise from instrumental | `instruments-decrowded` |
+| Split by gender | `vocals-male`, `vocals-female` |
+| Split lead & backing | `lead`, `backing` |
+| Split drums, bass & other instruments | `drums`, `bass`, `other-instruments` |
+| Female vocals + instruments | `female-instruments` |
+| Male vocals + instruments | `male-instruments` |
+| Backing vocals + instruments | `backing-instruments` |
+
+- Cleanup/split outputs work without selecting their parent extraction. Required
+  intermediate tracks are internal unless their own output is selected.
+- Dereverb adds a `-dry` counterpart to each selected vocal output. **Dereverb
+  alone**, with no other output selection, produces only `vocals-dry`.
+  Instrument-only + dereverb does not add a vocal track. Mix-only + dereverb
+  dries the mix's vocal prerequisite without exposing a standalone dry track.
+- Vocal splits use decrowded vocals when vocal crowd removal is selected.
+  Mixes use those splits, their dry versions when dereverb is selected, and
+  decrowded instruments when instrumental crowd removal is selected.
+- Download order is vocal wet/dry pairs (`vocals`, decrowded vocals, male,
+  female, lead, backing), then instrumental outputs, then female, male, and
+  backing mixes. A shared prerequisite/model pass runs only once.
+- Mixes are simultaneous audio sums, not concatenations: FFmpeg aligns both
+  inputs to stereo/48 kHz and sums at unity gain (`amix normalize=0`). A
+  latency-compensated peak limiter with **no automatic makeup gain** reduces only
+  excessive peaks; its 0.89 ceiling leaves about 1 dB of MP3 reconstruction
+  headroom. Quiet passages are not averaged down or automatically boosted.
+  Mixing precedes pitch/tempo rendering, and separation caches remain raw.
+- Stored jobs from before explicit extraction are migrated to request both base
+  stems, preserving their history and retry behavior.
+
+## Pitch, tempo, and musical key
+
+- **Pitch shift (semitones):** `0` is unchanged; positive values transpose up,
+  negative values down. Fractional semitones are supported.
+- **Tempo (% of original):** `100` is unchanged, `120` is 20% faster, and `80`
+  is 20% slower. Tempo must be positive. Pitch and tempo are independent.
+- With no separation selections, changing pitch or tempo produces a full-song
+  `song` output locally, displayed as **Full song** with the applied pitch
+  shift in semitones and/or tempo as a percentage of the original. The original
+  is always displayed as **Original (unchanged)**. Identity settings produce no
+  extra output.
+- Every final output (including mixes and the full song) is rendered using one
+  offline Rubber Band **R3/Finer** pass with both settings together and formant
+  preservation. There is no separate pitch-first or tempo-first pass.
+  Separation caches remain unmodified; identity settings bypass rendering.
+- Modified downloads identify their settings, for example
+  `Song - vocals - pitch+2st - tempo120pct.mp3`. The original audio download
+  is never modified.
+- Results and history show the estimated **original key** and **output key**.
+  The original is analyzed once using Mixxx's libkeyfinder; the output key is
+  derived from the pitch offset, preserving major/minor mode. Fractional
+  offsets include residual cents. Tempo alone does not change the key.
+- Key detection is an estimate of a global major/minor key, not chord or
+  modulation tracking; silence is shown as **Undetermined**. Historical jobs
+  without key analysis also show Undetermined. Large pitch/tempo changes can
+  introduce audible artifacts.
+- Attaching a file automatically analyzes its key; a valid HTTP(S) URL starts
+  analysis after a short debounce. A spinner shows analysis progress before
+  submission. The pitch control shows the original and target key with
+  diatonically spelled scale notes; minor scales are explicitly **natural
+  minor**. Completed Results and History also show the notes. Undetermined keys
+  have no fabricated scale.
+- Preview analysis uses session-protected `POST /api/key-analysis` with exactly
+  one multipart `file` or `url`, returning `{"original_key": "C major"}` (or
+  `null` for silence). It runs download/key analysis off the request loop, uses
+  temporary files, and creates no job/history entry or GPU call. Download and
+  decode failures are visible errors. Replacing the source cancels/ignores stale
+  previews. URL preview downloads independently; submitting the final job
+  downloads/analyzes it again rather than retaining a preview cache.
+
+Rubber Band is GPL-2.0-or-later (commercial licensing is available), and
+libkeyfinder is GPL-3.0-or-later; review these obligations before distributing
+a proprietary application containing them.
 
 ## Local development
 
@@ -61,6 +146,10 @@ sees their live position in it.
   `yt-dlp` solve YouTube's anti-bot challenge (without it, some downloads
   fail with `HTTP Error 403: Forbidden`). Both are already included if you
   use the Nix devShell below.
+- `rubberband` CLI version 3+ (R3 support) and `keyfinder-cli`, for stem
+  transformations and key detection. Both are included in the Nix devShell
+  and production Docker image; the image builds a pinned, checksum-verified
+  native keyfinder executable.
 - A [Modal](https://modal.com) account, for actually running separations —
   run `uv run modal token new` once to authenticate (or set `MODAL_TOKEN_ID` /
   `MODAL_TOKEN_SECRET`). `modal` is a project dependency (installed via
@@ -69,9 +158,9 @@ sees their live position in it.
 ### Using Nix
 
 If you have [Nix](https://nixos.org/) with flakes enabled, `flake.nix`
-provides a devShell with Python 3.13, `uv`, `ffmpeg`, and `deno` pinned
-(Linux and macOS, x86_64 and arm64). `ruff` and `ty` come from the dev
-dependency group, so `make lint` runs them via `uv run`:
+provides a devShell with Python 3.13, `uv`, Node.js, `ffmpeg`, `deno`,
+`rubberband`, and `keyfinder-cli` pinned (Linux and macOS, x86_64 and arm64).
+`ruff` and `ty` come from the dev dependency group, so `make lint` uses `uv run`:
 
 ```sh
 nix develop
@@ -82,7 +171,7 @@ nix develop
 ```sh
 make init                                  # installs backend + frontend deps
 make deploy-modal                          # deploys the GPU function to Modal
-                                            # (re-run after any separator/stems.py change)
+                                            # re-run after separator graph/options/runtime changes
 ```
 
 If this repo lives inside a cloud-synced folder (Dropbox, iCloud, etc.),
@@ -119,6 +208,10 @@ and results are written to `./dev-data/` (gitignored).
 make lint
 ```
 
+Run `make test` for backend, native audio, and end-to-end tests, and
+`make test-frontend` for the frontend suite. Native audio scenarios require
+the tools above and are skipped when those executables are unavailable.
+
 ### Backend configuration (env vars)
 
 | Variable | Default | Purpose |
@@ -139,12 +232,24 @@ make lint
    docker push ghcr.io/ehpc/ehpc.io-audio:prod
    ```
 
-2. **Deploy the Modal GPU function** (once, and again after any
-   `separator/stems.py` change) from a machine with Modal credentials:
+2. **Deploy the updated Modal GPU function before releasing matching backend/UI
+   changes** from a machine with Modal credentials:
 
    ```sh
    make deploy-modal
    ```
+
+   New extraction/mix options require the current graph; an older deployed
+   function is not compatible with the new defaults/output contract. Redeploy
+   after changes to `separator/stems.py`, `separator/options.py`, or the Modal
+   image. The runtime uses CUDA 12.6.3/cuDNN on Ubuntu 24.04 (FFmpeg 6+ is required
+   for latency-compensated limiting), with `audio-separator[gpu]==0.44.1` and
+   `librosa==0.11.0` pinned to the exercised compatible stack. Coordinate the
+   rollout; local source-only jobs and key previews do not need Modal credentials.
+   For verification without overwriting a deployment, run the current
+   `separator.modal_app.app` inside `with app.run():` and invoke its bound
+   `separate.remote(...)`. `make smoke` targets the deployed function and now
+   checks explicit extraction and mix-only outputs, not implicit default stems.
 
 3. **Provision cluster resources:**
    - A `PersistentVolumeClaim` (ReadWriteOnce) mounted at `/data` — holds the

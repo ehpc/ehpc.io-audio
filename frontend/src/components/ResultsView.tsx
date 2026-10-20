@@ -1,6 +1,8 @@
 import { For, Show, type Component } from "solid-js";
 import type { JobDTO, StemManifestEntry } from "~/api";
-import { downloadName, jobLabel, originalUrl, resultUrl } from "~/api";
+import { jobLabel, originalUrl, resultUrl } from "~/api";
+import { displayOutputLabel } from "~/lib/expectedStems";
+import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
 
@@ -24,13 +26,14 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
       <div class="space-y-1">
         <h2 class="text-lg font-semibold">Results</h2>
         <p class="text-sm text-muted-foreground">{jobLabel(props.job)}</p>
+        <AudioMetadata job={props.job} />
       </div>
 
       <div class="space-y-4">
         <Show when={props.job.has_original}>
           <Card>
             <CardHeader>
-              <CardTitle class="text-base capitalize">original</CardTitle>
+              <CardTitle class="text-base">{displayOutputLabel("original", props.job.options)}</CardTitle>
             </CardHeader>
             <CardContent class="space-y-3">
               <audio
@@ -55,7 +58,7 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
             <Card>
               <CardHeader>
                 <CardTitle class="flex items-center justify-between gap-4 text-base">
-                  <span class="capitalize">{stem.label}</span>
+                  <span>{displayOutputLabel(stem.label, props.job.options)}</span>
                   <span class="text-xs font-normal text-muted-foreground">
                     {formatDuration(stem.duration_s)} · {formatSize(stem.size_bytes)}
                   </span>
@@ -70,10 +73,10 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
                 />
                 <a
                   href={resultUrl(props.job.id, stem.label)}
-                  download={downloadName(props.job, stem.label)}
+                  download={stem.download_name}
                   class="inline-block text-sm font-medium text-primary underline-offset-4 hover:underline"
                 >
-                  Download {downloadName(props.job, stem.label)}
+                  Download {stem.download_name}
                 </a>
               </CardContent>
             </Card>
@@ -82,7 +85,7 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
       </div>
 
       <Button variant="outline" onClick={props.onReset}>
-        Start another separation
+        Start another job
       </Button>
     </div>
   );

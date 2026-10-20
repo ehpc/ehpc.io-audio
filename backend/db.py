@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     source_type TEXT NOT NULL CHECK (source_type IN ('url','upload')),
     source_value TEXT NOT NULL,
     title TEXT,
+    original_key TEXT,
     options_json TEXT NOT NULL,
     modal_call_id TEXT,
     result_manifest_json TEXT,
@@ -49,6 +50,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
     if "title" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN title TEXT")
+    if "original_key" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN original_key TEXT")
+    # Prior to explicit extraction, every job always requested both base stems.
+    # Persist that intent once so history and retries retain the old behavior.
+    for row in conn.execute("SELECT id, options_json FROM jobs").fetchall():
+        options = json.loads(row["options_json"])
+        if "extract_vocals" not in options and "extract_instruments" not in options:
+            options.update(extract_vocals=True, extract_instruments=True)
+            conn.execute(
+                "UPDATE jobs SET options_json = ? WHERE id = ?",
+                (json.dumps(options), row["id"]),
+            )
 
 
 @contextmanager
@@ -84,6 +97,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         source_type=row["source_type"],
         source_value=row["source_value"],
         title=row["title"],
+        original_key=row["original_key"],
         options=_load_options(row["options_json"]),
         modal_call_id=row["modal_call_id"],
         result_manifest=(
@@ -131,6 +145,13 @@ def insert_job(
 def set_title(job_id: int, title: str) -> None:
     with _session() as conn:
         conn.execute("UPDATE jobs SET title = ? WHERE id = ?", (title, job_id))
+
+
+def set_original_key(job_id: int, original_key: str | None) -> None:
+    with _session() as conn:
+        conn.execute(
+            "UPDATE jobs SET original_key = ? WHERE id = ?", (original_key, job_id)
+        )
 
 
 def get_job(job_id: int) -> JobRecord | None:

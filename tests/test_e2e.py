@@ -10,22 +10,34 @@ side of that boundary against the deployed function.
 
 import asyncio
 import json
+import shutil
+import subprocess
+import threading
 import time
 from dataclasses import dataclass
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
 
 from backend import config, db, events, modal_client, queue
 from backend.models import JobStatus
-from separator import stems
+from separator import audio, stems
 from separator.options import SeparationOptions
 from separator.stems import SeparationResult, Stem, StemResult
 
 _TERMINAL = (JobStatus.DONE, JobStatus.FAILED)
 _UPLOAD_BYTES = b"ID3\x03\x00fake-mp3-payload"
+
+
+@pytest.fixture(autouse=True)
+def _key_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These separation scenarios use placeholder bytes, not decodable audio.
+    monkeypatch.setattr(queue, "detect_key", lambda audio, name: "C major")
 
 
 @dataclass
@@ -122,13 +134,21 @@ def test_upload_is_separated_and_stems_are_downloadable(
 ) -> None:
     spawned = _fake_modal(monkeypatch, tmp_path)
 
-    job_id = _submit_upload(worker_client)
+    job_id = _submit_upload(
+        worker_client, extract_vocals=True, extract_instruments=True
+    )
     job = _wait_for_terminal(worker_client, job_id)
 
     assert job["status"] == JobStatus.DONE, job["error_message"]
     assert [entry["label"] for entry in job["manifest"]] == ["vocals", "instruments"]
     # The bytes the browser uploaded are the bytes the separator received.
-    assert spawned == [(_UPLOAD_BYTES, "song.mp3", SeparationOptions())]
+    assert spawned == [
+        (
+            _UPLOAD_BYTES,
+            "song.mp3",
+            SeparationOptions(extract_vocals=True, extract_instruments=True),
+        )
+    ]
 
     for label in ("vocals", "instruments"):
         stem = worker_client.get(f"/api/jobs/{job_id}/results/{label}")
@@ -162,7 +182,6 @@ def test_submitted_options_reach_the_separator_and_shape_the_manifest(
     )
     labels = [entry["label"] for entry in job["manifest"]]
     assert set(labels) >= {
-        "vocals-dry",
         "vocals-decrowded",
         "vocals-decrowded-dry",
         "vocals-male",
@@ -185,7 +204,10 @@ def test_url_job_downloads_titles_and_separates(
 
     monkeypatch.setattr(queue, "download_mp3", fake_download)
 
-    submitted = worker_client.post("/api/jobs", data={"url": "https://example.com/x"})
+    submitted = worker_client.post(
+        "/api/jobs",
+        data={"url": "https://example.com/x", "extract_vocals": "true"},
+    )
     job_id = submitted.json()["id"]
     job = _wait_for_terminal(worker_client, job_id)
 
@@ -206,7 +228,7 @@ def test_failed_separation_surfaces_the_error_and_serves_no_stems(
 
     monkeypatch.setattr(modal_client, "spawn", boom)
 
-    job_id = _submit_upload(worker_client)
+    job_id = _submit_upload(worker_client, extract_vocals=True)
     job = _wait_for_terminal(worker_client, job_id)
 
     assert job["status"] == JobStatus.FAILED
@@ -223,7 +245,9 @@ def test_event_stream_serves_the_finished_job(
     # hang the whole suite if the publish path ever regressed (the stream would
     # simply never end), so that half is covered without HTTP below.
     _fake_modal(monkeypatch, tmp_path)
-    job_id = _submit_upload(worker_client)
+    job_id = _submit_upload(
+        worker_client, extract_vocals=True, extract_instruments=True
+    )
     _wait_for_terminal(worker_client, job_id)
 
     with worker_client.stream("GET", f"/api/jobs/{job_id}/events") as response:
@@ -250,7 +274,7 @@ def test_worker_publishes_progress_to_stream_subscribers(
     # directly (the `client` fixture runs no worker, so nothing else claims the
     # job) to keep a regression here a failure rather than a hang.
     _fake_modal(monkeypatch, tmp_path)
-    job_id = _submit_upload(client)
+    job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
 
     async def run_claimed_job() -> list[dict]:
         subscription = events.subscribe(job_id)
@@ -264,10 +288,9 @@ def test_worker_publishes_progress_to_stream_subscribers(
 
     payloads = asyncio.run(run_claimed_job())
 
-    assert [payload["status"] for payload in payloads] == [
-        JobStatus.RUNNING,
-        JobStatus.DONE,
-    ]
+    assert payloads[0]["status"] == JobStatus.RUNNING
+    assert payloads[-1]["status"] == JobStatus.DONE
+    assert any(payload["original_key"] == "C major" for payload in payloads[:-1])
     assert [entry["label"] for entry in payloads[-1]["manifest"]] == [
         "vocals",
         "instruments",
@@ -279,7 +302,9 @@ def test_results_are_persisted_under_the_data_dir(
 ) -> None:
     # Stems must survive a restart, so they live on disk rather than in memory.
     _fake_modal(monkeypatch, tmp_path)
-    job_id = _submit_upload(worker_client)
+    job_id = _submit_upload(
+        worker_client, extract_vocals=True, extract_instruments=True
+    )
     _wait_for_terminal(worker_client, job_id)
 
     results = config.RESULTS_DIR / str(job_id)
@@ -288,3 +313,175 @@ def test_results_are_persisted_under_the_data_dir(
         "vocals.mp3",
     ]
     assert (results / "vocals.mp3").read_bytes() == b"vocals-audio"
+
+
+@pytest.mark.skipif(
+    any(
+        shutil.which(tool) is None
+        for tool in ("rubberband", "keyfinder-cli", "ffprobe")
+    ),
+    reason="Native audio tools are required (available in nix develop)",
+)
+def test_pitch_and_tempo_modify_every_download_but_not_the_original(
+    worker_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tone_wav((261.6256, 329.6276, 391.9954))
+    monkeypatch.setattr(queue, "detect_key", audio.detect_key)
+    call = _FakeCall(
+        object_id="fc-audio",
+        result={
+            label: StemResult(data=source, duration_s=1.0)
+            for label in ("vocals", "instruments")
+        },
+    )
+    monkeypatch.setattr(modal_client, "spawn", lambda *args: call)
+    monkeypatch.setattr(modal_client, "poll", lambda *args: call.result)
+
+    response = worker_client.post(
+        "/api/jobs",
+        files={"file": ("C major.wav", source, "audio/wav")},
+        data={
+            "extract_vocals": "true",
+            "extract_instruments": "true",
+            "pitch_semitones": "2",
+            "tempo_percent": "120",
+        },
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    job = _wait_for_terminal(worker_client, job_id, timeout_s=30)
+    assert job["status"] == JobStatus.DONE, job["error_message"]
+    assert job["original_key"] == "C major"
+    assert job["output_key"] == "D major"
+    assert worker_client.get(f"/api/jobs/{job_id}/original").content == source
+
+    for entry in job["manifest"]:
+        assert "pitch+2st" in entry["filename"]
+        assert "tempo120pct" in entry["filename"]
+        result = worker_client.get(f"/api/jobs/{job_id}/results/{entry['label']}")
+        assert result.status_code == 200
+        assert quote(entry["download_name"]) in result.headers["content-disposition"]
+        assert len(result.content) == entry["size_bytes"]
+        path = config.RESULTS_DIR / str(job_id) / entry["filename"]
+        duration = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert float(duration.stdout) == pytest.approx(4 / 1.2, abs=0.12)
+
+    # Reloads/history must retain the analysis and transformations, not just SSE.
+    historical = worker_client.get("/api/jobs").json()[0]
+    assert historical["original_key"] == "C major"
+    assert historical["output_key"] == "D major"
+    assert historical["options"]["pitch_semitones"] == 2
+    assert historical["options"]["tempo_percent"] == 120
+
+
+@pytest.mark.skipif(
+    any(
+        shutil.which(tool) is None
+        for tool in ("ffmpeg", "rubberband", "keyfinder-cli", "yt-dlp")
+    ),
+    reason="Native audio and downloader tools required",
+)
+@pytest.mark.parametrize("source_type", ["upload", "url"])
+@pytest.mark.parametrize("modified", [False, True])
+def test_whole_song_jobs_bypass_modal_and_preserve_original(
+    worker_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_type: str,
+    modified: bool,
+) -> None:
+    source = tone_wav((440.0,), duration_s=2)
+    analyses = []
+
+    def analyze(data: bytes, filename: str) -> str | None:
+        analyses.append(filename)
+        return audio.detect_key(data, filename)
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        raise AssertionError("download-only jobs must never spawn Modal")
+
+    monkeypatch.setattr(queue, "detect_key", analyze)
+    monkeypatch.setattr(modal_client, "spawn", forbidden)
+    options = {"no_cache": "true"}
+    if modified:
+        options.update(pitch_semitones="12", tempo_percent="125")
+    handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_path))
+    with ThreadingHTTPServer(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            if source_type == "url":
+                wav = tmp_path / "source.wav"
+                mp3 = tmp_path / "source.mp3"
+                wav.write_bytes(source)
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-i", str(wav), "-q:a", "0", str(mp3)],
+                    check=True,
+                    capture_output=True,
+                )
+                source = mp3.read_bytes()
+                url = f"http://127.0.0.1:{server.server_port}/source.mp3"
+                preview = worker_client.post("/api/key-analysis", data={"url": url})
+                assert preview.status_code == 200
+                assert preview.json() == {
+                    "original_key": audio.detect_key(source, "source.mp3")
+                }
+                assert worker_client.get("/api/jobs").json() == []
+                response = worker_client.post(
+                    "/api/jobs",
+                    data={
+                        **options,
+                        "url": url,
+                    },
+                )
+            else:
+                response = worker_client.post(
+                    "/api/jobs",
+                    files={"file": ("source.wav", source, "audio/wav")},
+                    data=options,
+                )
+            assert response.status_code == 200
+            job_id = response.json()["id"]
+            job = _wait_for_terminal(worker_client, job_id, timeout_s=30)
+        finally:
+            server.shutdown()
+            thread.join()
+    assert job["status"] == JobStatus.DONE, job["error_message"]
+    assert len(analyses) == 1
+    stored = db.get_job(job_id)
+    assert stored is not None and stored.modal_call_id is None
+    assert job["has_original"] is True
+    original = worker_client.get(f"/api/jobs/{job_id}/original")
+    assert original.content == source
+    extension = "mp3" if source_type == "url" else "wav"
+    assert f"original.{extension}" in original.headers["content-disposition"]
+    assert [entry["label"] for entry in job["manifest"]] == (
+        ["song"] if modified else []
+    )
+    if modified:
+        result = worker_client.get(f"/api/jobs/{job_id}/results/song")
+        assert result.status_code == 200
+        duration, frequency = mp3_measurements(result.content)
+        assert duration == pytest.approx(2 / 1.25, abs=0.12)
+        assert frequency == pytest.approx(880, rel=0.02)
+        assert "pitch%2B12st" in result.headers["content-disposition"]
+    else:
+        assert (
+            worker_client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
+        )
+    historical = worker_client.get("/api/jobs").json()[0]
+    assert historical["manifest"] == job["manifest"]

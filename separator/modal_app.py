@@ -34,17 +34,18 @@ TIMEOUT = 1200  # 20 minutes — up to nine sequential separator passes on L40S
 GPU = "L40S"
 
 image = (
-    # onnxruntime-gpu needs CUDA 12 + cuDNN 9 system libs (libcublasLt.so.12 etc.);
-    # debian_slim has none, so use NVIDIA's CUDA image and pin Torch to a matching
-    # wheel.
+    # onnxruntime-gpu needs CUDA 12 + cuDNN 9 system libraries.
     modal.Image.from_registry(
-        "nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04",
+        # Ubuntu 24.04 supplies FFmpeg 6+ with latency-compensated alimiter.
+        "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04",
         add_python="3.13",
     )
     # clang is needed to build diffq's C extension (transitive dep of audio-separator).
     .apt_install("ffmpeg", "clang")
     .pip_install(
-        "audio-separator[gpu]",
+        "audio-separator[gpu]==0.44.1",
+        # librosa 1 removed audioread, which this separator version imports.
+        "librosa==0.11.0",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
     # This module lives inside the `separator` package and imports its siblings

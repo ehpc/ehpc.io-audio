@@ -1,30 +1,49 @@
 import type { SeparationOptions } from "~/api";
-
-// Mirrors the stem labels produced by separator/stems.py's run_separation —
-// keep in sync if that logic changes. A split model emits both of its stems in
-// one pass, so a group's wet stems come out together followed by their dry
-// ("-dry") counterparts when dereverb is on.
-export function expectedStems(options: SeparationOptions): string[] {
-  const dry = options.dereverb;
-  const labels: string[] = ["vocals"];
-  if (dry) labels.push("vocals-dry");
-
-  if (options.decrowd_vocals) {
-    labels.push("vocals-decrowded");
-    if (dry) labels.push("vocals-decrowded-dry");
+/** User-facing label for an output; API labels remain unchanged. */
+export function displayOutputLabel(label: string, options: SeparationOptions): string {
+  if (label === "original") return "Original (unchanged)";
+  const base = label === "song" ? "Full song" : label;
+  const adjustments: string[] = [];
+  if (options.pitch_semitones !== 0) {
+    const pitch = String(options.pitch_semitones);
+    adjustments.push(`pitch ${options.pitch_semitones > 0 ? "+" : ""}${pitch} st`);
   }
+  if (options.tempo_percent !== 100) {
+    adjustments.push(`tempo ${options.tempo_percent}%`);
+  }
+  return adjustments.length ? `${base} (${adjustments.join(", ")})` : base;
+}
+
+// Mirrors SeparationOptions.output_labels: only explicit outputs, with each
+// requested wet vocal immediately followed by its dry variant.
+export function expectedStems(options: SeparationOptions): string[] {
+  const labels: string[] = [];
+  const selections = options.extract_vocals || options.extract_instruments ||
+    options.mix_female_instruments || options.mix_male_instruments ||
+    options.mix_backing_instruments || options.decrowd || options.decrowd_vocals ||
+    options.genders || options.lead_backing || options.drums;
+  const dry = options.dereverb;
+  const vocal = (label: string) => {
+    labels.push(label);
+    if (dry) labels.push(`${label}-dry`);
+  };
+  if (options.extract_vocals) vocal("vocals");
+  if (options.decrowd_vocals) vocal("vocals-decrowded");
   if (options.genders) {
-    labels.push("vocals-male", "vocals-female");
-    if (dry) labels.push("vocals-male-dry", "vocals-female-dry");
+    vocal("vocals-male");
+    vocal("vocals-female");
   }
   if (options.lead_backing) {
-    labels.push("lead", "backing");
-    if (dry) labels.push("lead-dry", "backing-dry");
+    vocal("lead");
+    vocal("backing");
   }
-
-  labels.push("instruments");
+  if (options.extract_instruments) labels.push("instruments");
   if (options.decrowd) labels.push("instruments-decrowded");
   if (options.drums) labels.push("drums", "bass", "other-instruments");
-
+  if (options.mix_female_instruments) labels.push("female-instruments");
+  if (options.mix_male_instruments) labels.push("male-instruments");
+  if (options.mix_backing_instruments) labels.push("backing-instruments");
+  if (dry && !selections) labels.push("vocals-dry");
+  if (labels.length === 0 && (options.pitch_semitones !== 0 || options.tempo_percent !== 100)) labels.push("song");
   return labels;
 }

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
 from backend.queue import lifespan
-from backend.routes import health, jobs, results, status
+from backend.routes import health, jobs, key_analysis, results, status
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
     fastapi_app.include_router(health.router)
     fastapi_app.include_router(jobs.router, prefix="/api")
     fastapi_app.include_router(results.router, prefix="/api")
+    fastapi_app.include_router(key_analysis.router, prefix="/api")
     fastapi_app.include_router(status.router, prefix="/api")
 
     if FRONTEND_DIST.is_dir():

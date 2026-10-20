@@ -69,7 +69,31 @@ def test_deployed_container_can_import_separator_package() -> None:
     assert fn.remote() == "ok"
 
 
-def test_deployed_function_separates_audio() -> None:
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        (
+            SeparationOptions(
+                extract_vocals=True, extract_instruments=True, no_cache=True
+            ),
+            ["vocals", "instruments"],
+        ),
+        (
+            SeparationOptions(
+                mix_female_instruments=True,
+                mix_male_instruments=True,
+                mix_backing_instruments=True,
+                dereverb=True,
+                no_cache=True,
+            ),
+            ["female-instruments", "male-instruments", "backing-instruments"],
+        ),
+    ],
+    ids=["explicit-extraction", "mix-only-dry-vocals"],
+)
+def test_deployed_function_separates_audio(
+    options: SeparationOptions, expected: list[str]
+) -> None:
     """Runs a real separation on the GPU function — the one thing no other test
     can check: that the image's audio-separator, its models and the CUDA stack
     actually produce stems.
@@ -80,10 +104,12 @@ def test_deployed_function_separates_audio() -> None:
     """
     fn = modal.Function.from_name(config.MODAL_APP_NAME, config.MODAL_FUNCTION_NAME)
     result: dict[str, StemResult] = fn.remote(
-        _tone_wav(), "smoke-tone.wav", SeparationOptions(no_cache=True)
+        _tone_wav(),
+        "smoke-tone.wav",
+        options,
     )
 
-    assert sorted(result) == ["instruments", "vocals"]
+    assert sorted(result) == sorted(expected)
     for label, stem in result.items():
         assert stem.duration_s > 0, f"{label} reports no separation time"
         assert _is_mp3(stem.data), f"{label} is not an mp3: {stem.data[:4]!r}"

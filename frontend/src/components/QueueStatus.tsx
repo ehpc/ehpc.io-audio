@@ -51,7 +51,7 @@ const QueueStatus: Component<{
                 class="size-5 shrink-0 animate-spin rounded-full border-2 border-muted border-t-primary"
                 aria-hidden="true"
               />
-              <span>Running separation, this can take a few minutes...</span>
+              <span>Processing audio, this can take a few minutes...</span>
             </div>
           }
         >

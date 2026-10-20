@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel
 
 from backend import config
+from separator.audio import modification_suffix, transposed_key
 from separator.options import SeparationOptions
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
@@ -16,12 +17,15 @@ def _download_base(title: str | None, job_id: int) -> str:
     return base or str(job_id)
 
 
-def download_filename(title: str | None, job_id: int, label: str) -> str:
-    """User-facing stem download name, e.g. 'Man On The Silver Mountain - vocals.mp3'.
-
-    Mirror of the frontend's downloadName() in api.ts — keep the two in sync.
-    """
-    return f"{_download_base(title, job_id)} - {label}.mp3"
+def download_filename(
+    title: str | None,
+    job_id: int,
+    label: str,
+    options: SeparationOptions,
+) -> str:
+    """Canonical user-facing stem name, including any audio transformations."""
+    base = _download_base(title, job_id)
+    return f"{base} - {label}{modification_suffix(options)}.mp3"
 
 
 def original_filename(title: str | None, job_id: int, suffix: str) -> str:
@@ -41,6 +45,7 @@ class ResultManifestEntry(BaseModel):
     filename: str
     size_bytes: int
     duration_s: float
+    download_name: str = ""
 
 
 @dataclass
@@ -60,6 +65,7 @@ class JobRecord:
     created_at: int
     started_at: int | None
     finished_at: int | None
+    original_key: str | None = None
 
 
 class JobDTO(BaseModel):
@@ -76,6 +82,8 @@ class JobDTO(BaseModel):
     error_message: str | None
     created_at: int
     has_original: bool
+    original_key: str | None
+    output_key: str | None
 
 
 def _has_original(job_id: int) -> bool:
@@ -93,10 +101,25 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         source_value=job.source_value,
         title=job.title,
         options=job.options,
-        manifest=job.result_manifest,
+        manifest=(
+            [
+                entry.model_copy(
+                    update={
+                        "download_name": download_filename(
+                            job.title, job.id, entry.label, job.options
+                        )
+                    }
+                )
+                for entry in job.result_manifest
+            ]
+            if job.result_manifest is not None
+            else None
+        ),
         error_message=job.error_message,
         created_at=job.created_at,
         has_original=_has_original(job.id),
+        original_key=job.original_key,
+        output_key=transposed_key(job.original_key, job.options.pitch_semitones),
     )
 
 

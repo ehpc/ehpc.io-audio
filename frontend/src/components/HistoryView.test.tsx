@@ -18,6 +18,11 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     source_value: "https://example.com/song",
     title: "Great Song",
     options: {
+      extract_vocals: false,
+      extract_instruments: false,
+      mix_female_instruments: false,
+      mix_male_instruments: false,
+      mix_backing_instruments: false,
       decrowd: false,
       decrowd_vocals: false,
       dereverb: false,
@@ -25,7 +30,11 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
       lead_backing: false,
       drums: false,
       no_cache: false,
+      pitch_semitones: 0,
+      tempo_percent: 100,
     },
+    original_key: "C major",
+    output_key: "C major",
     manifest: [],
     error_message: null,
     created_at: 1700000000,
@@ -72,21 +81,28 @@ describe("HistoryView copy link", () => {
 describe("HistoryView download chips", () => {
   it("renders a download link per stem for done jobs", async () => {
     const job = urlJob({
+      options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
+      output_key: "D major",
       manifest: [
-        { label: "vocals", filename: "vocals.mp3", size_bytes: 1, duration_s: 1 },
-        { label: "instruments", filename: "instruments.mp3", size_bytes: 1, duration_s: 1 },
+        { label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
+        { label: "instruments", filename: "instruments.mp3", download_name: "Great Song - instruments - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
       ],
     });
     const onSelect = vi.fn();
     render(() => <HistoryView jobs={[job]} onSelect={onSelect} onRetried={vi.fn()} />);
 
-    const vocals = screen.getByRole("link", { name: "vocals" });
+    const vocals = screen.getByRole("link", { name: "vocals (pitch +2 st, tempo 120%)" });
     expect(vocals).toHaveAttribute("href", "/api/jobs/1/results/vocals");
-    expect(vocals).toHaveAttribute("download", "Great Song - vocals.mp3");
-    expect(screen.getByRole("link", { name: "instruments" })).toBeInTheDocument();
+    expect(vocals).toHaveAttribute("download", "Great Song - vocals - pitch+2st - tempo120pct.mp3");
+    expect(vocals).toHaveAttribute("title", "Great Song - vocals - pitch+2st - tempo120pct.mp3");
+    expect(screen.getByText("C major")).toBeInTheDocument();
+    expect(screen.getByText("D major")).toBeInTheDocument();
+    expect(screen.getByText("+2 semitones")).toBeInTheDocument();
+    expect(screen.getByText("120% of original")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "instruments (pitch +2 st, tempo 120%)" })).toBeInTheDocument();
 
-    const original = screen.getByRole("link", { name: "original" });
-    expect(original).toHaveAttribute("href", "/api/jobs/1/original");
+    const original = document.querySelector<HTMLAnchorElement>('a[href="/api/jobs/1/original"]');
+    expect(original).not.toBeNull();
 
     // Clicking a chip downloads, it must not also open the results view.
     await userEvent.click(vocals);
@@ -96,10 +112,10 @@ describe("HistoryView download chips", () => {
   it("omits the original chip when no original is available", () => {
     const job = urlJob({
       has_original: false,
-      manifest: [{ label: "vocals", filename: "vocals.mp3", size_bytes: 1, duration_s: 1 }],
+      manifest: [{ label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals.mp3", size_bytes: 1, duration_s: 1 }],
     });
     render(() => <HistoryView jobs={[job]} onSelect={vi.fn()} onRetried={vi.fn()} />);
-    expect(screen.queryByRole("link", { name: "original" })).toBeNull();
+    expect(document.querySelector('a[href="/api/jobs/1/original"]')).toBeNull();
     // stems still downloadable
     expect(screen.getByRole("link", { name: "vocals" })).toBeInTheDocument();
   });
@@ -113,5 +129,30 @@ describe("HistoryView download chips", () => {
       />
     ));
     expect(screen.queryByRole("link")).toBeNull();
+  });
+});
+
+describe("HistoryView key analysis", () => {
+  it("does not call a pending key undetermined", () => {
+    render(() => (
+      <HistoryView
+        jobs={[urlJob({ status: "running", original_key: null, output_key: null, manifest: null })]}
+        onSelect={vi.fn()}
+        onRetried={vi.fn()}
+      />
+    ));
+    expect(screen.queryByText("Undetermined")).toBeNull();
+    expect(screen.getAllByText("Pending")).toHaveLength(2);
+  });
+
+  it("shows undetermined only after completed analysis found no key", () => {
+    render(() => (
+      <HistoryView
+        jobs={[urlJob({ original_key: null, output_key: null })]}
+        onSelect={vi.fn()}
+        onRetried={vi.fn()}
+      />
+    ));
+    expect(screen.getAllByText("Undetermined")).toHaveLength(2);
   });
 });

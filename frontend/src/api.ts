@@ -3,11 +3,17 @@ export type JobStatus = "queued" | "running" | "done" | "failed";
 export interface StemManifestEntry {
   label: string;
   filename: string;
+  download_name: string;
   size_bytes: number;
   duration_s: number;
 }
 
 export interface SeparationOptions {
+  extract_vocals: boolean;
+  extract_instruments: boolean;
+  mix_female_instruments: boolean;
+  mix_male_instruments: boolean;
+  mix_backing_instruments: boolean;
   decrowd: boolean;
   decrowd_vocals: boolean;
   dereverb: boolean;
@@ -15,7 +21,13 @@ export interface SeparationOptions {
   lead_backing: boolean;
   drums: boolean;
   no_cache: boolean;
+  pitch_semitones: number;
+  tempo_percent: number;
 }
+
+export type BooleanOptionKey = {
+  [K in keyof SeparationOptions]: SeparationOptions[K] extends boolean ? K : never;
+}[keyof SeparationOptions];
 
 export interface JobDTO {
   id: number;
@@ -24,6 +36,8 @@ export interface JobDTO {
   source_type: "url" | "upload";
   source_value: string;
   title: string | null;
+  original_key: string | null;
+  output_key: string | null;
   options: SeparationOptions;
   manifest: StemManifestEntry[] | null;
   error_message: string | null;
@@ -36,18 +50,6 @@ export function jobLabel(job: JobDTO): string {
   return job.title ?? job.source_value;
 }
 
-const AUDIO_EXT = /\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$/i;
-const UNSAFE_FILENAME = /[/\\:*?"<>|]/g;
-
-/** Download filename incorporating the track name, e.g. "Great Song - vocals.mp3".
- * Mirror of the backend's download_filename() in models.py — keep the two in sync. */
-export function downloadName(job: JobDTO, label: string): string {
-  const base = (job.title ?? "")
-    .replace(AUDIO_EXT, "")
-    .replace(UNSAFE_FILENAME, "")
-    .trim();
-  return `${base || job.id} - ${label}.mp3`;
-}
 
 export interface SubmitResult {
   id: number;
@@ -80,15 +82,27 @@ export interface StatusDTO {
   modal_app: string;
 }
 
-export interface SubmitInput {
+export interface AudioSource {
   url?: string;
   file?: File;
+}
+
+export interface SubmitInput extends AudioSource {
   options: SeparationOptions;
+}
+
+export interface KeyAnalysis {
+  original_key: string | null;
 }
 
 const API_BASE = "/api";
 
-const OPTION_KEYS: (keyof SeparationOptions)[] = [
+const OPTION_KEYS: BooleanOptionKey[] = [
+  "extract_vocals",
+  "extract_instruments",
+  "mix_female_instruments",
+  "mix_male_instruments",
+  "mix_backing_instruments",
   "decrowd",
   "decrowd_vocals",
   "dereverb",
@@ -97,7 +111,6 @@ const OPTION_KEYS: (keyof SeparationOptions)[] = [
   "drums",
   "no_cache",
 ];
-
 function isTerminal(status: JobStatus): boolean {
   return status === "done" || status === "failed";
 }
@@ -112,7 +125,19 @@ async function readError(res: Response): Promise<string> {
   return `Request failed with status ${res.status}`;
 }
 
+export function audioSettingsError(options: SeparationOptions): string | null {
+  if (!Number.isFinite(options.pitch_semitones)) {
+    return "Pitch shift must be a finite number.";
+  }
+  if (!Number.isFinite(options.tempo_percent) || options.tempo_percent <= 0) {
+    return "Tempo must be a positive, finite number.";
+  }
+  return null;
+}
+
 export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
+  const invalid = audioSettingsError(input.options);
+  if (invalid) throw new Error(invalid);
   const form = new FormData();
   if (input.file) {
     form.append("file", input.file);
@@ -122,6 +147,8 @@ export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
   for (const key of OPTION_KEYS) {
     form.append(key, String(input.options[key]));
   }
+  form.append("pitch_semitones", String(input.options.pitch_semitones));
+  form.append("tempo_percent", String(input.options.tempo_percent));
 
   const res = await fetch(`${API_BASE}/jobs`, {
     method: "POST",
@@ -132,6 +159,20 @@ export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
     throw new Error(await readError(res));
   }
   return (await res.json()) as SubmitResult;
+}
+
+export async function analyzeKey(source: AudioSource, signal: AbortSignal): Promise<KeyAnalysis> {
+  const form = new FormData();
+  if (source.file) form.append("file", source.file);
+  else if (source.url !== undefined) form.append("url", source.url);
+  const res = await fetch(`${API_BASE}/key-analysis`, {
+    method: "POST",
+    body: form,
+    credentials: "include",
+    signal,
+  });
+  if (!res.ok) throw new Error(await readError(res));
+  return (await res.json()) as KeyAnalysis;
 }
 
 export async function getCurrentJob(): Promise<JobDTO | null> {

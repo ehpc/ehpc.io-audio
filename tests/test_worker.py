@@ -10,6 +10,12 @@ from separator.options import SeparationOptions
 from separator.stems import StemResult
 
 
+@pytest.fixture(autouse=True)
+def _key_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Unit tests use placeholder audio; native analysis is exercised separately.
+    monkeypatch.setattr(queue, "detect_key", lambda audio, name: "C major")
+
+
 def _write_upload(job_id: int, filename: str) -> None:
     upload_dir = config.UPLOADS_DIR / str(job_id)
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -17,7 +23,12 @@ def _write_upload(job_id: int, filename: str) -> None:
 
 
 def test_run_job_upload_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    job_id = db.insert_job("s1", "upload", "song.mp3", SeparationOptions())
+    job_id = db.insert_job(
+        "s1",
+        "upload",
+        "song.mp3",
+        SeparationOptions(extract_vocals=True, extract_instruments=True),
+    )
     _write_upload(job_id, "song.mp3")
 
     call = MagicMock()
@@ -97,7 +108,9 @@ def test_run_job_url_persists_original(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_job_marks_failed_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    job_id = db.insert_job("s1", "upload", "x.mp3", SeparationOptions())
+    job_id = db.insert_job(
+        "s1", "upload", "x.mp3", SeparationOptions(extract_vocals=True)
+    )
     _write_upload(job_id, "x.mp3")
 
     def _boom(*a: object, **k: object) -> object:

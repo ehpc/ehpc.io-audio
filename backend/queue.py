@@ -4,16 +4,20 @@ import dataclasses
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 
 from backend import config, db, events, modal_client
-from backend.models import JobRecord, JobStatus, ResultManifestEntry, job_to_dto
+from backend.models import (
+    JobRecord,
+    JobStatus,
+    ResultManifestEntry,
+    download_filename,
+    job_to_dto,
+)
+from separator.audio import detect_key, modification_suffix, transform_audio
 from separator.download import download_mp3
-
-if TYPE_CHECKING:
-    from separator.stems import SeparationResult
+from separator.stems import SeparationResult, StemResult
 
 log = logging.getLogger(__name__)
 
@@ -49,19 +53,21 @@ def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
 
 
 def _persist_results(
-    job_id: int, result: "SeparationResult"
+    job: JobRecord, result: SeparationResult
 ) -> list[ResultManifestEntry]:
-    out_dir = config.RESULTS_DIR / str(job_id)
+    out_dir = config.RESULTS_DIR / str(job.id)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
     for label, stem_result in result.items():
-        filename = f"{label}.mp3"
-        (out_dir / filename).write_bytes(stem_result.data)
+        audio = transform_audio(stem_result.data, job.options)
+        filename = f"{label}{modification_suffix(job.options)}.mp3"
+        (out_dir / filename).write_bytes(audio)
         manifest.append(
             ResultManifestEntry(
                 label=label,
                 filename=filename,
-                size_bytes=len(stem_result.data),
+                download_name=download_filename(job.title, job.id, label, job.options),
+                size_bytes=len(audio),
                 duration_s=stem_result.duration_s,
             )
         )
@@ -89,34 +95,42 @@ async def _run_job(job: JobRecord) -> None:
         # For URL jobs the downloaded filename is the track title (yt-dlp names the
         # file after it); surface it so history reads nicer than a raw URL.
         if job.source_type == "url":
-            await asyncio.to_thread(db.set_title, job.id, Path(filename).stem)
-        call = await asyncio.to_thread(
-            modal_client.spawn, audio_bytes, filename, job.options
-        )
-        log.info("job %s spawned on modal (call_id=%s)", job.id, call.object_id)
-        await asyncio.to_thread(db.set_modal_call_id, job.id, call.object_id)
-
-        result = None
-        polls = 0
-        while result is None:
-            polls += 1
-            result = await asyncio.to_thread(
-                modal_client.poll, call, config.MODAL_CALL_POLL_TIMEOUT_S
+            job.title = Path(filename).stem
+            await asyncio.to_thread(db.set_title, job.id, job.title)
+        job.original_key = await asyncio.to_thread(detect_key, audio_bytes, filename)
+        await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
+        await _publish_status(job.id)
+        result: SeparationResult = {}
+        if job.options.output_labels:
+            call = await asyncio.to_thread(
+                modal_client.spawn, audio_bytes, filename, job.options
             )
-            if result is None:
-                log.info(
-                    "job %s still running (waited %.0fs)",
-                    job.id,
-                    polls * config.MODAL_CALL_POLL_TIMEOUT_S,
-                )
+            log.info("job %s spawned on modal (call_id=%s)", job.id, call.object_id)
+            await asyncio.to_thread(db.set_modal_call_id, job.id, call.object_id)
 
-        log.info(
-            "job %s modal returned %d stems: %s",
-            job.id,
-            len(result),
-            ", ".join(sorted(result.keys())),
-        )
-        manifest = await asyncio.to_thread(_persist_results, job.id, result)
+            remote_result = None
+            polls = 0
+            while remote_result is None:
+                polls += 1
+                remote_result = await asyncio.to_thread(
+                    modal_client.poll, call, config.MODAL_CALL_POLL_TIMEOUT_S
+                )
+                if remote_result is None:
+                    log.info(
+                        "job %s still running (waited %.0fs)",
+                        job.id,
+                        polls * config.MODAL_CALL_POLL_TIMEOUT_S,
+                    )
+            result = remote_result
+            log.info(
+                "job %s modal returned %d outputs: %s",
+                job.id,
+                len(result),
+                ", ".join(result),
+            )
+        elif job.options.pitch_semitones != 0 or job.options.tempo_percent != 100:
+            result = {"song": StemResult(audio_bytes, 0.0)}
+        manifest = await asyncio.to_thread(_persist_results, job, result)
         await asyncio.to_thread(db.mark_done, job.id, manifest)
         log.info("job %s done", job.id)
     except Exception as exc:

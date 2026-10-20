@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+from separator.audio import mix_audio
 from separator.options import SeparationOptions
 
 
@@ -37,9 +38,7 @@ DECROWD_STEMS = [Stem(_CROWD_MODEL, [StemOutput("instruments-decrowded", "Other"
 
 DECROWD_VOCALS_STEMS = [Stem(_CROWD_MODEL, [StemOutput("vocals-decrowded", "Other")])]
 
-# Applied as a final pass on top of whichever vocal-ish tracks were actually
-# produced (vocals, and male/female or lead/backing splits if selected) — never
-# an input to another separation.
+# Dereverb requested vocal outputs and mix vocal prerequisites, never separation inputs.
 DEREVERB_MODEL = "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt"
 
 # Run on the raw vocals to split male/female; keep both stems.
@@ -176,6 +175,9 @@ def run_separation(
     model_cache: str,
     stem_cache: str,
 ) -> SeparationResult:
+    requested = options.output_labels
+    if not requested:
+        return {}
     use_cache = not options.no_cache
     results: SeparationResult = {}
     paths: dict[str, Path] = {}
@@ -189,39 +191,59 @@ def run_separation(
                 results[label] = result
                 paths[label] = path
 
-    def dereverb(label: str) -> None:
-        if not options.dereverb:
-            return
-        stem = Stem(DEREVERB_MODEL, [StemOutput(f"{label}-dry", "noreverb")])
-        run([stem], paths[label], suffix=f"-{label}")
+    mixes = [
+        (label, vocal)
+        for selected, label, vocal in (
+            (options.mix_female_instruments, "female-instruments", "vocals-female"),
+            (options.mix_male_instruments, "male-instruments", "vocals-male"),
+            (options.mix_backing_instruments, "backing-instruments", "backing"),
+        )
+        if selected
+    ]
+    needs_vocals = bool(
+        options.extract_vocals
+        or options.decrowd_vocals
+        or options.genders
+        or options.lead_backing
+        or mixes
+        or "vocals-dry" in requested
+    )
+    if needs_vocals:
+        run([VOCALS_STEM], input_path)
+        vocal_source = "vocals"
+        if options.decrowd_vocals:
+            run(DECROWD_VOCALS_STEMS, paths[vocal_source], suffix="-vocals")
+            vocal_source = "vocals-decrowded"
+        if (
+            options.genders
+            or options.mix_female_instruments
+            or options.mix_male_instruments
+        ):
+            run(GENDER_STEMS, paths[vocal_source])
+        if options.lead_backing or options.mix_backing_instruments:
+            run(LEAD_BACKING_STEMS, paths[vocal_source])
+        dry_sources = [
+            label.removesuffix("-dry") for label in requested if label.endswith("-dry")
+        ]
+        if options.dereverb:
+            dry_sources.extend(vocal for _, vocal in mixes)
+        for label in dict.fromkeys(dry_sources):
+            stem = Stem(DEREVERB_MODEL, [StemOutput(f"{label}-dry", "noreverb")])
+            run([stem], paths[label], suffix=f"-{label}")
 
-    # Each vocal-ish stem is immediately followed by its dereverbed counterpart
-    # (if selected), so wet/dry pairs stay adjacent in the result — rather than
-    # running all dereverb passes as one batch at the end.
-    run([VOCALS_STEM], input_path)
-    dereverb("vocals")
+    if options.extract_instruments or options.decrowd or options.drums or mixes:
+        run([INSTRUMENTS_STEM], input_path)
+        if options.decrowd:
+            run(DECROWD_STEMS, paths["instruments"], suffix="-instruments")
+        if options.drums:
+            run([DRUM_STEMS], paths["instruments"])
 
-    # Downstream vocal splits run on the decrowded vocals when decrowding is on,
-    # so male/female and lead/backing are derived from the cleaner track.
-    vocal_source = "vocals"
-    if options.decrowd_vocals:
-        run(DECROWD_VOCALS_STEMS, paths["vocals"])
-        dereverb("vocals-decrowded")
-        vocal_source = "vocals-decrowded"
-
-    if options.genders:
-        run(GENDER_STEMS, paths[vocal_source])
-        dereverb("vocals-male")
-        dereverb("vocals-female")
-    if options.lead_backing:
-        run(LEAD_BACKING_STEMS, paths[vocal_source])
-        dereverb("lead")
-        dereverb("backing")
-
-    run([INSTRUMENTS_STEM], input_path)
-    if options.decrowd:
-        run(DECROWD_STEMS, paths["instruments"])
-    if options.drums:
-        run([DRUM_STEMS], paths["instruments"])
-
-    return results
+    for label, vocal in mixes:
+        instrumental = "instruments-decrowded" if options.decrowd else "instruments"
+        if options.dereverb:
+            vocal += "-dry"
+        output = tmp_dir / f"{label}.mp3"
+        start = time.monotonic()
+        mix_audio(paths[vocal], paths[instrumental], output)
+        results[label] = StemResult(output.read_bytes(), time.monotonic() - start)
+    return {label: results[label] for label in requested}

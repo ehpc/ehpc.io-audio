@@ -1,4 +1,10 @@
+import json
+import sqlite3
+
+import pytest
 from fastapi.testclient import TestClient
+
+from backend import config, db
 
 
 def test_health(client: TestClient) -> None:
@@ -11,6 +17,12 @@ def test_submit_url_queues_job(client: TestClient) -> None:
     r = client.post("/api/jobs", data={"url": "https://example.com/x"})
     assert r.status_code == 200
     assert r.json() == {"id": 1, "status": "queued", "position": 1}
+    options = client.get("/api/jobs/1").json()["options"]
+    assert options["extract_vocals"] is False
+    assert options["extract_instruments"] is False
+    assert options["mix_female_instruments"] is False
+    assert options["mix_male_instruments"] is False
+    assert options["mix_backing_instruments"] is False
 
 
 def test_submit_requires_exactly_one_source(client: TestClient) -> None:
@@ -108,3 +120,87 @@ def test_status_aggregates_all_sessions(
         "results_bytes",
         "db_bytes",
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pitch_semitones", "nan"),
+        ("pitch_semitones", "inf"),
+        ("tempo_percent", "nan"),
+        ("tempo_percent", "inf"),
+        ("tempo_percent", "0"),
+        ("tempo_percent", "-10"),
+    ],
+)
+def test_invalid_audio_settings_do_not_queue_jobs(
+    client: TestClient, field: str, value: str
+) -> None:
+    response = client.post(
+        "/api/jobs", data={"url": "https://example.com/song", field: value}
+    )
+    assert response.status_code == 422
+    assert client.get("/api/jobs").json() == []
+
+
+def test_old_jobs_survive_key_metadata_migration(client: TestClient) -> None:
+    job_id = client.post(
+        "/api/jobs", files={"file": ("old.mp3", b"original", "audio/mpeg")}
+    ).json()["id"]
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute("ALTER TABLE jobs DROP COLUMN original_key")
+        conn.execute(
+            "UPDATE jobs SET status = 'done', options_json = '{}', "
+            "result_manifest_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "label": "vocals",
+                            "filename": "vocals.mp3",
+                            "size_bytes": 3,
+                            "duration_s": 1.0,
+                        }
+                    ]
+                ),
+                job_id,
+            ),
+        )
+    directory = config.RESULTS_DIR / str(job_id)
+    directory.mkdir(parents=True)
+    (directory / "vocals.mp3").write_bytes(b"old")
+
+    db.init_db()
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["original_key"] is None
+    assert job["output_key"] is None
+    assert job["manifest"][0]["download_name"] == "old - vocals.mp3"
+    assert client.get(f"/api/jobs/{job_id}/results/vocals").content == b"old"
+    assert job["options"]["extract_vocals"] is True
+    assert job["options"]["extract_instruments"] is True
+    retried_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
+    retried = client.get(f"/api/jobs/{retried_id}").json()
+    assert retried["options"]["extract_vocals"] is True
+    assert retried["options"]["extract_instruments"] is True
+
+
+def test_explicit_outputs_survive_submission_and_retry(client: TestClient) -> None:
+    selected = {
+        "extract_vocals": True,
+        "extract_instruments": False,
+        "mix_female_instruments": True,
+        "mix_male_instruments": True,
+        "mix_backing_instruments": True,
+    }
+    job_id = client.post(
+        "/api/jobs",
+        data={
+            "url": "https://example.com/song",
+            **{name: str(value).lower() for name, value in selected.items()},
+        },
+    ).json()["id"]
+    db.init_db()
+    options = client.get(f"/api/jobs/{job_id}").json()["options"]
+    assert {name: options[name] for name in selected} == selected
+    retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
+    assert client.get(f"/api/jobs/{retry_id}").json()["options"] == options

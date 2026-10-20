@@ -1,6 +1,8 @@
 import { createSignal, For, Show, type Component } from "solid-js";
 import type { JobDTO, JobStatus } from "~/api";
-import { downloadName, jobLabel, originalUrl, resultUrl, retryJob } from "~/api";
+import { jobLabel, originalUrl, resultUrl, retryJob } from "~/api";
+import { displayOutputLabel } from "~/lib/expectedStems";
+import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
 
@@ -46,6 +48,8 @@ const HistoryView: Component<{
         source_type: job.source_type,
         source_value: job.source_value,
         title: job.title,
+        original_key: null,
+        output_key: null,
         options: job.options,
         manifest: null,
         error_message: null,
@@ -63,7 +67,7 @@ const HistoryView: Component<{
 
       <Show
         when={props.jobs.length > 0}
-        fallback={<p class="text-sm text-muted-foreground">No separations yet.</p>}
+        fallback={<p class="text-sm text-muted-foreground">No jobs yet.</p>}
       >
         <div class="space-y-2">
           <For each={props.jobs}>
@@ -96,8 +100,9 @@ const HistoryView: Component<{
                       {job.status}
                     </span>
                   </div>
+                  <AudioMetadata job={job} />
 
-                  <Show when={job.status === "done" && job.manifest?.length}>
+                  <Show when={job.status === "done" && (job.has_original || (job.manifest?.length ?? 0) > 0)}>
                     <div class="flex flex-wrap gap-1.5 border-t border-border pt-2">
                       <Show when={job.has_original}>
                         <a
@@ -106,18 +111,19 @@ const HistoryView: Component<{
                           onClick={(event) => event.stopPropagation()}
                           class="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-foreground hover:bg-accent hover:underline"
                         >
-                          original
+                          {displayOutputLabel("original", job.options)}
                         </a>
                       </Show>
                       <For each={job.manifest ?? []}>
                         {(stem) => (
                           <a
                             href={resultUrl(job.id, stem.label)}
-                            download={downloadName(job, stem.label)}
+                            download={stem.download_name}
+                            title={stem.download_name}
                             onClick={(event) => event.stopPropagation()}
                             class="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-foreground hover:bg-accent hover:underline"
                           >
-                            {stem.label}
+                            {displayOutputLabel(stem.label, job.options)}
                           </a>
                         )}
                       </For>

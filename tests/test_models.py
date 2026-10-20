@@ -1,23 +1,34 @@
 from backend.models import download_filename, original_filename
+from separator.options import SeparationOptions
 
 
 def test_download_filename_incorporates_title() -> None:
     assert (
-        download_filename("Man On The Silver Mountain", 3, "vocals")
+        download_filename(
+            "Man On The Silver Mountain", 3, "vocals", SeparationOptions()
+        )
         == "Man On The Silver Mountain - vocals.mp3"
     )
 
 
 def test_download_filename_strips_upload_extension() -> None:
-    assert download_filename("song.mp3", 3, "instruments") == "song - instruments.mp3"
+    assert (
+        download_filename("song.mp3", 3, "instruments", SeparationOptions())
+        == "song - instruments.mp3"
+    )
 
 
 def test_download_filename_sanitizes_unsafe_characters() -> None:
-    assert download_filename('a/b:c*?"<>|', 3, "vocals") == "abc - vocals.mp3"
+    assert (
+        download_filename('a/b:c*?"<>|', 3, "vocals", SeparationOptions())
+        == "abc - vocals.mp3"
+    )
 
 
 def test_download_filename_falls_back_to_job_id_when_no_title() -> None:
-    assert download_filename(None, 42, "vocals") == "42 - vocals.mp3"
+    assert (
+        download_filename(None, 42, "vocals", SeparationOptions()) == "42 - vocals.mp3"
+    )
 
 
 def test_original_filename_keeps_real_extension() -> None:

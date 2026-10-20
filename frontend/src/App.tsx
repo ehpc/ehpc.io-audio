@@ -45,7 +45,7 @@ const App: Component = () => {
       <header class="space-y-1">
         <h1 class="text-2xl font-semibold tracking-tight">Vocal Tools</h1>
         <p class="text-sm text-muted-foreground">
-          Submit a track by URL or upload and pull the stems apart.
+          Submit a track by URL or upload, then download the song or choose audio outputs.
         </p>
       </header>
 
