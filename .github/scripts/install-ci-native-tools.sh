@@ -4,7 +4,7 @@ set -euo pipefail
 # Build against this host's FFmpeg ABI; the shared script owns the verified
 # upstream source pins used by both CI and the production Docker image.
 packages=(
-  build-essential cmake pkg-config curl ca-certificates libfftw3-dev
+  build-essential cmake pkg-config patch curl ca-certificates libfftw3-dev
   libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
   ffmpeg rubberband-cli libfftw3-double3
 )

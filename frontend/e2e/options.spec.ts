@@ -156,10 +156,7 @@ for (const item of cases) {
     const analysis = await analysisResponse;
     expect(analysis.status()).toBe(200);
     const originalKey = (await analysis.json()).original_key as string;
-    expect(originalKey).toMatch(/^[A-G](?:b|#)? (major|minor)$/);
-    if (fixtureName === 'tone-fixture') expect(originalKey).toBe('C major');
-    // Global key estimation of changing chords plus speech is heuristic; its
-    // actual preview must agree with the UI, persisted original, and transpose.
+    expect(originalKey).toBe('C major');
     await expect(page.getByText(`Original key: ${originalKey}`, { exact: true })).toBeVisible();
     await configure(page, options);
     await expect(page.getByText(`Target key: ${transposeKey(originalKey, options.pitch_semitones)}`, { exact: true })).toBeVisible();

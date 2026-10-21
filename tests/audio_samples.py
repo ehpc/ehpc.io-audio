@@ -14,7 +14,9 @@ from itertools import pairwise
 from pathlib import Path
 
 
-def tone_wav(frequencies: tuple[float, ...], duration_s: float = 4.0) -> bytes:
+def tone_wav(
+    frequencies: tuple[float, ...], duration_s: float = 4.0, *, channels: int = 1
+) -> bytes:
     sample_rate = 22050
     frames = bytearray()
     for index in range(round(duration_s * sample_rate)):
@@ -23,10 +25,10 @@ def tone_wav(frequencies: tuple[float, ...], duration_s: float = 4.0) -> bytes:
             for frequency in frequencies
         )
         sample = round(24000 * value / max(1, len(frequencies)))
-        frames.extend(struct.pack("<h", sample))
+        frames.extend(struct.pack("<h", sample) * channels)
     stream = io.BytesIO()
     with wave.open(stream, "wb") as audio:
-        audio.setnchannels(1)
+        audio.setnchannels(channels)
         audio.setsampwidth(2)
         audio.setframerate(sample_rate)
         audio.writeframes(frames)

@@ -299,10 +299,18 @@ The browser matrix contains **27 cases**, not just one “everything on” job:
   errors, retry after source recovery, reload/history, and session isolation are
   covered through browser interactions. The dedicated sustained C/E/G triad
   checks known-key accuracy (`C major`) independently of the complex voiced
-  song. Global key estimates for changing harmony and speech can vary between
-  native implementations; those cases check the real preview against the UI,
-  persisted original key, and mathematical target key/notes instead of pinning
-  a heuristic classifier result.
+  song. Both qualified fixtures assert `C major`, and their actual native preview
+  must also agree with the UI, persisted original key, and mathematical target
+  key/notes after transposition.
+
+The hosted stereo `C major` → `G major` failure was **not musical ambiguity**:
+the upstream keyfinder-cli compatibility path for FFmpeg 6 and older supplied
+the channel-layout **bitmask** (`3` for stereo) where libkeyfinder requires a
+channel **count** (`2`). That misinterprets sample timing by 3/2 and shifts C to G.
+The native regression checks known C-major audio in both mono/stereo and
+WAV/MP3, so an octave-equivalent mono result cannot conceal this decoder bug.
+The shared native build applies the exact decoder channel-count correction
+after verifying the upstream source checksum, for both CI and the Docker image.
 
 Every successful processing case downloads its exact manifest, checks public
 filenames/modification suffixes and absent hidden outputs, decodes every audio

@@ -135,10 +135,35 @@ def test_real_silence_has_no_key() -> None:
     assert detect_key(tone_wav(()), "../../--unsafe.wav") is None
 
 
-@pytest.mark.skipif(not _KEYFINDER, reason="native keyfinder-cli required")
-def test_real_major_chord_key() -> None:
-    chord = tone_wav((261.6256, 329.6276, 391.9954), duration_s=8)
-    assert detect_key(chord, "original.wav") == "C major"
+@pytest.mark.skipif(
+    not (_KEYFINDER and _FFMPEG), reason="native keyfinder-cli and ffmpeg required"
+)
+@pytest.mark.parametrize("channels", [1, 2])
+@pytest.mark.parametrize("audio_format", ["wav", "mp3"])
+def test_real_major_chord_key(channels: int, audio_format: str) -> None:
+    # Both container/sample formats must preserve channel count and musical key.
+    # The old FFmpeg<=6 CLI passed the stereo layout bitmask (3) as a channel
+    # count (2), shifting C to G; a mono-only test missed its octave-equivalent bug.
+    chord = tone_wav((261.6256, 329.6276, 391.9954), duration_s=8, channels=channels)
+    encoded = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ar",
+            "44100",
+            "-f",
+            audio_format,
+            "pipe:1",
+        ],
+        input=chord,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert detect_key(encoded, f"original.{audio_format}") == "C major"
 
 
 @pytest.mark.skipif(not _KEYFINDER, reason="native keyfinder-cli required")

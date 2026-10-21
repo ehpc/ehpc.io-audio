@@ -12,7 +12,7 @@ FROM python:3.15-slim-trixie AS audio-build
 # Debian does not package libkeyfinder/keyfinder-cli; the shared build script
 # pins and checksum-verifies upstream source archives for CI and image builds.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake pkg-config curl ca-certificates libfftw3-dev \
+    build-essential cmake pkg-config patch curl ca-certificates libfftw3-dev \
     libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY .github/scripts/build-keyfinder.sh /usr/local/bin/build-keyfinder
