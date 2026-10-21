@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { musicalFixture, vocalFixture } from './fixture.mjs';
+import { tonalFixture, vocalFixture } from './fixture.mjs';
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
@@ -19,7 +19,7 @@ const build = spawnSync('npm', ['run', 'build'], { cwd: frontend, stdio: 'inheri
 if (build.status !== 0) process.exit(build.status ?? 1);
 const fixtureSeed = randomBytes(4).readUInt32LE();
 const fixture = await vocalFixture(fixtureSeed);
-const toneFixture = musicalFixture(fixtureSeed);
+const toneFixture = tonalFixture();
 const temporary = await mkdtemp(resolve(tmpdir(), 'vocals-browser-e2e-'));
 await writeFile(resolve(temporary, 'musical-fixture.wav'), fixture);
 await writeFile(resolve(temporary, 'tone-fixture.wav'), toneFixture);

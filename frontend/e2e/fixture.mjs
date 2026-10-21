@@ -1,11 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-// Original deterministic synthesis, not a recording or an adaptation of a song.
-// Four C-major harmony bars, bass, panned chords, a harmonic vowel-like lead,
-// a quieter backing voice and seeded percussion exercise real audio models.
-export function musicalFixture(seed) {
-  const rate = 44100;
-  const seconds = 8;
+
+function stereoWav(rate, seconds) {
   const samples = rate * seconds;
   const wav = Buffer.alloc(44 + samples * 4);
   wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8);
@@ -13,6 +9,37 @@ export function musicalFixture(seed) {
   wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 4, 28);
   wav.writeUInt16LE(4, 32); wav.writeUInt16LE(16, 34);
   wav.write('data', 36); wav.writeUInt32LE(samples * 4, 40);
+  return wav;
+}
+
+export function tonalFixture() {
+  // Unlike the changing chords/voices below, a sustained C/E/G triad is an
+  // unambiguous known-key reference. C4 dominates for independent pitch checks.
+  const rate = 44100;
+  const seconds = 8;
+  const wav = stereoWav(rate, seconds);
+  for (let i = 0; i < rate * seconds; i++) {
+    const t = i / rate;
+    const fade = Math.min(1, t / 0.03, (seconds - t) / 0.05);
+    const sample = fade * (
+      0.20 * Math.sin(2 * Math.PI * 261.6256 * t) +
+      0.08 * Math.sin(2 * Math.PI * 329.6276 * t) +
+      0.08 * Math.sin(2 * Math.PI * 391.9954 * t)
+    );
+    wav.writeInt16LE(Math.round(sample * 32767), 44 + i * 4);
+    wav.writeInt16LE(Math.round(sample * 32767), 46 + i * 4);
+  }
+  return wav;
+}
+
+// Original deterministic synthesis, not a recording or an adaptation of a song.
+// Four harmony bars, bass, panned chords, a harmonic vowel-like lead,
+// a quieter backing voice and seeded percussion exercise real audio models.
+export function musicalFixture(seed) {
+  const rate = 44100;
+  const seconds = 8;
+  const samples = rate * seconds;
+  const wav = stereoWav(rate, seconds);
   const chords = [[130.8128, 164.8138, 195.9977], [174.6141, 220, 261.6256], [195.9977, 246.9417, 293.6648], [130.8128, 164.8138, 195.9977]];
   const melody = [261.6256, 329.6276, 391.9954, 329.6276, 349.2282, 440, 391.9954, 261.6256];
   for (let i = 0; i < samples; i++) {

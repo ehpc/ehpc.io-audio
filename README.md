@@ -297,7 +297,12 @@ The browser matrix contains **27 cases**, not just one “everything on” job:
 - File and real HTTP URL inputs exercise key preview and yt-dlp downloads;
   spinner/progress, target keys/notes, stale-key clearing, invalid audio/source
   errors, retry after source recovery, reload/history, and session isolation are
-  covered through browser interactions.
+  covered through browser interactions. The dedicated sustained C/E/G triad
+  checks known-key accuracy (`C major`) independently of the complex voiced
+  song. Global key estimates for changing harmony and speech can vary between
+  native implementations; those cases check the real preview against the UI,
+  persisted original key, and mathematical target key/notes instead of pinning
+  a heuristic classifier result.
 
 Every successful processing case downloads its exact manifest, checks public
 filenames/modification suffixes and absent hidden outputs, decodes every audio
@@ -310,7 +315,9 @@ Artifacts are under `frontend/test-results/`: per-case `proof.json` with options
 manifest, queue/Modal evidence, hashes and audio measurements; downloaded audio;
 completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
-`frontend/playwright-report/`. There are no automatic test retries.
+`frontend/playwright-report/`. There are no automatic test retries. CI additionally
+emits GitHub annotations for failed assertions and stops on the first failure;
+a successful gate still executes all 27 cases with no skipped cases.
 
 Both local domain suites also exhaust all **4096 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local
@@ -342,7 +349,9 @@ fixture preparation, not an endorsement by the readers. The generated backing
 uses a run-unique percussion seed (recorded in proof JSON) so concurrent test
 deployments do not race on the same stem-cache directory. Within one run the
 input stays byte-identical for authentic cache-hit/bypass checks. Numeric
-pitch/tempo cases use the separate, entirely generated tonal fixture. No user
+pitch/tempo cases use a separate, entirely generated sustained C-major triad
+with a dominant known C4 fundamental. It never reaches Modal, so it does not
+need a run-unique GPU-cache key. No user
 recordings are included or fetched.
 
 

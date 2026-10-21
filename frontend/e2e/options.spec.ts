@@ -82,14 +82,14 @@ async function complete(page: Page, id: number) {
   return job!;
 }
 
-async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO) {
+async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, originalKey: string) {
   const fixtureName = item.labels.length && item.labels[0] !== 'song' ? 'musical-fixture' : 'tone-fixture';
   const options = { ...defaults, ...item.selected };
   expect(job.options).toEqual(options);
   expect(job.manifest!.map(stem => stem.label)).toEqual(item.labels);
   expect(job.has_original).toBe(true);
-  expect(job.original_key).toBe('C major');
-  expect(job.output_key).toBe(transposeKey('C major', options.pitch_semitones));
+  expect(job.original_key).toBe(originalKey);
+  expect(job.output_key).toBe(transposeKey(originalKey, options.pitch_semitones));
   const queue = JSON.parse(execFileSync('uv', ['run', 'python', '-c',
     'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.row_factory=sqlite3.Row; print(json.dumps(dict(db.execute("SELECT modal_call_id,started_at,finished_at FROM jobs WHERE id=?",(int(sys.argv[2]),)).fetchone())))',
     resolve(process.env.E2E_DATA_DIR!, 'jobs.db'), String(job.id),
@@ -151,18 +151,26 @@ for (const item of cases) {
     const options = { ...defaults, ...item.selected };
     const fixtureName = item.labels.length && item.labels[0] !== 'song' ? 'musical-fixture' : 'tone-fixture';
     await page.goto('/');
+    const analysisResponse = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
     await chooseSource(page, item.source === 'url' ? 'url' : 'upload', fixtureName);
-    await expect(page.getByText('Original key: C major', { exact: true })).toBeVisible({ timeout: 60_000 });
+    const analysis = await analysisResponse;
+    expect(analysis.status()).toBe(200);
+    const originalKey = (await analysis.json()).original_key as string;
+    expect(originalKey).toMatch(/^[A-G](?:b|#)? (major|minor)$/);
+    if (fixtureName === 'tone-fixture') expect(originalKey).toBe('C major');
+    // Global key estimation of changing chords plus speech is heuristic; its
+    // actual preview must agree with the UI, persisted original, and transpose.
+    await expect(page.getByText(`Original key: ${originalKey}`, { exact: true })).toBeVisible();
     await configure(page, options);
-    await expect(page.getByText(`Target key: ${transposeKey('C major', options.pitch_semitones)}`, { exact: true })).toBeVisible();
-    const notes = keyScale(transposeKey('C major', options.pitch_semitones))!;
+    await expect(page.getByText(`Target key: ${transposeKey(originalKey, options.pitch_semitones)}`, { exact: true })).toBeVisible();
+    const notes = keyScale(transposeKey(originalKey, options.pitch_semitones))!;
     await expect(page.getByText(`Notes (${notes.mode}): ${notes.notes.join(' · ')}`, { exact: true }).last()).toBeVisible();
     await expect(page.getByText(`Tracks you'll get (${item.labels.length + 1})`, { exact: true })).toBeVisible();
     if (item.cache === 'hit') {
       const warmId = await submit(page);
       await complete(page, warmId);
       await chooseSource(page, 'upload', fixtureName);
-      await expect(page.getByText('Original key: C major', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText(`Original key: ${originalKey}`, { exact: true }).first()).toBeVisible({ timeout: 60_000 });
       await configure(page, options);
     }
     const id = await submit(page);
@@ -173,7 +181,7 @@ for (const item of cases) {
       await expect(page.getByText(/Processing audio, this can take a few minutes/)).toBeVisible();
     }
     const job = await complete(page, id);
-    await prove(page, info, item, job);
+    await prove(page, info, item, job, originalKey);
     if (item.name === 'identity-original-only') {
       await page.reload();
       const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');

@@ -1,15 +1,23 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, type ReporterDescription } from '@playwright/test';
 
 if (!process.env.E2E_BASE_URL) throw new Error('Use npm run test:e2e so the real isolated backend is launched.');
+
+const reporters: ReporterDescription[] = [
+  ['list'],
+  ['html', { open: 'never' }],
+  ['json', { outputFile: 'test-results/summary.json' }],
+];
+if (process.env.CI) reporters.push(['github']);
 
 export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.spec.ts',
   workers: 1,
   retries: 0,
+  maxFailures: process.env.CI ? 1 : 0,
   timeout: 25 * 60 * 1000,
   expect: { timeout: 15_000 },
-  reporter: [['list'], ['html', { open: 'never' }], ['json', { outputFile: 'test-results/summary.json' }]],
+  reporter: reporters,
   use: {
     baseURL: process.env.E2E_BASE_URL,
     browserName: 'chromium',
