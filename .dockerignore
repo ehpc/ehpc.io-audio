@@ -12,3 +12,5 @@ result
 result-*
 modal-output
 input
+frontend/test-results
+frontend/playwright-report

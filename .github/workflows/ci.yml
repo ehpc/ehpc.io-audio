@@ -5,21 +5,30 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: Lint & test backend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install native audio tools
+        run: .github/scripts/install-ci-native-tools.sh
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install dependencies
-        # uv downloads the pinned Python (>=3.13) itself; no setup-python needed.
+        # Use the latest stable minor in .python-version (also used locally).
         run: uv sync --frozen
+      - name: Check native tools
+        run: |
+          for tool in ffmpeg ffprobe rubberband keyfinder-cli; do
+            command -v "$tool"
+          done
       - name: Check formatting (ruff)
         run: uv run ruff format --check .
       - name: Lint (ruff)
@@ -54,11 +63,9 @@ jobs:
   image:
     name: Build & push image to GHCR
     runs-on: ubuntu-latest
-    # Waits on deploy-modal, not just the unit tests: :prod is the tag the
-    # cluster pulls, so it must not be published until a real separation has
-    # run against the function this commit deployed. Costs the smoke test's
-    # duration in wall clock — a cold separation is minutes, not seconds.
-    needs: [backend, frontend, deploy-modal]
+    # The :prod image is published only after real GPU smoke and browser E2E
+    # pass against this commit's isolated Modal app, and production promotion.
+    needs: [backend, frontend, deploy-modal, deploy-production]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -77,26 +84,77 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
 
   deploy-modal:
-    name: Deploy & smoke-test Modal function
+    name: Deploy & test isolated Modal app
     runs-on: ubuntu-latest
     needs: [backend, frontend]
-    # Runs on PRs too, so a change can't go green without a real separation
-    # having run on the GPU. Requires secrets MODAL_TOKEN_ID /
-    # MODAL_TOKEN_SECRET; the job fails if unset (including on fork PRs, which
-    # GitHub denies secrets — those need a maintainer to run the smoke test).
+    # Deploy a unique non-production app on every push and PR. Secrets are
+    # required; unset/denied credentials fail visibly rather than skipping.
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      # A PR deploys under a throwaway app name and stops it afterwards, so
-      # testing unmerged code never overwrites the app the production backend
-      # talks to. backend/config.py reads MODAL_APP_NAME, so the smoke tests
-      # look up whichever app this run deployed.
-      MODAL_APP_NAME: ${{ github.event_name == 'pull_request' && format('audio-separator-pr-{0}', github.event.number) || 'audio-separator' }}
-    # Two runs for the same ref would deploy the same app name and stop it out
-    # from under each other; let a superseded run be cancelled instead.
-    concurrency:
-      group: modal-${{ github.ref }}
-      cancel-in-progress: true
+      MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      E2E_MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native audio tools
+        run: .github/scripts/install-ci-native-tools.sh
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Python dependencies
+        # Client Python follows .python-version; the remote GPU image is separate.
+        run: uv sync --frozen
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+      - name: Install Chromium and system dependencies
+        run: npx --prefix frontend playwright install --with-deps chromium
+      - name: Check native tools and test app isolation
+        run: |
+          for tool in ffmpeg ffprobe rubberband keyfinder-cli; do
+            command -v "$tool"
+          done
+          test -n "$E2E_MODAL_APP_NAME"
+          test "$E2E_MODAL_APP_NAME" != audio-separator
+          test "$MODAL_APP_NAME" = "$E2E_MODAL_APP_NAME"
+      - name: Deploy isolated Modal app
+        run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME"
+      - name: GPU smoke test (spawns deployed function)
+        run: uv run pytest -m smoke
+      - name: Run full-stack browser E2E
+        run: npm --prefix frontend run test:e2e
+      - name: Upload E2E failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stop isolated Modal app
+        # The app may not exist if deploy failed; this cleanup must not mask the
+        # original failure, and the unique app is never the production app.
+        if: always()
+        run: uv run modal app stop -y "$MODAL_APP_NAME" || true
+
+  deploy-production:
+    name: Promote tested Modal app to production
+    runs-on: ubuntu-latest
+    needs: [deploy-modal]
+    if: github.ref == 'refs/heads/main'
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_APP_NAME: audio-separator
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -104,15 +162,6 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install dependencies
-        # uv downloads the pinned Python (>=3.13) itself; no setup-python needed.
         run: uv sync --frozen
-      - name: Deploy to Modal
+      - name: Deploy production Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME"
-      - name: Smoke test (spawns the deployed function)
-        run: uv run pytest -m smoke
-      - name: Stop the PR's app
-        # Always, so a failed smoke test still cleans up; `|| true` because the
-        # app won't exist if the deploy step is what failed, and this step must
-        # not mask that.
-        if: always() && github.event_name == 'pull_request'
-        run: uv run modal app stop -y "$MODAL_APP_NAME" || true

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SeparationOptions } from "~/api";
+import type { BooleanOptionKey, SeparationOptions } from "~/api";
 import { displayOutputLabel, expectedStems } from "./expectedStems";
 
 const NONE: SeparationOptions = {
@@ -81,6 +81,38 @@ describe("expectedStems", () => {
     expect(expectedStems({ ...NONE, drums: true })).toEqual(["drums", "bass", "other-instruments"]);
     expect(expectedStems({ ...NONE, decrowd: true })).toEqual(["instruments-decrowded"]);
     expect(expectedStems({ ...NONE, tempo_percent: 80, no_cache: true })).toEqual(["song"]);
+  });
+
+  it("keeps the exact public-output contract for all 4096 boolean selections", () => {
+    const flags = Object.keys(NONE).filter((key) => typeof NONE[key as keyof SeparationOptions] === "boolean") as BooleanOptionKey[];
+    const outputs: [string, BooleanOptionKey, boolean][] = [
+      ["vocals", "extract_vocals", true],
+      ["vocals-decrowded", "decrowd_vocals", true],
+      ["vocals-male", "genders", true],
+      ["vocals-female", "genders", true],
+      ["lead", "lead_backing", true],
+      ["backing", "lead_backing", true],
+      ["instruments", "extract_instruments", false],
+      ["instruments-decrowded", "decrowd", false],
+      ["drums", "drums", false],
+      ["bass", "drums", false],
+      ["other-instruments", "drums", false],
+      ["female-instruments", "mix_female_instruments", false],
+      ["male-instruments", "mix_male_instruments", false],
+      ["backing-instruments", "mix_backing_instruments", false],
+    ];
+    expect(flags).toHaveLength(12);
+    for (let mask = 0; mask < 2 ** flags.length; mask++) {
+      const options = { ...NONE };
+      flags.forEach((flag, index) => { options[flag] = Boolean(mask & (1 << index)); });
+      const expected = outputs.flatMap(([label, flag, vocal]) =>
+        options[flag] ? (vocal && options.dereverb ? [label, `${label}-dry`] : [label]) : [],
+      );
+      if (options.dereverb && expected.length === 0) expected.push("vocals-dry");
+      expect(expectedStems(options), `selection ${mask}`).toEqual(expected);
+      expect(expectedStems({ ...options, pitch_semitones: -2.5, tempo_percent: 80 }), `transformed selection ${mask}`)
+        .toEqual(expected.length ? expected : ["song"]);
+    }
   });
 });
 

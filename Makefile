@@ -6,7 +6,7 @@ SHELL := $(shell which bash)
 UV_PROJECT_ENVIRONMENT ?= $(HOME)/.cache/vocals-tools/venv
 export UV_PROJECT_ENVIRONMENT
 
-.PHONY: init lint test test-frontend smoke dev deploy-modal update-yt-dlp dropbox-ignore
+.PHONY: init lint test test-frontend test-e2e smoke dev deploy-modal update-yt-dlp dropbox-ignore
 
 init:
 	uv sync
@@ -33,6 +33,11 @@ test:
 
 test-frontend:
 	cd frontend && npm run test
+
+test-e2e:
+	@test -n "$${E2E_MODAL_APP_NAME:-}" || { echo "Set E2E_MODAL_APP_NAME to an isolated Modal app." >&2; exit 2; }
+	@test "$${E2E_MODAL_APP_NAME}" != "audio-separator" || { echo "Refusing to run E2E against the production Modal app." >&2; exit 2; }
+	npm --prefix frontend run test:e2e
 
 smoke:
 	uv run pytest -m smoke

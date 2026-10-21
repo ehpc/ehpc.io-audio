@@ -4,10 +4,14 @@ Needs Modal auth and a prior `make deploy-modal`; CI runs them right after
 deploying. They cover the far side of the boundary that tests/test_e2e.py fakes.
 """
 
+import json
 import math
 import struct
+import subprocess
+import tempfile
 import wave
 from io import BytesIO
+from pathlib import Path
 
 import modal
 import pytest
@@ -25,39 +29,97 @@ pytestmark = [
     pytest.mark.timeout(MODAL_FUNCTION_TIMEOUT_S + 300),
 ]
 
-_SAMPLE_RATE = 44_100
-_TONE_SECONDS = 5
 
+@pytest.fixture(scope="module")
+def voiced_wav() -> bytes:
+    """Use the same qualified, licensed multi-voice music as browser E2E.
 
-def _tone_wav() -> bytes:
-    """A short stereo tone, built with the stdlib so this needs no ffmpeg locally.
-
-    Two sines (a low 110 Hz and a higher 440 Hz) give the models something with
-    structure to pull apart. The point is that a real separation runs and returns
-    playable stems — not that the split is musically meaningful.
+    A tone is not sufficient: models legitimately discard absent vocal parts,
+    so a sine-only test cannot exercise gender, backing, or dry-vocal outputs.
+    The shared generator verifies pinned CC-BY source checksums and mixes its
+    own accompaniment; Node and FFmpeg are also needed by the browser suite.
     """
-    frames = bytearray()
-    for i in range(_SAMPLE_RATE * _TONE_SECONDS):
-        t = i / _SAMPLE_RATE
-        frames += struct.pack(
-            "<hh",
-            int(12_000 * math.sin(2 * math.pi * 110 * t)),
-            int(12_000 * math.sin(2 * math.pi * 440 * t)),
-        )
-    buffer = BytesIO()
-    with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(2)
-        wav.setsampwidth(2)
-        wav.setframerate(_SAMPLE_RATE)
-        wav.writeframes(frames)
-    return buffer.getvalue()
+    return subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            "import { randomBytes } from 'node:crypto';"
+            "import { vocalFixture } from './frontend/e2e/fixture.mjs';"
+            "process.stdout.write(await vocalFixture(randomBytes(4).readUInt32LE()));",
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        check=True,
+        capture_output=True,
+        timeout=180,
+    ).stdout
 
 
-def _is_mp3(data: bytes) -> bool:
-    """MP3s start with an ID3 tag or a raw frame sync (eleven set bits)."""
-    return data.startswith(b"ID3") or (
-        len(data) > 1 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0
-    )
+def _decoded_audio_contract(
+    data: bytes, duration: float, channels: int
+) -> dict[str, float | int | str]:
+    """Verify actual decoded audio, not container headers or byte counts."""
+    with tempfile.TemporaryDirectory(prefix="vocals-smoke-") as directory:
+        source = Path(directory) / "stem.mp3"
+        source.write_bytes(data)
+        probe = json.loads(
+            subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=codec_name,channels,sample_rate",
+                    "-of",
+                    "json",
+                    str(source),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )["streams"][0]
+        assert probe["codec_name"] == "mp3"
+        assert probe["channels"] == channels
+        sample_rate = int(probe["sample_rate"])
+        decoded = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-i",
+                str(source),
+                "-map",
+                "0:a:0",
+                "-f",
+                "f32le",
+                "pipe:1",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+    seconds = len(decoded) / 4 / channels / sample_rate
+    assert abs(seconds - duration) < 0.2
+    energy = 0.0
+    peak = 0.0
+    for (sample,) in struct.iter_unpack("<f", decoded):
+        assert math.isfinite(sample)
+        energy += sample * sample
+        peak = max(peak, abs(sample))
+    rms = math.sqrt(energy / (len(decoded) / 4))
+    assert rms > 1e-7, "model output contains no decoded signal"
+    assert peak <= 1.05
+    return {
+        "codec": probe["codec_name"],
+        "channels": channels,
+        "sample_rate": sample_rate,
+        "duration_s": seconds,
+        "rms": rms,
+        "peak": peak,
+    }
 
 
 def test_deployed_container_can_import_separator_package() -> None:
@@ -92,26 +154,27 @@ def test_deployed_container_can_import_separator_package() -> None:
     ids=["explicit-extraction", "mix-only-dry-vocals"],
 )
 def test_deployed_function_separates_audio(
-    options: SeparationOptions, expected: list[str]
+    options: SeparationOptions, expected: list[str], voiced_wav: bytes
 ) -> None:
-    """Runs a real separation on the GPU function — the one thing no other test
-    can check: that the image's audio-separator, its models and the CUDA stack
-    actually produce stems.
+    """Check the deployed image, models, CUDA, and output contract directly.
 
-    `no_cache=True` so a repeat run can't be served from the stem cache, which
-    would quietly stop exercising separation at all (and would pollute the cache
-    volume with a test tone).
+    The browser suite additionally exercises the HTTP/queue/native boundaries.
+    `no_cache=True` ensures this check always executes real model inference
+    without populating the shared raw-stem cache with fixture outputs.
     """
     fn = modal.Function.from_name(config.MODAL_APP_NAME, config.MODAL_FUNCTION_NAME)
     result: dict[str, StemResult] = fn.remote(
-        _tone_wav(),
-        "smoke-tone.wav",
+        voiced_wav,
+        "smoke-voiced-music.wav",
         options,
     )
 
-    assert sorted(result) == sorted(expected)
+    assert list(result) == expected
+    with wave.open(BytesIO(voiced_wav)) as source:
+        duration = source.getnframes() / source.getframerate()
+        channels = source.getnchannels()
     for label, stem in result.items():
-        assert stem.duration_s > 0, f"{label} reports no separation time"
-        assert _is_mp3(stem.data), f"{label} is not an mp3: {stem.data[:4]!r}"
-        # A 5s mp3 is ~80 KB; anything tiny means an empty or truncated stem.
-        assert len(stem.data) > 10_000, f"{label} is only {len(stem.data)} bytes"
+        if label in {"vocals", "instruments"}:
+            assert stem.duration_s > 0, f"{label} bypass must perform fresh inference"
+        media = _decoded_audio_contract(stem.data, duration, channels)
+        print(f"SMOKE_AUDIO {json.dumps({'label': label, **media})}")

@@ -139,7 +139,11 @@ a proprietary application containing them.
 
 ### Prerequisites
 
-- Python 3.13 and [`uv`](https://docs.astral.sh/uv/), for the backend.
+- Python 3.15 (the latest stable minor) and [`uv`](https://docs.astral.sh/uv/),
+  for the backend and local Modal client. `.python-version` selects this minor;
+  `requires-python = ">=3.15,<3.16"` keeps the tested interpreter range explicit
+  instead of silently selecting a future minor before its dependencies support it.
+  CI and Docker use the same Python 3.15 runtime.
 - [Node.js](https://nodejs.org/) 22+ and npm, for the frontend.
 - `ffmpeg` and [`deno`](https://deno.com/), for `yt-dlp`'s audio extraction
   when submitting by URL — `ffmpeg` converts the download, and `deno` lets
@@ -158,13 +162,42 @@ a proprietary application containing them.
 ### Using Nix
 
 If you have [Nix](https://nixos.org/) with flakes enabled, `flake.nix`
-provides a devShell with Python 3.13, `uv`, Node.js, `ffmpeg`, `deno`,
+provides a devShell with stable Python 3.15, `uv`, Node.js, `ffmpeg`, `deno`,
 `rubberband`, and `keyfinder-cli` pinned (Linux and macOS, x86_64 and arm64).
+The nixpkgs pin uses the maintained `nixpkgs-26.05-darwin` branch: it supplies
+Python 3.15.0 on all four platforms, while newer unstable nixpkgs has dropped
+Intel Mac support. Linux uses the same pin, not a separate runtime fallback.
 `ruff` and `ty` come from the dev dependency group, so `make lint` uses `uv run`:
 
 ```sh
 nix develop
 ```
+
+### Python runtime compatibility
+
+The Python 3.15 cutover updates the incompatible native dependency graph, not
+just the interpreter selection. In particular, locked watchfiles 1.1.1 used
+PyO3 0.26, whose safety check rejects Python 3.15. The lock now uses
+[watchfiles 1.3.0](https://pypi.org/project/watchfiles/1.3.0/), which supports
+Python 3.15 using PyO3 0.29 and its upstream stable-ABI wheels. The relevant
+HTTP/event-loop, Pydantic, CBOR, and aiohttp native dependencies also move to
+Python 3.15-compatible releases. `uvicorn[standard]` and real watchfiles-based
+reload remain enabled; no ABI compatibility override is needed.
+[Modal SDK 1.6.2](https://pypi.org/project/modal/1.6.2/) supports the 3.15
+client; the formerly locked 1.4.2 explicitly required Python below 3.15.
+
+The **remote Modal GPU image intentionally stays on Python 3.13** with its
+existing audio-separator/CUDA stack. As of the cutover, published
+[PyTorch](https://pypi.org/project/torch/2.14.1/),
+[torchaudio](https://pypi.org/project/torchaudio/2.11.0/), and
+[ONNX Runtime GPU](https://pypi.org/project/onnxruntime-gpu/1.31.0/) wheels do not
+include CPython 3.15; the configured PyTorch CUDA 12.4 index also has no cp315
+wheels. This is a separate dependency environment, not a backend Python pin.
+Shared `separator/` source therefore retains Python 3.13-compatible syntax
+(the Ruff target), while backend type checking targets 3.15.
+The 3.15 client was exercised against an ephemeral CPU-only Modal function on
+3.13, including a real `SeparationOptions` dataclass roundtrip; no GPU image or
+production deployment was changed.
 
 ### First-time setup
 
@@ -208,9 +241,110 @@ and results are written to `./dev-data/` (gitignored).
 make lint
 ```
 
-Run `make test` for backend, native audio, and end-to-end tests, and
-`make test-frontend` for the frontend suite. Native audio scenarios require
-the tools above and are skipped when those executables are unavailable.
+Run `make test` for backend/domain/native tests (including simulated-boundary
+HTTP tests), and `make test-frontend` for jsdom/Vitest tests. Native audio
+scenarios require the tools above and are skipped when those executables are
+unavailable. These suites are not a substitute for exercising deployed GPU
+inference and real browser downloads.
+
+### Real full-stack verification
+
+`make test-e2e` (equivalently `npm --prefix frontend run test:e2e`) builds the
+production frontend, serves it from a real uvicorn backend, and drives Chromium
+through the UI. It requires Modal credentials and an **explicit isolated**
+`E2E_MODAL_APP_NAME`; the harness refuses the production `audio-separator` name.
+It allocates loopback backend/source-server ports and a temporary `DATA_DIR`,
+serializes GPU jobs, and removes its servers and temporary state afterward.
+It never uses `dev-data/`, request interception, fake Modal calls, or a fake key
+detector.
+
+With the native tools above, Python/Node dependencies installed, and Modal
+credentials configured:
+
+```sh
+npm --prefix frontend ci
+npx --prefix frontend playwright install --with-deps chromium
+export E2E_MODAL_APP_NAME="audio-separator-e2e-$(date +%s)"
+trap 'uv run modal app stop -y "$E2E_MODAL_APP_NAME" || true' EXIT
+uv run modal deploy separator/modal_app.py --name "$E2E_MODAL_APP_NAME"
+MODAL_APP_NAME="$E2E_MODAL_APP_NAME" make smoke
+make test-e2e
+```
+
+On NixOS, use a native Chromium executable through
+`E2E_CHROMIUM_EXECUTABLE=/path/to/chromium` and install Playwright's recording
+helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
+smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
+
+The browser matrix contains **27 cases**, not just one “everything on” job:
+
+- Each of the 12 boolean controls is submitted individually, plus all 12
+  together. Independent cleanup/splits and mix-only cases prove that internal
+  prerequisites do not appear as extra downloads.
+- Mixes with dry vocal prerequisites, both crowd-cleanup selections plus dry
+  mixes, and instruments-only plus dereverb exercise dependency-sensitive paths.
+- Identity, positive/negative fractional pitch, pitch-only, tempo-only,
+  speedup/slowdown, and transformed separated output exercise native processing.
+  Another all-options case applies fractional pitch and a tempo change to all
+  20 derived tracks, checking every modified name/duration while preserving the
+  original. The identity all-options case remains the raw mix-composition proof.
+  Whole-song changes prove expected audio duration and the known generated
+  fundamental's pitch shift; originals are downloaded and hash-checked.
+- Cache bypass alone proves no Modal call is made. A separate explicit
+  extraction warms through the browser, repeats with zero raw inference time,
+  and bypasses with positive inference time. Persisted queue timestamps and
+  actual Modal call IDs are included in the evidence.
+- File and real HTTP URL inputs exercise key preview and yt-dlp downloads;
+  spinner/progress, target keys/notes, stale-key clearing, invalid audio/source
+  errors, retry after source recovery, reload/history, and session isolation are
+  covered through browser interactions.
+
+Every successful processing case downloads its exact manifest, checks public
+filenames/modification suffixes and absent hidden outputs, decodes every audio
+track in Chromium and FFmpeg, and measures channels, timing, finite samples,
+signal, and peak levels. The all-enabled case additionally compares each mix's
+PCM against the aligned unity-gain sum of its actual downloaded vocal and
+instrumental components. This checks real mixing, not just nonempty files.
+
+Artifacts are under `frontend/test-results/`: per-case `proof.json` with options,
+manifest, queue/Modal evidence, hashes and audio measurements; downloaded audio;
+completion screenshots; and `backend.log`/`summary.json`. Failures retain
+screenshots, video, and Playwright traces. The HTML report is in
+`frontend/playwright-report/`. There are no automatic test retries.
+
+Both local domain suites also exhaust all **4096 boolean combinations** for
+output/dependency contracts (including raw-cache policy). That is local
+combinatorial verification, **not** 4096 GPU runs or mathematical exhaustiveness
+over arbitrary numeric pitch/tempo values.
+
+CI runs native/backend/frontend checks, direct deployed GPU smoke, and this
+browser matrix against a unique test app for every push/PR. Only a passing main
+run promotes the production Modal deployment and publishes the image.
+
+### Browser-test fixture licenses
+
+The full-stack browser harness generates its own C-major chord/bass/percussion
+track and mixes in two **CC BY 4.0** LibriSpeech excerpts. It fetches the small
+recordings from the pinned
+[`librosa/data` revision](https://github.com/librosa/data/tree/38f4b06556fa0ff1acda5e677d8ba05d1bc0fff0/audio)
+and checks their SHA-256 hashes before decoding them:
+
+| Recording | Attribution | SHA-256 |
+|---|---|---|
+| [`5703-47212-0000.ogg`](https://raw.githubusercontent.com/librosa/data/38f4b06556fa0ff1acda5e677d8ba05d1bc0fff0/audio/5703-47212-0000.ogg), *The Ashiel Mystery: A Detective Story*, chapter XVI | Marion Bryce (author), Garth Comira (reader) | `a284612b46af0535f7e1873758c4387bb8369f6dbbe192ffdec1f171108f98dd` |
+| [`198-209-0000.ogg`](https://raw.githubusercontent.com/librosa/data/38f4b06556fa0ff1acda5e677d8ba05d1bc0fff0/audio/198-209-0000.ogg), *Sense and Sensibility*, chapter 18 | Jane Austen (author), Heather Barnett (reader) | `0473ba9613befa1026db5e254546f105aeffba8366b5468fc5e8d474d844ca1d` |
+
+Source corpus: [LibriSpeech SLR12](https://www.openslr.org/12/).
+License: [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/).
+Modifications: decode/resample, trim to eight seconds, normalize, pan, delay,
+adjust gain, and mix with the generated musical track. These changes are test
+fixture preparation, not an endorsement by the readers. The generated backing
+uses a run-unique percussion seed (recorded in proof JSON) so concurrent test
+deployments do not race on the same stem-cache directory. Within one run the
+input stays byte-identical for authentic cache-hit/bypass checks. Numeric
+pitch/tempo cases use the separate, entirely generated tonal fixture. No user
+recordings are included or fetched.
+
 
 ### Backend configuration (env vars)
 
@@ -296,8 +430,7 @@ the tools above and are skipped when those executables are unavailable.
 
 ## Known limitations
 
-- No auth beyond the anonymous per-browser cookie — anyone with the URL can
-  submit jobs and, if they guess a job id, stream its results.
+- No login/auth beyond the anonymous per-browser cookie — anyone with the URL
+  can submit jobs. Job history and downloads are scoped to that signed cookie.
 - No automatic cleanup of old uploads/results — `/data` grows unbounded.
-- No CI/CD wired up for building and pushing the image.
 - Single-pod only, as noted above.

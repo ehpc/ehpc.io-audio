@@ -2,9 +2,9 @@
 name = "vocals-tools"
 version = "0.1.0"
 description = "Tools for vocal separation via Modal."
-requires-python = ">=3.13"
+requires-python = ">=3.15,<3.16"
 dependencies = [
-    "modal",
+    "modal>=1.6.2",
     "fastapi",
     "uvicorn[standard]",
     "itsdangerous",
@@ -14,6 +14,7 @@ dependencies = [
 
 [tool.ruff]
 line-length = 88
+# Shared separator source also runs in the separate Python 3.13 GPU image.
 target-version = "py313"
 
 [tool.ruff.lint]
@@ -33,7 +34,7 @@ select = [
 ]
 
 [tool.ty.environment]
-python-version = "3.13"
+python-version = "3.15"
 
 [tool.ty.src]
 include = ["**/*.py"]

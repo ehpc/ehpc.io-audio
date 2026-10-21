@@ -1,4 +1,5 @@
 from collections import Counter
+from itertools import product
 from pathlib import Path
 from typing import NamedTuple
 
@@ -374,3 +375,86 @@ def test_explicit_base_outputs_are_independent_and_use_cache_by_default(graph) -
     ]
     assert all(call.use_cache for call in calls)
     assert mixes == []
+
+
+def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(graph):
+    """Exhaust the 4096 local graphs, not 4096 costly GPU inferences."""
+    run, calls, mixes = graph
+    flags = (
+        "extract_vocals",
+        "extract_instruments",
+        "mix_female_instruments",
+        "mix_male_instruments",
+        "mix_backing_instruments",
+        "decrowd",
+        "decrowd_vocals",
+        "dereverb",
+        "genders",
+        "lead_backing",
+        "drums",
+        "no_cache",
+    )
+    public_outputs = (
+        ("vocals", "extract_vocals"),
+        ("vocals-decrowded", "decrowd_vocals"),
+        ("vocals-male", "genders"),
+        ("vocals-female", "genders"),
+        ("lead", "lead_backing"),
+        ("backing", "lead_backing"),
+        ("instruments", "extract_instruments"),
+        ("instruments-decrowded", "decrowd"),
+        ("drums", "drums"),
+        ("bass", "drums"),
+        ("other-instruments", "drums"),
+        ("female-instruments", "mix_female_instruments"),
+        ("male-instruments", "mix_male_instruments"),
+        ("backing-instruments", "mix_backing_instruments"),
+    )
+    vocal_labels = {
+        "vocals",
+        "vocals-decrowded",
+        "vocals-male",
+        "vocals-female",
+        "lead",
+        "backing",
+    }
+    for values in product((False, True), repeat=len(flags)):
+        selected = dict(zip(flags, values, strict=True))
+        options = SeparationOptions(**selected)
+        expected = []
+        for label, flag in public_outputs:
+            if selected[flag]:
+                expected.append(label)
+                if options.dereverb and label in vocal_labels:
+                    expected.append(f"{label}-dry")
+        if options.dereverb and not expected:
+            expected = ["vocals-dry"]
+        calls.clear()
+        mixes.clear()
+        result = run(options)
+        assert list(result) == expected, selected
+        assert options.output_labels == expected, selected
+        assert len({(call.source, call.stem.model) for call in calls}) == len(calls)
+        available = {"original.mp3"}
+        for call in calls:
+            assert call.source.name in available, (selected, call)
+            assert call.use_cache is not options.no_cache
+            available.update(f"{output.label}.mp3" for output in call.stem.outputs)
+            if call.stem.model in {
+                stems.GENDER_STEMS[0].model,
+                stems.LEAD_BACKING_STEMS[0].model,
+            }:
+                expected_vocal = (
+                    "vocals-decrowded.mp3" if options.decrowd_vocals else "vocals.mp3"
+                )
+                assert call.source.name == expected_vocal
+        for mix in mixes:
+            assert mix.vocals.name in available
+            assert mix.instruments.name in available
+            assert mix.vocals.name.endswith("-dry.mp3") is options.dereverb
+            assert mix.instruments.name == (
+                "instruments-decrowded.mp3" if options.decrowd else "instruments.mp3"
+            )
+        assert len(mixes) == sum(
+            selected[flag] for flag in flags if flag.startswith("mix_")
+        )

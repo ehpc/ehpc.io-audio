@@ -8,31 +8,18 @@ COPY frontend/ ./
 RUN npm run build
 
 
-FROM python:3.13-slim-trixie AS audio-build
-# Debian does not package libkeyfinder/keyfinder-cli. Build the maintained
-# libkeyfinder 2.2.8 and CLI 1.1.2 from checksum-verified immutable commits.
+FROM python:3.15-slim-trixie AS audio-build
+# Debian does not package libkeyfinder/keyfinder-cli; the shared build script
+# pins and checksum-verifies upstream source archives for CI and image builds.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake pkg-config libfftw3-dev \
+    build-essential cmake pkg-config curl ca-certificates libfftw3-dev \
     libavcodec-dev libavformat-dev libavutil-dev libswresample-dev \
     && rm -rf /var/lib/apt/lists/*
-ADD --checksum=sha256:6b9243c5c0c47ad9a66073c8caf41b1cd41fcf4e71f7231921a6ac3f797eac80 \
-    https://codeload.github.com/mixxxdj/libkeyfinder/tar.gz/b33b5a88e04a5182dd19c38c57762925631118fd /tmp/libkeyfinder.tar.gz
-ADD --checksum=sha256:201c50a27215622dc23770052c9a1094260680475a6e0e1781ccc60a0233a905 \
-    https://codeload.github.com/evanpurkhiser/keyfinder-cli/tar.gz/4ca2934cbc72688d4da658645bb6c2170a58f9bb /tmp/keyfinder-cli.tar.gz
-RUN mkdir /tmp/libkeyfinder /tmp/keyfinder-cli \
-    && tar -xzf /tmp/libkeyfinder.tar.gz -C /tmp/libkeyfinder --strip-components=1 \
-    && tar -xzf /tmp/keyfinder-cli.tar.gz -C /tmp/keyfinder-cli --strip-components=1 \
-    && cmake -S /tmp/libkeyfinder -B /tmp/libkeyfinder/build \
-        -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF \
-        -DCMAKE_INSTALL_LIBDIR=lib \
-    && cmake --build /tmp/libkeyfinder/build --parallel 2 \
-    && cmake --install /tmp/libkeyfinder/build \
-    && make -C /tmp/keyfinder-cli CXX="g++ -L/usr/local/lib" \
-    && install -m 755 /tmp/keyfinder-cli/keyfinder-cli /usr/local/bin/keyfinder-cli \
-    && strip /usr/local/bin/keyfinder-cli
+COPY .github/scripts/build-keyfinder.sh /usr/local/bin/build-keyfinder
+RUN /usr/local/bin/build-keyfinder
 
 
-FROM python:3.13-slim-trixie AS backend-build
+FROM python:3.15-slim-trixie AS backend-build
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
@@ -44,7 +31,7 @@ COPY backend/ ./backend/
 RUN uv sync --frozen --no-dev
 
 
-FROM python:3.13-slim-trixie
+FROM python:3.15-slim-trixie
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg rubberband-cli libfftw3-double3 \
     && rm -rf /var/lib/apt/lists/* \

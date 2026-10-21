@@ -7,3 +7,7 @@
 - Testability: write code that can be tested in isolation; avoid hidden global state and hard-coded side effects
 - Modern language standards: use current idioms and stdlib features; avoid legacy patterns
 - Extract complex types: give non-trivial types (nested dicts, tuples, unions) a named type alias or dataclass
+
+## Git and CI
+
+- After every push, watch the GitHub Actions workflow to completion and investigate and fix failures before declaring the work done. If workflow status cannot be observed, report that limitation explicitly and do not claim the pipeline passed.

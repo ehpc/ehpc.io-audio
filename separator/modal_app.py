@@ -38,6 +38,8 @@ image = (
     modal.Image.from_registry(
         # Ubuntu 24.04 supplies FFmpeg 6+ with latency-compensated alimiter.
         "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04",
+        # Separate from the Python 3.15 client: torch/torchaudio/onnxruntime-gpu
+        # do not yet publish cp315 wheels for this GPU dependency environment.
         add_python="3.13",
     )
     # clang is needed to build diffq's C extension (transitive dep of audio-separator).
