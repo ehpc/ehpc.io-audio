@@ -53,6 +53,46 @@ describe("SubmitForm", () => {
     expect(tempo).toHaveValue(100);
   });
 
+  it("shows the resulting key inside the editable pitch field and clears unknown, invalid and reset keys", async () => {
+    vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 10, status: "queued", position: 1 });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
+    const badge = () => pitch.parentElement!.querySelector(".pitch-key-badge");
+    expect(badge()).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
+    const source = screen.getByLabelText("Audio file");
+    await userEvent.upload(source, new File(["audio"], "C-major.wav", { type: "audio/wav" }));
+    await waitFor(() => expect(pitch).toHaveAccessibleDescription("Resulting key: C major"));
+    expect(pitch).toHaveValue(0);
+    expect(badge()).toHaveTextContent("C major");
+    await userEvent.click(screen.getByRole("button", { name: "Increase pitch" }));
+    await userEvent.click(screen.getByRole("button", { name: "Increase pitch" }));
+    expect(pitch).toHaveValue(2);
+    expect(badge()).toHaveTextContent("D major");
+    await userEvent.clear(pitch);
+    expect(badge()).not.toBeInTheDocument();
+    expect(pitch).not.toHaveAttribute("aria-describedby");
+    await userEvent.type(pitch, "-2.25");
+    expect(badge()).toHaveTextContent("Bb major (-25 cents)");
+
+    const next = Promise.withResolvers<api.KeyAnalysis>();
+    vi.mocked(api.analyzeKey).mockReturnValueOnce(next.promise);
+    await userEvent.upload(source, new File(["next"], "unknown.wav", { type: "audio/wav" }));
+    expect(badge()).not.toBeInTheDocument();
+    next.resolve({ original_key: null });
+    await screen.findByText("Original key: Undetermined");
+    expect(badge()).not.toBeInTheDocument();
+
+    vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
+    await userEvent.upload(source, new File(["known"], "known.wav", { type: "audio/wav" }));
+    await waitFor(() => expect(badge()).toHaveTextContent("Bb major (-25 cents)"));
+    await userEvent.click(submitButton());
+    await waitFor(() => expect(pitch).toHaveValue(0));
+    expect(badge()).not.toBeInTheDocument();
+    expect(pitch).not.toHaveAttribute("aria-describedby");
+  });
+
   it("steps pitch and tempo from defaults and fractional entries, updates previews, and submits the adjusted values", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
     vi.mocked(api.submitJob).mockResolvedValue({ id: 8, status: "queued", position: 1 });

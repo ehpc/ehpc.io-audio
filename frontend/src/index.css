@@ -95,6 +95,12 @@
 .workspace-numbers label { display: block; margin-bottom: 6px; font-size: var(--app-body-size); }
 .number-stepper { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; }
 .number-stepper button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; font-size: 24px; }
+.pitch-key-field { display: flex; align-items: center; min-width: 0; gap: 6px; border: 1px solid hsl(var(--border)); border-radius: 9px; background: hsl(var(--background)); }
+.audio-workspace .pitch-key-field input { flex: 1 1 72px; width: 72px; min-width: 64px; border: 0; background: transparent; padding: 10px 8px; appearance: textfield; }
+.pitch-key-field input::-webkit-inner-spin-button, .pitch-key-field input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.pitch-key-field:focus-within { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
+.audio-workspace .pitch-key-field input:focus-visible { outline: none; }
+.pitch-key-badge { flex: 0 1 auto; min-width: 0; margin: 6px 8px 6px 0; padding: 4px 7px; border-radius: 5px; background: hsl(var(--accent)); color: hsl(var(--primary)); font-size: var(--app-small-size); line-height: 1.35; overflow-wrap: anywhere; text-align: right; }
 .workspace-keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; border-top: 1px solid hsl(var(--border)); margin-top: 16px; padding-top: 16px; line-height: 1.5; overflow-wrap: anywhere; }
 .workspace-keys .key-label { color: hsl(var(--primary)); margin-bottom: 5px; }
 .review-page { margin-top: 20px; padding-top: 16px; border-top: 1px solid hsl(var(--border)); }

@@ -104,10 +104,13 @@ Arrow keys, Home and End navigate the tab bar.
 Pitch and tempo have explicit **− / +** buttons in the mobile **Adjust** tab and
 desktop rail, with accessible decrease/increase names and 44px touch targets.
 Each tap changes pitch by one semitone or tempo by one percentage point; direct
-number entry still accepts fractional values. Tempo decrement is disabled when
-the next step would reach zero or below, without restricting positive fractional
-manual entry. Incomplete numeric entries remain editable; their step buttons
-are disabled until a number is entered. Key and output previews update immediately.
+number entry still accepts fractional values. The pitch field also shows an
+inline target-key badge inside its border, computed live from the original key
+and pitch shift (including fractional offsets). It is hidden until the key and
+pitch are known and valid. Tempo decrement is disabled when the next step would
+reach zero or below, without restricting positive fractional manual entry.
+Incomplete numeric entries remain editable; their step buttons are disabled
+until a number is entered. Key and output previews update immediately.
 
 The mobile summary and primary action stay within the form's sticky boundary,
 then scroll away before Results and History, leaving players and downloads
@@ -311,9 +314,9 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **39 cases**: the original 27 processing/behavior
+The browser matrix contains **42 cases**: the original 27 processing/behavior
 cases, one undetermined-source-key case, seven responsive workspace cases, and
-four focused adjustment-button cases (375/390/430px touch and 1440px desktop):
+seven focused adjustment-button cases (375/390/430px touch and 1440/1920/2560/3840px desktop):
 
 The adjustment cases exercise real taps/clicks, keyboard activation, fractional
 manual entry, positive-tempo bounds, tab persistence, reactive key/output previews,
@@ -351,7 +354,7 @@ Chromium mobile emulation does not verify Safari's rendering or the iPhone keybo
   download headers are checked explicitly. A silent fixture exercises real native
   undetermined-key analysis, omission of stem labels/name tokens, unchanged
   original bytes/name, and an eight-second all-zero decoded transformed output.
-- Responsive coverage renders the actual built app at desktop widths 1440,
+  Responsive coverage renders the actual built app at desktop widths 1440,
   1920, 2560 and 3840, plus mobile 375×812, 390×844 and 430×932. It checks
   readable text, every desktop group and the right rail, mobile tab/keyboard
   navigation, option and pitch/tempo persistence, real source/key preview and

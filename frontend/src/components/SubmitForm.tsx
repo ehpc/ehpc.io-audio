@@ -301,9 +301,15 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                 <div class="number-stepper">
                   <Button type="button" variant="outline" size="icon" aria-label="Decrease pitch" aria-controls="pitch-input"
                     disabled={!canAdjust("pitch_semitones", -1)} onClick={() => adjust("pitch_semitones", pitchInput, -1)}>−</Button>
-                  <input id="pitch-input" type="number" step="any" ref={pitchInput}
-                    value={DEFAULT_OPTIONS.pitch_semitones}
-                    onInput={(event) => setOptions("pitch_semitones", event.currentTarget.valueAsNumber)} />
+                  <div class="pitch-key-field">
+                    <input id="pitch-input" type="number" step="any" ref={pitchInput}
+                      aria-describedby={targetKey() ? "pitch-target-key" : undefined}
+                      value={DEFAULT_OPTIONS.pitch_semitones}
+                      onInput={(event) => setOptions("pitch_semitones", event.currentTarget.valueAsNumber)} />
+                    <Show when={targetKey()}>
+                      {(key) => <span id="pitch-target-key" class="pitch-key-badge"><span class="sr-only">Resulting key: </span>{key()}</span>}
+                    </Show>
+                  </div>
                   <Button type="button" variant="outline" size="icon" aria-label="Increase pitch" aria-controls="pitch-input"
                     disabled={!canAdjust("pitch_semitones", 1)} onClick={() => adjust("pitch_semitones", pitchInput, 1)}>+</Button>
                 </div>
