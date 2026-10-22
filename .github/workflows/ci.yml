@@ -108,6 +108,11 @@ jobs:
         uses: denoland/setup-deno@v2
         with:
           deno-version: v2.8.3
+      - name: Check complete downloader runtime
+        run: |
+          uv pip check --python .venv/bin/python
+          deno --version
+          uv run python -c "import yt_dlp_ejs; print('yt-dlp-ejs', yt_dlp_ejs.version)"
       - name: Install frontend and Chromium
         run: |
           npm --prefix frontend ci

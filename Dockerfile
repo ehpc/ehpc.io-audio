@@ -36,8 +36,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg rubberband-cli libfftw3-double3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 app
-# yt-dlp needs a JS runtime to solve YouTube's anti-bot challenge on some
-# downloads (returns HTTP 403 otherwise); deno is its default-supported one.
+# yt-dlp[default] installs the matching EJS scripts in the copied venv; its
+# YouTube challenge solver also needs Deno, the default-supported JS runtime.
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 COPY --from=audio-build /usr/local/bin/keyfinder-cli /usr/local/bin/keyfinder-cli
 WORKDIR /app

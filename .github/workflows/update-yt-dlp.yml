@@ -18,15 +18,16 @@ jobs:
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Bump yt-dlp in uv.lock
-        run: uv lock --upgrade-package yt-dlp
+      - name: Bump yt-dlp and its matching challenge solver in uv.lock
+        run: uv lock --upgrade-package yt-dlp --upgrade-package yt-dlp-ejs
       - name: Open PR if lock changed
         uses: peter-evans/create-pull-request@v7
         with:
           commit-message: "chore: bump yt-dlp"
           title: "chore: bump yt-dlp"
           body: |
-            Weekly automated bump of `yt-dlp` in `uv.lock`. Merging triggers a
-            fresh image build with the newer version.
+            Weekly automated bump of `yt-dlp` and its supported `yt-dlp-ejs`
+            companion in `uv.lock`. The `default` extra keeps their versions
+            compatible. Merging triggers a fresh image build with the newer runtime.
           branch: chore/bump-yt-dlp
           delete-branch: true

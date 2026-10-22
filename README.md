@@ -190,10 +190,13 @@ a proprietary application containing them.
   CI and Docker use the same Python 3.15 runtime.
 - [Node.js](https://nodejs.org/) 22+ and npm, for the frontend.
 - `ffmpeg` and [`deno`](https://deno.com/), for `yt-dlp`'s audio extraction
-  when submitting by URL — `ffmpeg` converts the download, and `deno` lets
-  `yt-dlp` solve YouTube's anti-bot challenge (without it, some downloads
-  fail with `HTTP Error 403: Forbidden`). Both are already included if you
-  use the Nix devShell below.
+  when submitting by URL — `ffmpeg` converts the download, while Deno executes
+  YouTube's JavaScript challenge solver. The project installs `yt-dlp[default]`
+  so `uv.lock` includes the matching `yt-dlp-ejs` solver scripts, rather than
+  a JS runtime without its scripts. `uv sync --frozen` installs both; the weekly
+  downloader update refreshes them together. FFmpeg and Deno are included in the
+  Nix devShell and production image. Correct challenge tooling does **not**
+  guarantee YouTube accepts a particular network/IP or remove bot/auth restrictions.
 - `rubberband` CLI version 3+ (R3 support) and `keyfinder-cli`, for stem
   transformations and key detection. Both are included in the Nix devShell
   and production Docker image; the image builds a pinned, checksum-verified
@@ -423,6 +426,8 @@ publication. YouTube bot/authentication restrictions, missing tools, and network
 failures **fail visibly**, not skip or fall back to fixtures. It retains
 `frontend/test-results/youtube/` response JSON, UI screenshot, backend log and
 Playwright failure artifacts plus `frontend/playwright-report/youtube/`.
+The CI runtime preflight checks the installed dependency environment, Deno,
+and EJS package version.
 To exercise an already released server instead of starting a local one:
 
 ```sh

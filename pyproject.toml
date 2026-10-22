@@ -9,7 +9,7 @@ dependencies = [
     "uvicorn[standard]",
     "itsdangerous",
     "python-multipart",
-    "yt-dlp>=2026.8.19",
+    "yt-dlp[default]>=2026.8.19",
 ]
 
 [tool.ruff]
