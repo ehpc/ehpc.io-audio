@@ -51,6 +51,7 @@ async function chooseSource(page: Page, source: 'url' | 'upload' = 'upload', fil
 }
 
 async function configure(page: Page, options: SeparationOptions) {
+  if (options.no_cache) await page.getByText('Advanced · cache', { exact: true }).click();
   for (const key of booleanKeys) {
     if (options[key]) await page.locator(`#option-${key}`).click();
   }

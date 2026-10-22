@@ -91,6 +91,23 @@ download is still available in Results and History.
 - Stored jobs from before explicit extraction are migrated to request both base
   stems, preserving their history and retry behavior.
 
+### Responsive workspace
+
+Desktop uses a broad two-by-two shelf of Outputs, Mixes, Cleanup and Splits, with
+pitch, tempo, original/target keys and notes, output preview and submission in a
+dedicated right rail. At widths up to 700px, the same controls become
+**Outputs / Adjust / Review** tabs; changing tabs never resets processing choices,
+pitch, tempo or key analysis. Arrow keys, Home and End navigate the tab bar.
+
+The mobile summary and primary action stay within the form's sticky boundary,
+then scroll away before Results and History, leaving players and downloads
+accessible. Editable fields use 16px text; controls and mobile downloads have
+44px minimum touch targets. Safe-area insets are respected, and focusing a source
+or numeric input releases the sticky action for shorter keyboard viewports.
+Advanced contains the cache-bypass option. Download-only remains the default,
+and pitch/tempo never modify the original.
+
+
 ## Pitch, tempo, and musical key
 
 - **Pitch shift (semitones):** `0` is unchanged; positive values transpose up,
@@ -276,7 +293,8 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **27 cases**, not just one “everything on” job:
+The browser matrix contains **31 cases**: the original 27 processing/behavior
+cases plus four responsive workspace cases, not just one “everything on” job:
 
 - Each of the 12 boolean controls is submitted individually, plus all 12
   together. Independent cleanup/splits and mix-only cases prove that internal
@@ -302,6 +320,12 @@ The browser matrix contains **27 cases**, not just one “everything on” job:
   song. Both qualified fixtures assert `C major`, and their actual native preview
   must also agree with the UI, persisted original key, and mathematical target
   key/notes after transposition.
+- Responsive coverage renders the actual built app at 1440×1000, 375×812,
+  390×844 and 430×932. It checks every desktop group and the right rail, mobile
+  tab/keyboard navigation, option and pitch/tempo persistence, real source/key
+  preview and errors, Advanced/action clearance, shortened keyboard viewports,
+  and unobstructed Results/History downloads and audio playback. These cases use
+  the same real backend and generated C-major fixture, with no mocked boundaries.
 
 The hosted stereo `C major` → `G major` failure was **not musical ambiguity**:
 the upstream keyfinder-cli compatibility path for FFmpeg 6 and older supplied
@@ -325,7 +349,7 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful gate still executes all 27 cases with no skipped cases.
+a successful gate executes all 31 cases with no skipped cases.
 
 Both local domain suites also exhaust all **4096 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local

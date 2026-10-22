@@ -41,12 +41,10 @@ const App: Component = () => {
   const isDone = () => job()?.status === "done";
 
   return (
-    <main class="mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-6 px-4 py-10">
-      <header class="space-y-1">
-        <h1 class="text-2xl font-semibold tracking-tight">Vocal Tools</h1>
-        <p class="text-sm text-muted-foreground">
-          Submit a track by URL or upload, then download the song or choose audio outputs.
-        </p>
+    <main class="app-shell">
+      <header class="app-header">
+        <h1>Vocal Tools</h1>
+        <p>Your audio workspace</p>
       </header>
 
       <SubmitForm onSubmitted={onSubmitted} />

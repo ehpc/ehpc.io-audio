@@ -136,7 +136,7 @@ describe("SubmitForm", () => {
     expect(screen.queryByText("Original key: G major")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "From URL" }));
     expect(screen.queryByText("Original key: F minor")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Notes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Notes \(/)).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -182,8 +182,32 @@ describe("SubmitForm", () => {
     await userEvent.click(submitButton());
     await waitFor(() => expect(screen.queryByText("Original key: F major")).not.toBeInTheDocument());
     expect(screen.queryByText(/Target key:/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Notes/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Notes \(/)).not.toBeInTheDocument();
     expect(input).toHaveValue("");
     expect(screen.getByRole("button", { name: "Download song" })).toBeInTheDocument();
+  });
+
+  it("submits every grouped option and Advanced cache without altering the API payload", async () => {
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 12, status: "queued", position: 1 });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
+    const groups = ["Outputs", "Mixes", "Cleanup", "Splits"];
+    for (const name of groups) expect(screen.getByRole("group", { name, exact: true })).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Advanced · cache"));
+    const checkboxes = screen.getAllByRole("checkbox");
+    expect(checkboxes).toHaveLength(12);
+    for (const checkbox of checkboxes) await userEvent.click(checkbox);
+    await userEvent.click(submitButton());
+    expect(api.submitJob).toHaveBeenCalledWith({
+      url: "https://example.com/song",
+      file: undefined,
+      options: {
+        extract_vocals: true, extract_instruments: true,
+        mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true,
+        decrowd: true, decrowd_vocals: true, dereverb: true,
+        genders: true, lead_backing: true, drums: true, no_cache: true,
+        pitch_semitones: 0, tempo_percent: 100,
+      },
+    });
   });
 });

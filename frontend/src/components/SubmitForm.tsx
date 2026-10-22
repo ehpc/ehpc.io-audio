@@ -1,10 +1,8 @@
-import { createEffect, createSignal, For, onCleanup, Show, type Component } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { BooleanOptionKey, JobDTO, SeparationOptions } from "~/api";
 import { analyzeKey, audioSettingsError, submitJob } from "~/api";
 import { Button } from "~/components/button";
-import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
-import { Checkbox } from "~/components/checkbox";
 import KeyNotes from "~/components/KeyNotes";
 import { Label } from "~/components/label";
 import { TextField, TextFieldInput } from "~/components/text-field";
@@ -12,24 +10,29 @@ import { displayOutputLabel, expectedStems } from "~/lib/expectedStems";
 import { transposeKey } from "~/lib/music";
 
 type SourceMode = "url" | "file";
+type WorkspaceTab = "outputs" | "adjust" | "review";
+const WORKSPACE_TABS: WorkspaceTab[] = ["outputs", "adjust", "review"];
+const OPTION_GROUPS = ["Outputs", "Mixes", "Cleanup", "Splits"] as const;
 
 interface OptionDescriptor {
   key: BooleanOptionKey;
   label: string;
+  mobileLabel?: string;
+  group: typeof OPTION_GROUPS[number];
 }
 
 const PROCESSING_OPTIONS: OptionDescriptor[] = [
-  { key: "extract_vocals", label: "Extract vocals" },
-  { key: "extract_instruments", label: "Extract instruments" },
-  { key: "mix_female_instruments", label: "Female vocals + instruments" },
-  { key: "mix_male_instruments", label: "Male vocals + instruments" },
-  { key: "mix_backing_instruments", label: "Backing vocals + instruments" },
-  { key: "decrowd", label: "Remove crowd noise from instrumental" },
-  { key: "decrowd_vocals", label: "Remove crowd noise from vocals" },
-  { key: "dereverb", label: "Dereverb (remove reverb)" },
-  { key: "genders", label: "Split by gender (male/female)" },
-  { key: "lead_backing", label: "Split lead & backing vocals" },
-  { key: "drums", label: "Split drums, bass & other instruments" },
+  { key: "extract_vocals", label: "Extract vocals", group: "Outputs" },
+  { key: "extract_instruments", label: "Extract instruments", group: "Outputs" },
+  { key: "mix_female_instruments", label: "Female vocals + instruments", mobileLabel: "Female + instruments", group: "Mixes" },
+  { key: "mix_male_instruments", label: "Male vocals + instruments", mobileLabel: "Male + instruments", group: "Mixes" },
+  { key: "mix_backing_instruments", label: "Backing vocals + instruments", mobileLabel: "Backing + instruments", group: "Mixes" },
+  { key: "decrowd", label: "Remove crowd noise from instrumental", mobileLabel: "Crowd off instruments", group: "Cleanup" },
+  { key: "decrowd_vocals", label: "Remove crowd noise from vocals", mobileLabel: "Crowd off vocals", group: "Cleanup" },
+  { key: "dereverb", label: "Dereverb (remove reverb)", mobileLabel: "Remove reverb", group: "Cleanup" },
+  { key: "genders", label: "Split by gender (male/female)", mobileLabel: "Male / female", group: "Splits" },
+  { key: "lead_backing", label: "Split lead & backing vocals", mobileLabel: "Lead / backing", group: "Splits" },
+  { key: "drums", label: "Split drums, bass & other instruments", mobileLabel: "Drums / bass / other", group: "Splits" },
 ];
 
 const DEFAULT_OPTIONS: SeparationOptions = {
@@ -60,6 +63,20 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const [analyzing, setAnalyzing] = createSignal(false);
   const [analyzed, setAnalyzed] = createSignal(false);
   const [analysisError, setAnalysisError] = createSignal<string | null>(null);
+  const [tab, setTab] = createSignal<WorkspaceTab>("outputs");
+  const [mobile, setMobile] = createSignal(false);
+  onMount(() => {
+    const query = window.matchMedia?.("(max-width: 700px)");
+    if (!query) return;
+    const update = () => setMobile(query.matches);
+    update();
+    query.addEventListener("change", update);
+    onCleanup(() => query.removeEventListener("change", update));
+  });
+  const showTab = (next: WorkspaceTab, focus = false) => {
+    setTab(next);
+    if (focus) document.getElementById(`tab-${next}`)?.focus();
+  };
 
   createEffect(() => {
     const currentMode = mode();
@@ -172,175 +189,157 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Download or process a song</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form class="space-y-6" onSubmit={handleSubmit}>
-          <div class="inline-flex rounded-md border border-input p-1">
+    <form class="audio-workspace" data-active-tab={tab()} onSubmit={handleSubmit}>
+      <section class="source-panel" aria-label="Audio source">
+        <div class="source-line">
+          <div class="source-tabs" role="group" aria-label="Source type">
             <For each={["url", "file"] as SourceMode[]}>
               {(value) => (
-                <Button
-                  type="button"
-                  variant={mode() === value ? "default" : "ghost"}
-                  size="sm"
-                  onClick={() => {
-                    setMode(value);
-                    setError(null);
-                  }}
-                >
+                <Button type="button" variant="ghost" aria-pressed={mode() === value}
+                  onClick={() => { setMode(value); setError(null); }}>
                   {value === "url" ? "From URL" : "Upload audio"}
                 </Button>
               )}
             </For>
           </div>
-
-          <Show
-            when={mode() === "url"}
-            fallback={
-              <div class="space-y-2">
-                <Label for="file-input">Audio file</Label>
-                <input
-                  id="file-input"
-                  type="file"
-                  accept="audio/*"
-                  ref={fileInput}
-                  class="block w-full text-sm text-muted-foreground file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-foreground hover:file:opacity-90"
-                  onChange={(e) => {
-                    setFile(e.currentTarget.files?.[0] ?? null);
-                    setError(null);
-                  }}
-                />
-                <Show when={file()}>
-                  {(f) => (
-                    <p class="text-xs text-muted-foreground">Selected: {f().name}</p>
-                  )}
-                </Show>
-              </div>
-            }
-          >
-            <TextField value={url()} onChange={setUrl}>
+          <Show when={mode() === "url"} fallback={
+            <div class="source-field">
+              <Label for="file-input">Audio file</Label>
+              <input id="file-input" type="file" accept="audio/*" ref={fileInput}
+                onChange={(e) => { setFile(e.currentTarget.files?.[0] ?? null); setError(null); }} />
+              <Show when={file()}>{(f) => <p class="workspace-helper">Selected: {f().name}</p>}</Show>
+            </div>
+          }>
+            <TextField value={url()} onChange={setUrl} class="source-field">
               <Label for="url-input">Track URL</Label>
-              <TextFieldInput
-                id="url-input"
-                type="url"
-                placeholder="https://..."
-                autocomplete="off"
-              />
+              <TextFieldInput id="url-input" type="url" placeholder="https://..." autocomplete="off" />
             </TextField>
           </Show>
+        </div>
+        <p class="workspace-helper">{mobile() ? "Default: original only, unchanged." : "Download only by default. Your original always stays unchanged."}</p>
+        <Show when={analyzing()}>
+          <p role="status" aria-live="polite" class="analysis-status">
+            <span aria-hidden="true" class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            {mode() === "url" ? "Downloading audio and analyzing original key…" : "Analyzing original key…"}
+          </p>
+        </Show>
+        <Show when={analysisError()}>
+          <p role="alert" class="text-sm text-destructive">Key analysis: {analysisError()}</p>
+        </Show>
+      </section>
 
-          <fieldset class="space-y-3">
-            <legend class="mb-1 text-sm font-medium">Processing options (optional)</legend>
-            <For each={PROCESSING_OPTIONS}>
-              {(opt) => (
-                <div class="flex items-center gap-3">
-                  <Checkbox id={`option-${opt.key}`} checked={options[opt.key]} onChange={(checked) => setOptions(opt.key, checked)} />
-                  <Label for={`option-${opt.key}-input`} class="cursor-pointer font-normal">{opt.label}</Label>
-                </div>
-              )}
-            </For>
-          </fieldset>
-            <p class="text-xs text-muted-foreground">Mixes automatically extract their required vocal and instrumental parts.</p>
+      <nav class="workspace-tabs" role="tablist" aria-label="Workspace">
+        <For each={WORKSPACE_TABS}>{(name, index) => (
+          <button type="button" role="tab" id={`tab-${name}`} aria-controls={`page-${name}`}
+            aria-selected={tab() === name} tabIndex={tab() === name ? 0 : -1}
+            onClick={() => showTab(name)}
+            onKeyDown={(event) => {
+              let next: WorkspaceTab | undefined;
+              if (event.key === "ArrowRight") next = WORKSPACE_TABS[(index() + 1) % 3];
+              if (event.key === "ArrowLeft") next = WORKSPACE_TABS[(index() + 2) % 3];
+              if (event.key === "Home") next = "outputs";
+              if (event.key === "End") next = "review";
+              if (next) { event.preventDefault(); showTab(next, true); }
+            }}>
+            {name[0].toUpperCase() + name.slice(1)}
+          </button>
+        )}</For>
+      </nav>
 
-          <fieldset class="space-y-3">
-            <legend class="mb-1 text-sm font-medium">Pitch and tempo</legend>
-            <Show when={analyzing()}>
-              <p role="status" aria-live="polite" class="flex items-center gap-2 text-sm text-muted-foreground">
-                <span aria-hidden="true" class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                {mode() === "url" ? "Downloading audio and analyzing original key…" : "Analyzing original key…"}
-              </p>
-            </Show>
-            <Show when={analysisError()}>
-              <p role="alert" class="text-sm text-destructive">Key analysis: {analysisError()}</p>
-            </Show>
-            <div class="grid gap-3 sm:grid-cols-2">
-              <div class="space-y-2">
+      <div class="workspace-panes">
+        <section class="selection-pane workspace-page" id="page-outputs" data-page="outputs"
+          role={mobile() ? "tabpanel" : "region"} aria-label={mobile() ? undefined : "Choose your outputs"}
+          aria-labelledby={mobile() ? "tab-outputs" : undefined}>
+          <div class="workspace-heading"><h2>Choose your outputs</h2><span>All optional</span></div>
+          <div class="option-groups">
+            <For each={OPTION_GROUPS}>{(group) => (
+              <fieldset class="option-group">
+                <legend>{group}</legend>
+                <For each={PROCESSING_OPTIONS.filter((option) => option.group === group)}>{(opt) => (
+                  <label class="workspace-option" for={`option-${opt.key}`}>
+                    <input id={`option-${opt.key}`} type="checkbox" checked={options[opt.key]} aria-label={opt.label}
+                      onChange={(event) => setOptions(opt.key, event.currentTarget.checked)} />
+                    <span>{mobile() && opt.mobileLabel ? opt.mobileLabel : opt.label}</span>
+                  </label>
+                )}</For>
+              </fieldset>
+            )}</For>
+          </div>
+          <p class="workspace-helper">{mobile() ? "Mixes auto-extract vocals + instruments." : "Mixes automatically extract their required vocal and instrumental parts."}</p>
+          <details class="workspace-advanced">
+            <summary>Advanced · cache</summary>
+            <label class="workspace-option" for="option-no_cache">
+              <input id="option-no_cache" type="checkbox" checked={options.no_cache}
+                onChange={(event) => setOptions("no_cache", event.currentTarget.checked)} />
+              <span>Reprocess from scratch, even if this exact file was separated before</span>
+            </label>
+          </details>
+        </section>
+
+        <aside class="adjustment-rail" aria-label="Adjustments and output preview">
+          <section class="workspace-page adjust-page" id="page-adjust" data-page="adjust"
+            role={mobile() ? "tabpanel" : "region"} aria-label={mobile() ? undefined : "Fine-tune audio"}
+            aria-labelledby={mobile() ? "tab-adjust" : undefined}>
+            <h2>Fine-tune &amp; review</h2>
+            <div class="workspace-numbers">
+              <div>
                 <Label for="pitch-input">Pitch shift (semitones)</Label>
-                <input
-                  id="pitch-input"
-                  type="number"
-                  step="any"
-                  ref={pitchInput}
+                <input id="pitch-input" type="number" step="any" ref={pitchInput}
                   value={DEFAULT_OPTIONS.pitch_semitones}
-                  onInput={(event) => setOptions("pitch_semitones", event.currentTarget.valueAsNumber)}
-                  class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                />
-                <Show when={originalKey()}>
-                  <div class="grid gap-2 text-sm sm:grid-cols-2" aria-live="polite">
-                    <div>
-                      <p>Original key: {originalKey()}</p>
-                      <KeyNotes musicalKey={originalKey()} />
-                    </div>
-                    <div>
-                      <p>Target key: {targetKey() ?? "Enter a valid pitch"}</p>
-                      <KeyNotes musicalKey={targetKey()} />
-                    </div>
-                  </div>
-                </Show>
-                <Show when={analyzed() && originalKey() === null}>
-                  <p class="text-xs text-muted-foreground">Original key: Undetermined</p>
-                </Show>
+                  onInput={(event) => setOptions("pitch_semitones", event.currentTarget.valueAsNumber)} />
               </div>
-              <div class="space-y-2">
+              <div>
                 <Label for="tempo-input">Tempo (% of original)</Label>
-                <input
-                  id="tempo-input"
-                  type="number"
-                  step="any"
-                  ref={tempoInput}
+                <input id="tempo-input" type="number" step="any" ref={tempoInput}
                   value={DEFAULT_OPTIONS.tempo_percent}
-                  onInput={(event) => setOptions("tempo_percent", event.currentTarget.valueAsNumber)}
-                  class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                />
+                  onInput={(event) => setOptions("tempo_percent", event.currentTarget.valueAsNumber)} />
               </div>
             </div>
-            <p class="text-xs text-muted-foreground">
-              Pitch and tempo apply to every output. With no separation option, they transform the full song; the original remains unchanged.
-            </p>
-          </fieldset>
-
-          <div class="rounded-md border border-border bg-muted/40 p-3">
-            <p class="mb-2 text-xs font-medium text-muted-foreground">
-              Tracks you'll get ({stems().length})
-            </p>
-            <div class="flex flex-wrap gap-1.5">
-              <For each={stems()}>
-                {(label) => (
-                  <span class="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-foreground">
-                    {displayOutputLabel(label, options)}
-                  </span>
-                )}
-              </For>
+            <p class="workspace-helper">Pitch and tempo apply to every generated output, never the original. With no separation selected, they transform the full song.</p>
+            <div class="workspace-keys" aria-live="polite">
+              <div>
+                <p class="key-label">Original key</p>
+                <Show when={originalKey()} fallback={
+                  <p>{analyzed() ? "Original key: Undetermined" : "Awaiting audio"}</p>
+                }>
+                  <p>Original key: {originalKey()}</p>
+                  <KeyNotes musicalKey={originalKey()} />
+                </Show>
+              </div>
+              <div>
+                <p class="key-label">Target key</p>
+                <Show when={originalKey()} fallback={<p>Awaiting original key</p>}>
+                  <p>Target key: {targetKey() ?? "Enter a valid pitch"}</p>
+                  <KeyNotes musicalKey={targetKey()} />
+                </Show>
+              </div>
             </div>
+          </section>
+
+          <section class="workspace-page review-page" id="page-review" data-page="review"
+            role={mobile() ? "tabpanel" : "region"} aria-label={mobile() ? undefined : "Output preview"}
+            aria-labelledby={mobile() ? "tab-review" : undefined}>
+            <h2>Output preview</h2>
+            <p class="workspace-helper">Tracks you'll get ({stems().length})</p>
+            <div class="output-tags">
+              <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options)}</span>}</For>
+            </div>
+            <p class="workspace-helper">Your original is included, unchanged.</p>
+          </section>
+
+          <div class="workspace-action">
+            <div class="action-summary">
+              <span>{stems().length === 1 ? "Original only · unchanged" : `${stems().length} tracks · original included`}</span>
+              <button type="button" onClick={() => showTab("review", true)}>Review →</button>
+            </div>
+            <Show when={error()}><p role="alert" class="text-sm text-destructive">{error()}</p></Show>
+            <Button type="submit" disabled={submitting()} class="workspace-submit">
+              {submitting() ? "Submitting..." : expectedStems(options).length > 0 ? "Process audio" : "Download song"}
+            </Button>
           </div>
-
-          <div class="flex items-center gap-3 border-t border-border pt-4">
-            <Checkbox
-              id="option-no_cache"
-              checked={options.no_cache}
-              onChange={(checked) => setOptions("no_cache", checked)}
-            />
-            <Label
-              for="option-no_cache-input"
-              class="cursor-pointer text-xs font-normal text-muted-foreground"
-            >
-              Reprocess from scratch, even if this exact file was separated
-              before
-            </Label>
-          </div>
-
-          <Show when={error()}>
-            <p class="text-sm text-destructive">{error()}</p>
-          </Show>
-
-          <Button type="submit" disabled={submitting()} class="w-full">
-            {submitting() ? "Submitting..." : expectedStems(options).length > 0 ? "Process audio" : "Download song"}
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
+        </aside>
+      </div>
+    </form>
   );
 };
 
