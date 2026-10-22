@@ -17,21 +17,49 @@ async function assertNoOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
-test('desktop workspace exposes every group alongside adjustments', async ({ page }, info) => {
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto('/');
-  for (const name of ['Outputs', 'Mixes', 'Cleanup', 'Splits']) {
-    await expect(page.getByRole('group', { name, exact: true })).toBeVisible();
-  }
-  const options = page.locator('.option-groups input[type=checkbox]');
-  await expect(options).toHaveCount(11);
-  for (const option of await options.all()) await expect(option).toBeInViewport();
-  await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toBeInViewport();
-  await expect(page.getByRole('region', { name: 'Output preview', exact: true })).toBeInViewport();
-  await expect(page.getByRole('tablist')).toBeHidden();
-  await assertNoOverflow(page);
-  await page.screenshot({ path: info.outputPath('desktop-1440x1000.png'), fullPage: true });
-});
+
+for (const viewport of [
+  { width: 1440, height: 1000 },
+  { width: 1920, height: 1080 },
+  { width: 2560, height: 1440 },
+  { width: 3840, height: 2160 },
+]) {
+  test(`desktop workspace scales cleanly at ${viewport.width}px`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    for (const name of ['Outputs', 'Mixes', 'Cleanup', 'Splits']) {
+      await expect(page.getByRole('group', { name, exact: true })).toBeVisible();
+    }
+    const options = page.locator('.option-groups input[type=checkbox]');
+    await expect(options).toHaveCount(11);
+    for (const option of await options.all()) {
+      await expect(option).toBeInViewport();
+      await assertUncovered(page, option);
+    }
+    await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toBeInViewport();
+    await expect(page.getByRole('region', { name: 'Output preview', exact: true })).toBeInViewport();
+    await expect(page.getByRole('tablist')).toBeHidden();
+    const layout = await page.evaluate(() => {
+      const shell = document.querySelector('.app-shell')!;
+      const option = document.querySelector('.workspace-option')!;
+      const input = document.querySelector('.audio-workspace input:not([type="checkbox"])')!;
+      return {
+        shell: shell.getBoundingClientRect().width,
+        optionFont: Number.parseFloat(getComputedStyle(option).fontSize),
+        inputFont: Number.parseFloat(getComputedStyle(input).fontSize),
+        workspaceFont: Number.parseFloat(getComputedStyle(document.querySelector('.audio-workspace')!).fontSize),
+      };
+    });
+    const historyHeadingFont = Number.parseFloat(await page.getByRole('heading', { name: 'History', exact: true }).evaluate(element => getComputedStyle(element).fontSize));
+    expect(layout.shell).toBeGreaterThan(viewport.width * 0.5);
+    expect(layout.optionFont).toBeGreaterThanOrEqual(viewport.width >= 1701 ? 18 : 16);
+    expect(layout.inputFont).toBeGreaterThanOrEqual(16);
+    expect(layout.workspaceFont).toBeGreaterThanOrEqual(viewport.width >= 1701 ? 18 : 16);
+    expect(historyHeadingFont).toBeGreaterThanOrEqual(viewport.width >= 1701 ? 18 : 16);
+    await assertNoOverflow(page);
+    await page.screenshot({ path: info.outputPath(`desktop-${viewport.width}x${viewport.height}.png`), fullPage: true });
+  });
+}
 
 for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
   test(`mobile workspace persists state and releases action before results ${viewport.width}`, async ({ page }, info) => {

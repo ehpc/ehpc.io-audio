@@ -38,3 +38,24 @@ def test_original_filename_keeps_real_extension() -> None:
 
 def test_original_filename_defaults_extension() -> None:
     assert original_filename(None, 5, "") == "5 - original.mp3"
+
+
+def test_download_filename_identifies_source_key_not_transposed_output() -> None:
+    assert (
+        download_filename(
+            "song.wav",
+            3,
+            "vocals",
+            SeparationOptions(pitch_semitones=2, tempo_percent=120),
+            "C major",
+        )
+        == "song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3"
+    )
+
+
+def test_download_filename_preserves_flat_and_sharp_source_notes() -> None:
+    for key, token in (("Bb minor", "Bb-minor"), ("F# major", "F#-major")):
+        assert (
+            download_filename("song.wav", 3, "vocals", SeparationOptions(), key)
+            == f"song - vocals - source-key-{token}.mp3"
+        )

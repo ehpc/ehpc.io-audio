@@ -156,7 +156,10 @@ def test_upload_is_separated_and_stems_are_downloadable(
         assert stem.content == f"{label}-audio".encode()
         assert stem.headers["content-type"] == "audio/mpeg"
         # Starlette percent-encodes the download name (RFC 5987 filename*=).
-        assert quote(f"song - {label}.mp3") in stem.headers["content-disposition"]
+        assert (
+            quote(f"song - {label} - source-key-C-major.mp3")
+            in stem.headers["content-disposition"]
+        )
 
     original = worker_client.get(f"/api/jobs/{job_id}/original")
     assert original.status_code == 200
@@ -217,7 +220,10 @@ def test_url_job_downloads_titles_and_separates(
 
     stem = worker_client.get(f"/api/jobs/{job_id}/results/vocals")
     assert stem.content == b"vocals-audio"
-    assert quote("My Song - vocals.mp3") in stem.headers["content-disposition"]
+    assert (
+        quote("My Song - vocals - source-key-C-major.mp3")
+        in stem.headers["content-disposition"]
+    )
 
 
 def test_failed_separation_surfaces_the_error_and_serves_no_stems(
@@ -358,6 +364,11 @@ def test_pitch_and_tempo_modify_every_download_but_not_the_original(
     for entry in job["manifest"]:
         assert "pitch+2st" in entry["filename"]
         assert "tempo120pct" in entry["filename"]
+        assert entry["download_name"] == (
+            f"C major - {entry['label']} - source-key-C-major"
+            " - pitch+2st - tempo120pct.mp3"
+        )
+        assert "source-key" not in entry["filename"]
         result = worker_client.get(f"/api/jobs/{job_id}/results/{entry['label']}")
         assert result.status_code == 200
         assert quote(entry["download_name"]) in result.headers["content-disposition"]

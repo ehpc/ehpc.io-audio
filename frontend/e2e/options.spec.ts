@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import type { BooleanOptionKey, JobDTO, SeparationOptions } from '../src/api';
 import { keyScale, transposeKey } from '../src/lib/music';
-import { hash, inspectAudio, inspectMix } from './audio';
+import { hash, inspectAudio, inspectMix, pcm } from './audio';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
@@ -117,7 +117,18 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   const suffix = `${options.pitch_semitones ? ` - pitch${options.pitch_semitones > 0 ? '+' : ''}${options.pitch_semitones}st` : ''}${options.tempo_percent !== 100 ? ` - tempo${options.tempo_percent}pct` : ''}`;
   for (const stem of job.manifest!) {
     expect(stem.filename).toBe(`${stem.label}${suffix}.mp3`);
-    expect(stem.download_name).toBe(`${fixtureName} - ${stem.label}${suffix}.mp3`);
+    expect(stem.download_name).toBe(`${fixtureName} - ${stem.label} - source-key-${originalKey.replaceAll(' ', '-')}${suffix}.mp3`);
+    const served = await page.request.get(`/api/jobs/${job.id}/results/${stem.label}`);
+    expect(served.status()).toBe(200);
+    expect(decodeURIComponent(served.headers()['content-disposition'])).toContain(stem.download_name);
+    const stemLinks = page.locator(`a[href='/api/jobs/${job.id}/results/${stem.label}']`);
+    await expect(stemLinks).toHaveCount(2);
+    await expect(stemLinks.nth(1)).toContainText(`Source key: ${originalKey}`);
+    const card = stemLinks.first().locator('../..');
+    await expect(card.getByText(`Source key: ${originalKey}`, { exact: true })).toBeVisible();
+    if (job.output_key !== originalKey) {
+      await expect(card.getByText(`Source key: ${job.output_key}`, { exact: true })).toHaveCount(0);
+    }
     const event = page.waitForEvent('download');
     await page.locator(`a[href='/api/jobs/${job.id}/results/${stem.label}']`).first().click();
     const output = await event;
@@ -139,6 +150,33 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     }
     expect(hash(await readFile(files['vocals-male']))).not.toBe(hash(await readFile(files['vocals-female'])));
     expect(hash(await readFile(files.lead))).not.toBe(hash(await readFile(files.backing)));
+    for (const width of [1440, 1920, 2560, 3840, 375, 390, 430]) {
+      await page.setViewportSize({ width, height: width < 700 ? 844 : 1100 });
+      await expect(page.getByText(`Source key: ${originalKey}`, { exact: true })).toHaveCount(allLabels.length * 2);
+      const geometry = await page.evaluate(id => {
+        const links = [...document.querySelectorAll<HTMLAnchorElement>(`a[href^="/api/jobs/${id}/results/"]`)];
+        return {
+          pageWidth: document.documentElement.scrollWidth,
+          viewportWidth: window.innerWidth,
+          links: links.map(link => {
+            const rect = link.getBoundingClientRect();
+            return { left: rect.left, right: rect.right, width: link.clientWidth, contentWidth: link.scrollWidth };
+          }),
+        };
+      }, job.id);
+      expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+      for (const link of geometry.links) {
+        expect(link.left).toBeGreaterThanOrEqual(0);
+        expect(link.right).toBeLessThanOrEqual(width);
+        expect(link.contentWidth).toBeLessThanOrEqual(link.width + 1);
+      }
+      await page.screenshot({ path: info.outputPath(`source-key-all-stems-${width}.png`), fullPage: true });
+    }
+  }
+  if (item.name === 'pitch-only') {
+    await page.setViewportSize({ width: 2560, height: 1440 });
+    const card = page.locator(`a[href='/api/jobs/${job.id}/results/song']`).first().locator('../..');
+    await card.screenshot({ path: info.outputPath('source-key-pitched-card-2560.png') });
   }
   const proof = { case: item.name, modal_app: process.env.E2E_MODAL_APP_NAME, fixture_seed: process.env.E2E_FIXTURE_SEED, options, expected_labels: item.labels, job, queue, audio, mixes };
   await writeFile(info.outputPath('proof.json'), JSON.stringify(proof, null, 2));
@@ -224,4 +262,43 @@ test('key-preview-source-change-errors-and-real-retry', async ({ page }, info) =
   expect(job.options).toEqual(failed.options);
   expect(job.source_value).toBe(failed.source_value);
   await writeFile(info.outputPath('proof.json'), JSON.stringify({ case: 'key-preview-source-change-errors-and-real-retry', failed, recovered: job }, null, 2));
+});
+
+test('undetermined-source-key-omits-stem-label-and-download-token', async ({ page }, info) => {
+  await page.goto('/');
+  const analysisResponse = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
+  await chooseSource(page, 'upload', 'silent-fixture');
+  expect((await (await analysisResponse).json()).original_key).toBeNull();
+  await configure(page, { ...defaults, pitch_semitones: 2 });
+  const id = await submit(page);
+  const job = await complete(page, id);
+  expect(job.original_key).toBeNull();
+  expect(job.output_key).toBeNull();
+  expect(job.manifest!.map(stem => stem.label)).toEqual(['song']);
+  expect(job.manifest![0].filename).toBe('song - pitch+2st.mp3');
+  expect(job.manifest![0].download_name).toBe('silent-fixture - song - pitch+2st.mp3');
+  const served = await page.request.get(`/api/jobs/${id}/results/song`);
+  expect(served.status()).toBe(200);
+  expect(decodeURIComponent(served.headers()['content-disposition'])).toContain('silent-fixture - song - pitch+2st.mp3');
+  expect(served.headers()['content-disposition']).not.toContain('source-key');
+  await expect(page.getByText(/Source key:/)).toHaveCount(0);
+  const event = page.waitForEvent('download');
+  await page.locator(`a[href='/api/jobs/${id}/results/song']`).first().click();
+  const download = await event;
+  expect(download.suggestedFilename()).toBe('silent-fixture - song - pitch+2st.mp3');
+  const path = info.outputPath(download.suggestedFilename());
+  await download.saveAs(path);
+  const decoded = pcm(path);
+  expect(decoded.length / 96000).toBeCloseTo(8, 1);
+  expect(decoded.every(sample => sample === 0)).toBe(true);
+  const original = await page.request.get(`/api/jobs/${id}/original`);
+  expect(hash(await original.body())).toBe(hash(await readFile(resolve(directory, 'silent-fixture.wav'))));
+  expect(original.headers()['content-disposition']).toContain('silent-fixture%20-%20original.wav');
+  await page.reload();
+  const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+  const historyStem = history.locator(`a[href='/api/jobs/${id}/results/song']`);
+  await expect(historyStem).toHaveCount(1);
+  await expect(historyStem).not.toContainText('Source key:');
+  await expect(historyStem).toHaveAttribute('download', 'silent-fixture - song - pitch+2st.mp3');
+  await page.screenshot({ path: info.outputPath('undetermined-source-key.png'), fullPage: true });
 });

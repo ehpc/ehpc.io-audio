@@ -32,7 +32,7 @@ it("shows transposition and tempo while preserving server download names and the
     manifest: [{
       label: "vocals",
       filename: "vocals.mp3",
-      download_name: "song - vocals - pitch+2st - tempo120pct.mp3",
+      download_name: "song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3",
       size_bytes: 1024,
       duration_s: 10,
     }],
@@ -47,6 +47,8 @@ it("shows transposition and tempo while preserving server download names and the
 
   expect(screen.getByText("C major")).toBeInTheDocument();
   expect(screen.getByText("D major")).toBeInTheDocument();
+  expect(screen.getByText("Source key: C major")).toBeInTheDocument();
+  expect(screen.queryByText("Source key: D major")).toBeNull();
   expect(screen.getByText("Notes (major): C · D · E · F · G · A · B")).toBeInTheDocument();
   expect(screen.getByText("Notes (major): D · E · F# · G · A · B · C#")).toBeInTheDocument();
   expect(screen.getByText("+2 semitones")).toBeInTheDocument();

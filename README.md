@@ -95,9 +95,11 @@ download is still available in Results and History.
 
 Desktop uses a broad two-by-two shelf of Outputs, Mixes, Cleanup and Splits, with
 pitch, tempo, original/target keys and notes, output preview and submission in a
-dedicated right rail. At widths up to 700px, the same controls become
-**Outputs / Adjust / Review** tabs; changing tabs never resets processing choices,
-pitch, tempo or key analysis. Arrow keys, Home and End navigate the tab bar.
+dedicated right rail. Desktop body/control text scales from 16px to 18px on wide
+screens and 20px at 3000px and above; Results and History typography scales with
+it. At widths up to 700px, the same controls become **Outputs / Adjust / Review**
+tabs; changing tabs never resets processing choices, pitch, tempo or key analysis.
+Arrow keys, Home and End navigate the tab bar.
 
 The mobile summary and primary action stay within the form's sticky boundary,
 then scroll away before Results and History, leaving players and downloads
@@ -123,13 +125,21 @@ and pitch/tempo never modify the original.
   offline Rubber Band **R3/Finer** pass with both settings together and formant
   preservation. There is no separate pitch-first or tempo-first pass.
   Separation caches remain unmodified; identity settings bypass rendering.
-- Modified downloads identify their settings, for example
-  `Song - vocals - pitch+2st - tempo120pct.mp3`. The original audio download
-  is never modified.
+- Derived downloads identify the detected **source key**, when found, before any
+  pitch/tempo settings: `Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3`.
+  Here `C major` remains the source key even though the output is `D major`.
+  Without a detected key, the name remains `Song - vocals - pitch+2st - tempo120pct.mp3`,
+  with no unknown-key token. The original audio's download name and bytes stay
+  unchanged; persisted stem filenames are not renamed, so existing history
+  downloads continue to work.
 - Results and history show the estimated **original key** and **output key**.
   The original is analyzed once using Mixxx's libkeyfinder; the output key is
   derived from the pitch offset, preserving major/minor mode. Fractional
   offsets include residual cents. Tempo alone does not change the key.
+- Every derived stem card in Results and download chip in History also shows
+  **Source key: C major** when found, using the job's original analysis rather
+  than reanalyzing stems or labeling the transposed output as the source.
+  Undetermined keys have no per-stem badge.
 - Key detection is an estimate of a global major/minor key, not chord or
   modulation tracking; silence is shown as **Undetermined**. Historical jobs
   without key analysis also show Undetermined. Large pitch/tempo changes can
@@ -293,8 +303,8 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **31 cases**: the original 27 processing/behavior
-cases plus four responsive workspace cases, not just one “everything on” job:
+The browser matrix contains **35 cases**: the original 27 processing/behavior
+cases, one undetermined-source-key case, and seven responsive workspace cases:
 
 - Each of the 12 boolean controls is submitted individually, plus all 12
   together. Independent cleanup/splits and mix-only cases prove that internal
@@ -320,12 +330,21 @@ cases plus four responsive workspace cases, not just one “everything on” job
   song. Both qualified fixtures assert `C major`, and their actual native preview
   must also agree with the UI, persisted original key, and mathematical target
   key/notes after transposition.
-- Responsive coverage renders the actual built app at 1440×1000, 375×812,
-  390×844 and 430×932. It checks every desktop group and the right rail, mobile
-  tab/keyboard navigation, option and pitch/tempo persistence, real source/key
-  preview and errors, Advanced/action clearance, shortened keyboard viewports,
-  and unobstructed Results/History downloads and audio playback. These cases use
-  the same real backend and generated C-major fixture, with no mocked boundaries.
+- Every detected-key stem checks its visible source label and canonical download
+  name, including pitch-shifted outputs whose target key differs. Actual HTTP
+  download headers are checked explicitly. A silent fixture exercises real native
+  undetermined-key analysis, omission of stem labels/name tokens, unchanged
+  original bytes/name, and an eight-second all-zero decoded transformed output.
+- Responsive coverage renders the actual built app at desktop widths 1440,
+  1920, 2560 and 3840, plus mobile 375×812, 390×844 and 430×932. It checks
+  readable text, every desktop group and the right rail, mobile tab/keyboard
+  navigation, option and pitch/tempo persistence, real source/key preview and
+  errors, Advanced/action clearance, shortened keyboard viewports, and
+  unobstructed Results/History downloads and audio playback. The all-enabled
+  processing case additionally captures all 20 real stems at all seven widths
+  and checks that source-key chips and download names stay within the viewport.
+  A native-scale pitched-song card crop shows the source label and download name.
+  All cases use the real backend and native audio tools, with no mocked boundaries.
 
 The hosted stereo `C major` → `G major` failure was **not musical ambiguity**:
 the upstream keyfinder-cli compatibility path for FFmpeg 6 and older supplied
@@ -349,7 +368,7 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful gate executes all 31 cases with no skipped cases.
+a successful gate executes all 35 cases with no skipped cases.
 
 Both local domain suites also exhaust all **4096 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local

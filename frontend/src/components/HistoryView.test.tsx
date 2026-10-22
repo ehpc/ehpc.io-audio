@@ -84,22 +84,24 @@ describe("HistoryView download chips", () => {
       options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
       output_key: "D major",
       manifest: [
-        { label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
-        { label: "instruments", filename: "instruments.mp3", download_name: "Great Song - instruments - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
+        { label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
+        { label: "instruments", filename: "instruments.mp3", download_name: "Great Song - instruments - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
       ],
     });
     const onSelect = vi.fn();
     render(() => <HistoryView jobs={[job]} onSelect={onSelect} onRetried={vi.fn()} />);
 
-    const vocals = screen.getByRole("link", { name: "vocals (pitch +2 st, tempo 120%)" });
+    const vocals = screen.getByRole("link", { name: "vocals (pitch +2 st, tempo 120%) Source key: C major" });
     expect(vocals).toHaveAttribute("href", "/api/jobs/1/results/vocals");
-    expect(vocals).toHaveAttribute("download", "Great Song - vocals - pitch+2st - tempo120pct.mp3");
-    expect(vocals).toHaveAttribute("title", "Great Song - vocals - pitch+2st - tempo120pct.mp3");
+    expect(vocals).toHaveAttribute("download", "Great Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3");
+    expect(vocals).toHaveAttribute("title", "Great Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3");
     expect(screen.getByText("C major")).toBeInTheDocument();
     expect(screen.getByText("D major")).toBeInTheDocument();
     expect(screen.getByText("+2 semitones")).toBeInTheDocument();
     expect(screen.getByText("120% of original")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "instruments (pitch +2 st, tempo 120%)" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "instruments (pitch +2 st, tempo 120%) Source key: C major" })).toBeInTheDocument();
+    expect(screen.getAllByText("Source key: C major")).toHaveLength(2);
+    expect(screen.queryByText("Source key: D major")).toBeNull();
 
     const original = document.querySelector<HTMLAnchorElement>('a[href="/api/jobs/1/original"]');
     expect(original).not.toBeNull();
@@ -112,12 +114,15 @@ describe("HistoryView download chips", () => {
   it("omits the original chip when no original is available", () => {
     const job = urlJob({
       has_original: false,
+      original_key: null,
+      output_key: null,
       manifest: [{ label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals.mp3", size_bytes: 1, duration_s: 1 }],
     });
     render(() => <HistoryView jobs={[job]} onSelect={vi.fn()} onRetried={vi.fn()} />);
     expect(document.querySelector('a[href="/api/jobs/1/original"]')).toBeNull();
     // stems still downloadable
     expect(screen.getByRole("link", { name: "vocals" })).toBeInTheDocument();
+    expect(screen.queryByText(/Source key:/)).toBeNull();
   });
 
   it("renders no chips for a queued job", () => {

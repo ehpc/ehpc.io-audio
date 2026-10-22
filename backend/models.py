@@ -22,10 +22,14 @@ def download_filename(
     job_id: int,
     label: str,
     options: SeparationOptions,
+    original_key: str | None = None,
 ) -> str:
-    """Canonical user-facing stem name, including any audio transformations."""
+    """Canonical presentation name; source key never follows stem pitch shifts."""
     base = _download_base(title, job_id)
-    return f"{base} - {label}{modification_suffix(options)}.mp3"
+    key_suffix = (
+        f" - source-key-{original_key.replace(' ', '-')}" if original_key else ""
+    )
+    return f"{base} - {label}{key_suffix}{modification_suffix(options)}.mp3"
 
 
 def original_filename(title: str | None, job_id: int, suffix: str) -> str:
@@ -106,7 +110,11 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
                 entry.model_copy(
                     update={
                         "download_name": download_filename(
-                            job.title, job.id, entry.label, job.options
+                            job.title,
+                            job.id,
+                            entry.label,
+                            job.options,
+                            job.original_key,
                         )
                     }
                 )

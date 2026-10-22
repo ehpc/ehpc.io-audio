@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tonalFixture, vocalFixture } from './fixture.mjs';
+import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
@@ -23,6 +23,7 @@ const toneFixture = tonalFixture();
 const temporary = await mkdtemp(resolve(tmpdir(), 'vocals-browser-e2e-'));
 await writeFile(resolve(temporary, 'musical-fixture.wav'), fixture);
 await writeFile(resolve(temporary, 'tone-fixture.wav'), toneFixture);
+await writeFile(resolve(temporary, 'silent-fixture.wav'), silentFixture());
 await writeFile(resolve(temporary, 'invalid.wav'), 'not audio');
 let serveRecovered = false;
 const source = createServer((req, res) => {

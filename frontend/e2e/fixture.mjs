@@ -12,6 +12,10 @@ function stereoWav(rate, seconds) {
   return wav;
 }
 
+export function silentFixture() {
+  return stereoWav(44100, 8);
+}
+
 export function tonalFixture() {
   // Unlike the changing chords/voices below, a sustained C/E/G triad is an
   // unambiguous known-key reference. C4 dominates for independent pitch checks.

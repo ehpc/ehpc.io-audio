@@ -63,6 +63,9 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
                     {formatDuration(stem.duration_s)} · {formatSize(stem.size_bytes)}
                   </span>
                 </CardTitle>
+                <Show when={props.job.original_key}>
+                  <p class="text-sm text-muted-foreground">Source key: {props.job.original_key}</p>
+                </Show>
               </CardHeader>
               <CardContent class="space-y-3">
                 <audio
