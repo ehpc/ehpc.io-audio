@@ -1,4 +1,4 @@
-# Vocal Tools
+# ehpc's Vocal Tools
 
 A web app for downloading a song, transforming its pitch/tempo, or extracting
 selected vocal and instrument tracks. Submit a URL or upload a file: by default,
@@ -100,6 +100,14 @@ screens and 20px at 3000px and above; Results and History typography scales with
 it. At widths up to 700px, the same controls become **Outputs / Adjust / Review**
 tabs; changing tabs never resets processing choices, pitch, tempo or key analysis.
 Arrow keys, Home and End navigate the tab bar.
+
+Pitch and tempo have explicit **− / +** buttons in the mobile **Adjust** tab and
+desktop rail, with accessible decrease/increase names and 44px touch targets.
+Each tap changes pitch by one semitone or tempo by one percentage point; direct
+number entry still accepts fractional values. Tempo decrement is disabled when
+the next step would reach zero or below, without restricting positive fractional
+manual entry. Incomplete numeric entries remain editable; their step buttons
+are disabled until a number is entered. Key and output previews update immediately.
 
 The mobile summary and primary action stay within the form's sticky boundary,
 then scroll away before Results and History, leaving players and downloads
@@ -303,8 +311,16 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **35 cases**: the original 27 processing/behavior
-cases, one undetermined-source-key case, and seven responsive workspace cases:
+The browser matrix contains **39 cases**: the original 27 processing/behavior
+cases, one undetermined-source-key case, seven responsive workspace cases, and
+four focused adjustment-button cases (375/390/430px touch and 1440px desktop):
+
+The adjustment cases exercise real taps/clicks, keyboard activation, fractional
+manual entry, positive-tempo bounds, tab persistence, reactive key/output previews,
+44px button geometry, and horizontal overflow against the real backend's key
+analysis. They can run without GPU work using
+`E2E_MODAL_APP_NAME=audio-adjustment-ui-check E2E_CHROMIUM_EXECUTABLE=/path/to/chromium npm --prefix frontend run test:e2e -- adjustments.spec.ts`.
+Chromium mobile emulation does not verify Safari's rendering or the iPhone keyboard.
 
 - Each of the 12 boolean controls is submitted individually, plus all 12
   together. Independent cleanup/splits and mix-only cases prove that internal

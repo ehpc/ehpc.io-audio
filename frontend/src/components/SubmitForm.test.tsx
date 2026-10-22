@@ -53,6 +53,88 @@ describe("SubmitForm", () => {
     expect(tempo).toHaveValue(100);
   });
 
+  it("steps pitch and tempo from defaults and fractional entries, updates previews, and submits the adjusted values", async () => {
+    vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 8, status: "queued", position: 1 });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
+    await userEvent.upload(screen.getByLabelText("Audio file"), new File(["audio"], "song.wav", { type: "audio/wav" }));
+    await screen.findByText("Original key: C major");
+
+    const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
+    const tempo = screen.getByRole("spinbutton", { name: "Tempo (% of original)" });
+    await userEvent.click(screen.getByRole("button", { name: "Increase pitch" }));
+    expect(pitch).toHaveValue(1);
+    expect(screen.getByText("Target key: Db major")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Decrease pitch" }));
+    expect(pitch).toHaveValue(0);
+    await userEvent.click(screen.getByRole("button", { name: "Decrease pitch" }));
+    expect(pitch).toHaveValue(-1);
+    await userEvent.click(screen.getByRole("button", { name: "Decrease tempo" }));
+    expect(tempo).toHaveValue(99);
+    await userEvent.click(screen.getByRole("button", { name: "Increase tempo" }));
+    expect(tempo).toHaveValue(100);
+
+    await userEvent.clear(pitch);
+    await userEvent.type(pitch, "-2.25");
+    await userEvent.click(screen.getByRole("button", { name: "Increase pitch" }));
+    expect(pitch).toHaveValue(-1.25);
+    await userEvent.clear(tempo);
+    await userEvent.type(tempo, "120.5");
+    await userEvent.click(screen.getByRole("button", { name: "Decrease tempo" }));
+    expect(tempo).toHaveValue(119.5);
+    expect(screen.getByText("Full song (pitch -1.25 st, tempo 119.5%)")).toBeInTheDocument();
+    expect(screen.getByText("Original (unchanged)")).toBeInTheDocument();
+    expect(api.submitJob).not.toHaveBeenCalled();
+    await userEvent.click(submitButton());
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5 }),
+    }));
+    await waitFor(() => expect(pitch).toHaveValue(0));
+    expect(tempo).toHaveValue(100);
+  });
+
+  it("keeps tempo strictly positive without imposing a minimum on fractional manual entry", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    const tempo = screen.getByRole("spinbutton", { name: "Tempo (% of original)" });
+    const decrease = screen.getByRole("button", { name: "Decrease tempo" });
+    const increase = screen.getByRole("button", { name: "Increase tempo" });
+    await userEvent.clear(tempo);
+    await userEvent.type(tempo, "2");
+    await userEvent.click(decrease);
+    expect(tempo).toHaveValue(1);
+    expect(decrease).toBeDisabled();
+    await userEvent.click(decrease);
+    expect(tempo).toHaveValue(1);
+
+    await userEvent.clear(tempo);
+    await userEvent.type(tempo, "0.25");
+    expect(tempo).toHaveValue(0.25);
+    expect(decrease).toBeDisabled();
+    await userEvent.click(increase);
+    expect(tempo).toHaveValue(1.25);
+    expect(decrease).toBeEnabled();
+    await userEvent.click(decrease);
+    expect(tempo).toHaveValue(0.25);
+  });
+
+  it("does not replace incomplete manual entries with a button fallback", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    for (const [label, name] of [
+      ["Pitch shift (semitones)", "pitch"],
+      ["Tempo (% of original)", "tempo"],
+    ]) {
+      const input = screen.getByRole("spinbutton", { name: label });
+      await userEvent.clear(input);
+      expect(screen.getByRole("button", { name: `Decrease ${name}` })).toBeDisabled();
+      expect(screen.getByRole("button", { name: `Increase ${name}` })).toBeDisabled();
+      expect(input).toHaveValue(null);
+      await userEvent.type(input, "1.5");
+      await userEvent.click(screen.getByRole("button", { name: `Increase ${name}` }));
+      expect(input).toHaveValue(2.5);
+    }
+  });
+
   it.each(["0", "-20", ""])("rejects nonpositive or missing tempo (%s)", async (value) => {
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByPlaceholderText("https://..."), "https://example.com/x");

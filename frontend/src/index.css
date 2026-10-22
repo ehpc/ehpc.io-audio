@@ -91,8 +91,10 @@
 .workspace-option:has(:checked) { color: hsl(var(--primary)); }
 .workspace-advanced { margin-top: 18px; border-top: 1px solid hsl(var(--border)); }
 .workspace-advanced summary { min-height: 44px; padding: 12px 0; cursor: pointer; color: hsl(var(--muted-foreground)); }
-.workspace-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
-.workspace-numbers label { display: block; min-height: 42px; font-size: var(--app-body-size); }
+.workspace-numbers { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 16px; }
+.workspace-numbers label { display: block; margin-bottom: 6px; font-size: var(--app-body-size); }
+.number-stepper { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 8px; }
+.number-stepper button { width: 44px; height: 44px; min-width: 44px; min-height: 44px; font-size: 24px; }
 .workspace-keys { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; border-top: 1px solid hsl(var(--border)); margin-top: 16px; padding-top: 16px; line-height: 1.5; overflow-wrap: anywhere; }
 .workspace-keys .key-label { color: hsl(var(--primary)); margin-bottom: 5px; }
 .review-page { margin-top: 20px; padding-top: 16px; border-top: 1px solid hsl(var(--border)); }

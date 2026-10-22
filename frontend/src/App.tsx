@@ -43,7 +43,7 @@ const App: Component = () => {
   return (
     <main class="app-shell">
       <header class="app-header">
-        <h1>Vocal Tools</h1>
+        <h1>ehpc's Vocal Tools</h1>
         <p>Your audio workspace</p>
       </header>
 

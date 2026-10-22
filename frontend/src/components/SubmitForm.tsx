@@ -11,6 +11,7 @@ import { transposeKey } from "~/lib/music";
 
 type SourceMode = "url" | "file";
 type WorkspaceTab = "outputs" | "adjust" | "review";
+type AudioOptionKey = "pitch_semitones" | "tempo_percent";
 const WORKSPACE_TABS: WorkspaceTab[] = ["outputs", "adjust", "review"];
 const OPTION_GROUPS = ["Outputs", "Mixes", "Cleanup", "Splits"] as const;
 
@@ -124,6 +125,19 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   let pitchInput!: HTMLInputElement;
   let tempoInput!: HTMLInputElement;
   let fileInput: HTMLInputElement | undefined;
+
+  // Direct entry stays fractional (step="any"); buttons move by one semitone
+  // or one percentage point without crossing tempo's exclusive zero bound.
+  const canAdjust = (key: AudioOptionKey, delta: -1 | 1) => {
+    const next = options[key] + delta;
+    return Number.isFinite(next) && next !== options[key] && (key !== "tempo_percent" || next > 0);
+  };
+  const adjust = (key: AudioOptionKey, input: HTMLInputElement, delta: -1 | 1) => {
+    if (!canAdjust(key, delta)) return;
+    const next = options[key] + delta;
+    input.value = String(next);
+    setOptions(key, next);
+  };
 
   const trimmedUrl = () => url().trim();
   // The original source is always kept and downloadable.
@@ -284,15 +298,27 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             <div class="workspace-numbers">
               <div>
                 <Label for="pitch-input">Pitch shift (semitones)</Label>
-                <input id="pitch-input" type="number" step="any" ref={pitchInput}
-                  value={DEFAULT_OPTIONS.pitch_semitones}
-                  onInput={(event) => setOptions("pitch_semitones", event.currentTarget.valueAsNumber)} />
+                <div class="number-stepper">
+                  <Button type="button" variant="outline" size="icon" aria-label="Decrease pitch" aria-controls="pitch-input"
+                    disabled={!canAdjust("pitch_semitones", -1)} onClick={() => adjust("pitch_semitones", pitchInput, -1)}>−</Button>
+                  <input id="pitch-input" type="number" step="any" ref={pitchInput}
+                    value={DEFAULT_OPTIONS.pitch_semitones}
+                    onInput={(event) => setOptions("pitch_semitones", event.currentTarget.valueAsNumber)} />
+                  <Button type="button" variant="outline" size="icon" aria-label="Increase pitch" aria-controls="pitch-input"
+                    disabled={!canAdjust("pitch_semitones", 1)} onClick={() => adjust("pitch_semitones", pitchInput, 1)}>+</Button>
+                </div>
               </div>
               <div>
                 <Label for="tempo-input">Tempo (% of original)</Label>
-                <input id="tempo-input" type="number" step="any" ref={tempoInput}
-                  value={DEFAULT_OPTIONS.tempo_percent}
-                  onInput={(event) => setOptions("tempo_percent", event.currentTarget.valueAsNumber)} />
+                <div class="number-stepper">
+                  <Button type="button" variant="outline" size="icon" aria-label="Decrease tempo" aria-controls="tempo-input"
+                    disabled={!canAdjust("tempo_percent", -1)} onClick={() => adjust("tempo_percent", tempoInput, -1)}>−</Button>
+                  <input id="tempo-input" type="number" step="any" ref={tempoInput}
+                    value={DEFAULT_OPTIONS.tempo_percent}
+                    onInput={(event) => setOptions("tempo_percent", event.currentTarget.valueAsNumber)} />
+                  <Button type="button" variant="outline" size="icon" aria-label="Increase tempo" aria-controls="tempo-input"
+                    disabled={!canAdjust("tempo_percent", 1)} onClick={() => adjust("tempo_percent", tempoInput, 1)}>+</Button>
+                </div>
               </div>
             </div>
             <p class="workspace-helper">Pitch and tempo apply to every generated output, never the original. With no separation selected, they transform the full song.</p>
