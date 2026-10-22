@@ -155,6 +155,12 @@ and pitch/tempo never modify the original.
   modulation tracking; silence is shown as **Undetermined**. Historical jobs
   without key analysis also show Undetermined. Large pitch/tempo changes can
   introduce audible artifacts.
+  Analysis decodes **every frame** into mono 11025 Hz PCM before invoking the
+  native estimator; it never limits analysis to an excerpt or changes the original.
+  libkeyfinder already averages channels and analyzes a low-passed band below
+  2 kHz, so this rate preserves its analyzed frequencies without retaining
+  full-rate stereo PCM and copies in memory. Resampler/filter differences can
+  affect borderline estimates; this remains a global musical estimate.
 - Attaching a file automatically analyzes its key; a valid HTTP(S) URL starts
   analysis after a short debounce. A spinner shows analysis progress before
   submission. The pitch control shows the original and target key with
@@ -387,16 +393,103 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful gate executes all 35 cases with no skipped cases.
+a successful full-stack gate executes all 42 cases with no skipped cases.
 
 Both local domain suites also exhaust all **4096 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local
 combinatorial verification, **not** 4096 GPU runs or mathematical exhaustiveness
 over arbitrary numeric pitch/tempo values.
 
-CI runs native/backend/frontend checks, direct deployed GPU smoke, and this
-browser matrix against a unique test app for every push/PR. Only a passing main
-run promotes the production Modal deployment and publishes the image.
+CI runs native/backend/frontend checks, direct deployed GPU smoke, this
+42-case browser matrix against a unique test app, the separate real YouTube CPU
+case, and the 13-case visual suite below for every push/PR. Only a passing main
+run promotes the production Modal deployment and publishes the image; both
+promotion jobs explicitly depend on visual and real YouTube success.
+
+### Real external YouTube key analysis
+
+`npm --prefix frontend run test:youtube` builds the real frontend/backend and
+runs one isolated CPU-only browser case using exactly
+`https://music.youtube.com/watch?v=wf5RdLDxrUk&si=ANzOjMlDcHwwlwOL`.
+It requires the native tools, yt-dlp, Deno, Chromium, and external YouTube/media
+network access, but **no Modal deployment or credentials**. It enters the URL
+through the UI, waits for the real download and full-song native analysis,
+asserts a standard major/minor key, and checks visible Original/Target key and
+the inline pitch badge at pitch zero. It does not hard-code the recording's
+musical key, mock network/media/analysis, submit a job, or invoke a GPU.
+
+The separate `youtube` CI job runs on every push/PR and gates promotion/image
+publication. YouTube bot/authentication restrictions, missing tools, and network
+failures **fail visibly**, not skip or fall back to fixtures. It retains
+`frontend/test-results/youtube/` response JSON, UI screenshot, backend log and
+Playwright failure artifacts plus `frontend/playwright-report/youtube/`.
+To exercise an already released server instead of starting a local one:
+
+```sh
+(cd frontend && E2E_BASE_URL=https://audio.ehpc.io npx playwright test --config=playwright.youtube.config.ts)
+```
+
+The production 502 investigation found a container `OOMKilled` at its 512 MiB
+limit. For this full 356.67-second recording, direct full-rate native input
+peaked at 731564 KiB RSS; mono 11025 Hz native input peaked at 96472 KiB and
+returned the same estimate. A local real-browser URL run with the entire
+backend/downloader/native process tree constrained to 512 MiB (swap disabled)
+passed at 205651968 bytes peak. These are measured local runtime results, not
+a claim that a particular production release or arbitrary-length track was
+verified. The native regression also analyzes a full six-minute stereo recording
+with a silent first minute and checks both the later chord's key and peak RSS.
+
+### Deterministic screenshot regression tests
+
+Run `npm --prefix frontend run test:visual` with Docker available. The wrapper
+builds and runs `frontend/e2e/Dockerfile.visual`, based on the official
+`mcr.microsoft.com/playwright:v1.64.1-noble` image (also pinned by digest) matching the npm lockfile.
+Local generation and CI comparisons use that same Linux/amd64 Ubuntu userspace,
+Chromium, and bundled fonts, including on NixOS. Do **not** generate baselines
+using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
+Updating Playwright requires updating the Docker image version/digest and reviewing
+all regenerated baselines together.
+
+The **13 visual cases** compare committed PNGs in
+`frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
+screens, two 1440px/2560px desktop workspaces, and eight tightly cropped,
+focused pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
+native undetermined key, and a long fractional-cents badge). These complement,
+not replace, the **42 processing/UI cases** and **one external YouTube case**
+above (**56 browser cases total**, including these 13 visual cases).
+There is no redundant full-page viewport/state cross-product.
+
+The suite builds the production frontend and reuses the real isolated HTTP
+backend harness. It uploads locally synthesized sustained C/E/G audio or
+silence and asserts real native keyfinder analysis before taking screenshots;
+it does not intercept API responses, fetch external recordings/URLs, submit
+GPU jobs, or require Modal credentials. Each case starts a fresh browser
+context, with fixed viewport, device scale, clock, locale, timezone, color
+scheme and reduced motion, uses CPU rasterization with a fixed sRGB profile,
+waits for fonts/analysis, disables animations, and hides the caret.
+Comparisons allow **zero differing pixels** above a strict **0.005 YIQ color
+threshold** (only about one RGB level of native-control raster rounding);
+there is no pixel-count or percentage allowance for layout changes. A missing
+baseline or changed screenshot fails normal runs; they never auto-accept.
+
+For an intentional UI change, explicitly regenerate inside the pinned runtime:
+
+```sh
+npm --prefix frontend run test:visual -- --update-snapshots=all
+# Review every changed PNG, then run the normal comparison before committing:
+npm --prefix frontend run test:visual
+```
+
+Pass Playwright filters through the same command, for example
+`npm --prefix frontend run test:visual -- --grep "focused pitch"`.
+Successful and failed runs retain actual PNGs, native `analysis.json`,
+browser/OS/viewport `runtime.json`, backend logs and a Playwright `summary.json`
+under `frontend/test-results/visual/`; the report is
+`frontend/playwright-report/visual/`. Failures additionally retain expected,
+actual and diff images and traces. CI uploads visual evidence on success and
+failure. The dedicated CPU-only Docker job is independent of the existing
+GPU/full-stack job; production Modal promotion and GHCR publication wait for
+both.
 
 ### Browser-test fixture licenses
 

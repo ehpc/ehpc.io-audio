@@ -10,16 +10,21 @@ import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
-const app = process.env.E2E_MODAL_APP_NAME;
+const visual = process.argv.includes('--visual');
+const youtube = process.argv.includes('--youtube');
+const cpuOnly = visual || youtube;
+const arguments_ = process.argv.slice(2).filter(argument => !['--visual', '--youtube'].includes(argument));
+if (youtube) arguments_.unshift('--config=playwright.youtube.config.ts');
+const app = cpuOnly ? 'audio-separator-key-analysis-no-gpu' : process.env.E2E_MODAL_APP_NAME;
 if (!app || app === 'audio-separator') {
   throw new Error('Set E2E_MODAL_APP_NAME to an explicitly isolated Modal test deployment (not audio-separator).');
 }
-console.log(`Real full-stack verification: Modal app=${app}; no mocked boundaries`);
+console.log(youtube ? 'YouTube verification: real external download + full-song native key analysis, no GPU jobs' : visual ? 'Visual verification: real native key analysis, deterministic local audio, no GPU jobs' : `Real full-stack verification: Modal app=${app}; no mocked boundaries`);
 const build = spawnSync('npm', ['run', 'build'], { cwd: frontend, stdio: 'inherit' });
 if (build.status !== 0) process.exit(build.status ?? 1);
-const fixtureSeed = randomBytes(4).readUInt32LE();
-const fixture = await vocalFixture(fixtureSeed);
+const fixtureSeed = cpuOnly ? 0 : randomBytes(4).readUInt32LE();
 const toneFixture = tonalFixture();
+const fixture = cpuOnly ? toneFixture : await vocalFixture(fixtureSeed);
 const temporary = await mkdtemp(resolve(tmpdir(), 'vocals-browser-e2e-'));
 await writeFile(resolve(temporary, 'musical-fixture.wav'), fixture);
 await writeFile(resolve(temporary, 'tone-fixture.wav'), toneFixture);
@@ -97,7 +102,7 @@ try {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   console.log(`Built frontend + real HTTP backend: ${baseURL}; isolated DATA_DIR=${environment.DATA_DIR}`);
-  child = spawn(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', ...process.argv.slice(2)], {
+  child = spawn(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', ...arguments_], {
     cwd: frontend, env: environment, stdio: 'inherit',
   });
   exit = await new Promise((resolve, reject) => {
@@ -106,8 +111,9 @@ try {
   });
 } finally {
   try {
-    await mkdir(resolve(frontend, 'test-results'), { recursive: true });
-    await writeFile(resolve(frontend, 'test-results', 'backend.log'), backendLog);
+    const results = resolve(frontend, 'test-results', ...(visual ? ['visual'] : youtube ? ['youtube'] : []));
+    await mkdir(results, { recursive: true });
+    await writeFile(resolve(results, 'backend.log'), backendLog);
   } finally {
     await cleanup();
     process.off('SIGINT', interrupt);

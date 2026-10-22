@@ -132,7 +132,7 @@ def mix_audio(vocals: Path, instruments: Path, output: Path) -> None:
 
 
 def detect_key(audio_bytes: bytes, filename: str) -> str | None:
-    """Return libkeyfinder's standard key, or None for its SILENCE result."""
+    """Analyze the entire recording, with bounded-rate PCM rather than source PCM."""
     with tempfile.TemporaryDirectory(prefix="vocals-key-") as directory:
         # The absolute, fixed basename cannot be interpreted as a CLI option or
         # escape the temporary directory, even for hostile upload filenames.
@@ -141,7 +141,34 @@ def detect_key(audio_bytes: bytes, filename: str) -> str | None:
             suffix = ".audio"
         source = Path(directory) / f"original{suffix}"
         source.write_bytes(audio_bytes)
-        result = _run(["keyfinder-cli", "-n", "standard", str(source)])
+        analysis = Path(directory) / "analysis.wav"
+        # keyfinder-cli retains decoded samples and libkeyfinder copies them.
+        # Full-rate stereo exceeds 512 MiB for ordinary six-minute songs.
+        # libkeyfinder itself averages channels and low-passes below 2 kHz;
+        # mono 11025 Hz preserves that band while avoiding full-rate allocation.
+        # Decode every frame: no excerpt, duration limit, or original-file change.
+        _run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                str(source),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "11025",
+                "-c:a",
+                "pcm_s16le",
+                str(analysis),
+            ]
+        )
+        result = _run(["keyfinder-cli", "-n", "standard", str(analysis)])
     key = result.stdout.strip()
     if not key:
         return None

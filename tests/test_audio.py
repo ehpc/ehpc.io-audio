@@ -1,5 +1,7 @@
+import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -170,6 +172,59 @@ def test_real_major_chord_key(channels: int, audio_format: str) -> None:
 def test_keyfinder_decode_error_is_not_unknown_key() -> None:
     with pytest.raises(RuntimeError):
         detect_key(b"not audio", "original.mp3")
+
+
+@pytest.mark.skipif(
+    not (_KEYFINDER and _FFMPEG), reason="native keyfinder-cli and ffmpeg required"
+)
+def test_full_six_minute_key_analysis_stays_within_memory_budget(
+    tmp_path: Path,
+) -> None:
+    # A silent first minute must not hide the remaining five-minute C chord.
+    # Generate compressed media without retaining a full-rate Python PCM buffer.
+    source = tmp_path / "full-song.mp3"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "aevalsrc=if(lt(t\\,60)\\,0\\,"
+            "0.15*(sin(2*PI*261.6256*t)+sin(2*PI*329.6276*t)"
+            "+sin(2*PI*391.9954*t))):s=48000:d=360",
+            "-ac",
+            "2",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    # A separate interpreter gives this analysis its own child RSS high-water
+    # mark. Direct full-rate CLI input used >700 MiB for a six-minute song.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json,resource,sys; from pathlib import Path; "
+            "from separator.audio import detect_key; "
+            "key=detect_key(Path(sys.argv[1]).read_bytes(), 'full-song.mp3'); "
+            "rss=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss; "
+            "print(json.dumps({'key':key, 'rss_kib':"
+            "rss/1024 if sys.platform=='darwin' else rss}))",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    proof = json.loads(result.stdout)
+    assert proof["key"] == "C major"
+    # Leave room inside the production 512 MiB limit for Python, yt-dlp, and
+    # compressed source bytes, instead of merely fitting the native child.
+    assert proof["rss_kib"] < 256 * 1024, proof
 
 
 @pytest.mark.skipif(not _MIX_TOOLS, reason="ffmpeg and ffprobe required")
