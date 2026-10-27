@@ -57,6 +57,12 @@ the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
 workflow. A completed download-only job has an empty result manifest; its original
 download is still available in Results and History.
 
+Each generated MP3 embeds a `Title` tag identical to its canonical download
+filename without the `.mp3` extension. This title includes the output stem and
+any source-key, pitch, and tempo descriptors present in the filename. If the
+source key is unknown, no source-key descriptor or placeholder is added. The
+original download is never retagged; its bytes remain unchanged.
+
 | Selection | Output labels |
 |---|---|
 | Extract vocals | `vocals` |
@@ -323,9 +329,10 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **42 cases**: the original 27 processing/behavior
-cases, one undetermined-source-key case, seven responsive workspace cases, and
-seven focused adjustment-button cases (375/390/430px touch and 1440/1920/2560/3840px desktop):
+The browser matrix contains **49 cases**: the original 27 processing/behavior
+cases, one undetermined-source-key case, one actual-download metadata case,
+six native MP3 upload cases, seven responsive workspace cases, and seven focused
+adjustment-button cases (375/390/430px touch and 1440/1920/2560/3840px desktop):
 
 The adjustment cases exercise real taps/clicks, keyboard activation, fractional
 manual entry, positive-tempo bounds, tab persistence, reactive key/output previews,
@@ -333,6 +340,45 @@ manual entry, positive-tempo bounds, tab persistence, reactive key/output previe
 analysis. They can run without GPU work using
 `E2E_MODAL_APP_NAME=audio-adjustment-ui-check E2E_CHROMIUM_EXECUTABLE=/path/to/chromium npm --prefix frontend run test:e2e -- adjustments.spec.ts`.
 Chromium mobile emulation does not verify Safari's rendering or the iPhone keyboard.
+
+The metadata case uploads the deterministic local tonal fixture through the UI,
+waits for native key analysis, and applies fractional pitch and tempo changes to
+the full song with no extraction/GPU work. It downloads the actual generated MP3
+from Results and, after reloading, History; FFprobe checks that the embedded
+Title equals Chromium's suggested filename without `.mp3`, including the source
+name, stem, source key, pitch, and tempo. Both generated downloads must be
+byte-identical, and both original downloads must preserve the uploaded bytes.
+Chromium/FFmpeg decoding also checks the transformed duration and pitch. Run this
+case without Modal credentials or network audio fixtures:
+
+```sh
+npm --prefix frontend run test:e2e -- --cpu metadata.spec.ts
+```
+
+`--cpu` reuses the real production frontend/backend harness and native audio
+tools with deterministic local fixtures and a nonproduction Modal app name;
+select only CPU-compatible specs, since it does not replace GPU processing.
+The case saves `metadata-proof.json`, raw FFprobe JSON, Results/History
+screenshots, and actual downloaded files alongside the normal browser artifacts.
+
+The MP3 upload matrix uses FFmpeg-encoded stereo MP3 bytes with `audio/mpeg`,
+generic `application/octet-stream`, and empty browser MIME types at desktop and
+390px widths. It exercises native key preview, multipart submission, completed
+download-only jobs, and byte-identical original downloads in Results and reloaded
+History. MPEG/generic cases use Chromium's file chooser; the empty-MIME case uses
+a browser `File`/`DataTransfer` change because Playwright otherwise infers MPEG.
+The picker retains `audio/*` and adds extension hints for MP3, WAV, FLAC, M4A,
+OGG, AAC, Opus, and WebM so a provider's missing audio MIME is not the only hint.
+These hints do not validate or relabel file contents. Physical mobile/cloud
+provider pickers and Safari are not covered. Run without GPU calls:
+
+```sh
+npm --prefix frontend run test:e2e -- --cpu mp3-upload.spec.ts
+```
+
+Each case records `mp3-upload-proof.json`, selected-file MIME, actual request
+`multipart/form-data` headers, native codec/key results, original-byte hashes,
+and selection/Results/History PNGs under `frontend/test-results/`.
 
 - Each of the 12 boolean controls is submitted individually, plus all 12
   together. Independent cleanup/splits and mix-only cases prove that internal
@@ -396,7 +442,7 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 42 cases with no skipped cases.
+a successful full-stack gate executes all 43 cases with no skipped cases.
 
 Both local domain suites also exhaust all **4096 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local
@@ -404,8 +450,8 @@ combinatorial verification, **not** 4096 GPU runs or mathematical exhaustiveness
 over arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, direct deployed GPU smoke, this
-42-case browser matrix against a unique test app, the separate real YouTube CPU
-case, and the 13-case visual suite below for every push/PR. Only a passing main
+43-case browser matrix against a unique test app, the separate real YouTube CPU
+case, and the 13-case visual suite below (**57 browser cases total**) for every push/PR. Only a passing main
 run promotes the production Modal deployment and publishes the image; both
 promotion jobs explicitly depend on visual and real YouTube success.
 
@@ -604,6 +650,22 @@ recordings are included or fetched.
            - name: data
              persistentVolumeClaim: { claimName: audio-data-pvc }
    ```
+
+### Gateway upload size
+
+The approved `audio.ehpc.io` gateway policy is **64 MiB for the entire request
+body**, including multipart overhead, configured as `client_max_body_size 64m;`
+in both audio virtual hosts. The external Nginx configuration is maintained
+outside this repository; keep the override scoped to the audio host rather than
+changing limits for unrelated services.
+
+The initial gateway configuration inspected on 2026-10-27 had no override and
+inherited Nginx's
+[`1m` default](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size).
+Requests above that former **1 MiB** limit received HTTP **413 before reaching
+the backend**, affecting both `POST /api/key-analysis` and `POST /api/jobs`.
+This was a deployment request-size restriction, not an MP3 codec or application
+MIME restriction; changing the picker or backend alone cannot remove it.
 
 ## Known limitations
 

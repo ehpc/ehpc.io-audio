@@ -1,7 +1,10 @@
 import json
+import shutil
 import sqlite3
+import subprocess
 
 import pytest
+from audio_samples import tone_wav
 from fastapi.testclient import TestClient
 
 from backend import config, db
@@ -84,6 +87,49 @@ def test_original_download_for_upload(client: TestClient) -> None:
     assert resp.status_code == 200
     assert resp.content == b"rawaudio"
     assert "original.mp3" in resp.headers["content-disposition"]
+
+
+@pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("keyfinder-cli")),
+    reason="native ffmpeg and keyfinder-cli required",
+)
+@pytest.mark.parametrize("content_type", ["audio/mpeg", "application/octet-stream", ""])
+def test_native_mp3_upload_analysis_and_original_ignore_provider_mime(
+    client: TestClient, content_type: str
+) -> None:
+    encoded = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "libmp3lame",
+            "-f",
+            "mp3",
+            "pipe:1",
+        ],
+        input=tone_wav((261.6256, 329.6276, 391.9954), duration_s=8, channels=2),
+        capture_output=True,
+        check=True,
+    ).stdout
+    files = {"file": ("Native MP3.MP3", encoded, content_type)}
+    analysis = client.post("/api/key-analysis", files=files)
+    assert analysis.status_code == 200, analysis.text
+    assert analysis.json() == {"original_key": "C major"}
+    assert client.get("/api/jobs").json() == []
+
+    submitted = client.post("/api/jobs", files=files)
+    assert submitted.status_code == 200, submitted.text
+    job_id = submitted.json()["id"]
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["source_type"] == "upload"
+    assert job["source_value"] == "Native MP3.MP3"
+    original = client.get(f"/api/jobs/{job_id}/original")
+    assert original.status_code == 200
+    assert original.content == encoded
 
 
 def test_original_404_when_not_downloaded_yet(client: TestClient) -> None:
@@ -175,7 +221,7 @@ def test_old_jobs_survive_key_metadata_migration(client: TestClient) -> None:
     assert job["original_key"] is None
     assert job["output_key"] is None
     assert job["manifest"][0]["download_name"] == "old - vocals.mp3"
-    assert client.get(f"/api/jobs/{job_id}/results/vocals").content == b"old"
+    assert client.get(f"/api/jobs/{job_id}/results/vocals").content.endswith(b"old")
     assert job["options"]["extract_vocals"] is True
     assert job["options"]["extract_instruments"] is True
     retried_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]

@@ -28,6 +28,28 @@ describe("SubmitForm", () => {
     expect(onSubmitted).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["song.mp3", "audio/mpeg"],
+    ["song.MP3", "application/octet-stream"],
+    ["song.mp3", ""],
+    ["song.wav", "application/octet-stream"],
+  ])("analyzes and submits %s reported as %s without changing the file", async (name, type) => {
+    vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 13, status: "queued", position: 1 });
+    const onSubmitted = vi.fn();
+    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
+    const source = new File(["provider audio"], name, { type });
+    await userEvent.upload(screen.getByLabelText("Audio file"), source);
+    expect(await screen.findByText(`Selected: ${name}`)).toBeInTheDocument();
+    expect(await screen.findByText("Original key: C major")).toBeInTheDocument();
+    expect(api.analyzeKey).toHaveBeenCalledWith({ file: source }, expect.any(AbortSignal));
+    await userEvent.click(submitButton());
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({ file: source, url: undefined }));
+    expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ source_type: "upload", source_value: name }));
+  });
+
   it("accepts fractional pitch and positive fractional tempo, then restores defaults", async () => {
     vi.mocked(api.submitJob).mockResolvedValue({
       id: 7,

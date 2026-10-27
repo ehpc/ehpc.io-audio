@@ -219,7 +219,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           <Show when={mode() === "url"} fallback={
             <div class="source-field">
               <Label for="file-input">Audio file</Label>
-              <input id="file-input" type="file" accept="audio/*" ref={fileInput}
+              {/* Providers can omit an audio MIME type; extensions keep those files selectable. */}
+              <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac,.opus,.webm" ref={fileInput}
                 onChange={(e) => { setFile(e.currentTarget.files?.[0] ?? null); setError(null); }} />
               <Show when={file()}>{(f) => <p class="workspace-helper">Selected: {f().name}</p>}</Show>
             </div>

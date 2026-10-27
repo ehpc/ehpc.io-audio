@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from backend import config, db
+from backend.metadata import ensure_download_title
 from backend.models import JobStatus, download_filename, original_filename
 from backend.session import get_session_id
 
@@ -48,10 +49,16 @@ async def get_result(
         raise HTTPException(404, "result not found")
 
     path = config.RESULTS_DIR / str(job_id) / entry.filename
+    download_name = download_filename(
+        job.title, job_id, label, job.options, job.original_key
+    )
+    # Old persisted results predate canonical titles (and source-key filenames).
+    # Reconcile tags without re-encoding, and skip writes once they match.
+    size_bytes = await asyncio.to_thread(ensure_download_title, path, download_name)
+    if entry.size_bytes != size_bytes:
+        await asyncio.to_thread(db.update_result_size, job_id, label, size_bytes)
     return FileResponse(
         path,
         media_type="audio/mpeg",
-        filename=download_filename(
-            job.title, job_id, label, job.options, job.original_key
-        ),
+        filename=download_name,
     )

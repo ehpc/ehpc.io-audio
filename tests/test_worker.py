@@ -51,7 +51,9 @@ def test_run_job_upload_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert done.title == "song.mp3"  # an upload's title is its filename
     assert done.result_manifest is not None
     assert [entry.label for entry in done.result_manifest] == ["vocals", "instruments"]
-    assert (config.RESULTS_DIR / str(job_id) / "vocals.mp3").read_bytes() == b"vvv"
+    assert (
+        (config.RESULTS_DIR / str(job_id) / "vocals.mp3").read_bytes().endswith(b"vvv")
+    )
 
 
 def test_run_job_url_sets_title_from_download(monkeypatch: pytest.MonkeyPatch) -> None:

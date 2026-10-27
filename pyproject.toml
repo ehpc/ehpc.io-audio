@@ -5,6 +5,7 @@ description = "Tools for vocal separation via Modal."
 requires-python = ">=3.15,<3.16"
 dependencies = [
     "modal>=1.6.2",
+    "mutagen>=1.48.1",
     "fastapi",
     "uvicorn[standard]",
     "itsdangerous",

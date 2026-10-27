@@ -153,7 +153,7 @@ def test_upload_is_separated_and_stems_are_downloadable(
     for label in ("vocals", "instruments"):
         stem = worker_client.get(f"/api/jobs/{job_id}/results/{label}")
         assert stem.status_code == 200
-        assert stem.content == f"{label}-audio".encode()
+        assert stem.content.endswith(f"{label}-audio".encode())
         assert stem.headers["content-type"] == "audio/mpeg"
         # Starlette percent-encodes the download name (RFC 5987 filename*=).
         assert (
@@ -193,7 +193,7 @@ def test_submitted_options_reach_the_separator_and_shape_the_manifest(
     for label in labels:
         stem = worker_client.get(f"/api/jobs/{job_id}/results/{label}")
         assert stem.status_code == 200, label
-        assert stem.content == f"{label}-audio".encode()
+        assert stem.content.endswith(f"{label}-audio".encode())
 
 
 def test_url_job_downloads_titles_and_separates(
@@ -219,7 +219,7 @@ def test_url_job_downloads_titles_and_separates(
     assert job["has_original"] is True
 
     stem = worker_client.get(f"/api/jobs/{job_id}/results/vocals")
-    assert stem.content == b"vocals-audio"
+    assert stem.content.endswith(b"vocals-audio")
     assert (
         quote("My Song - vocals - source-key-C-major.mp3")
         in stem.headers["content-disposition"]
@@ -318,7 +318,7 @@ def test_results_are_persisted_under_the_data_dir(
         "instruments.mp3",
         "vocals.mp3",
     ]
-    assert (results / "vocals.mp3").read_bytes() == b"vocals-audio"
+    assert (results / "vocals.mp3").read_bytes().endswith(b"vocals-audio")
 
 
 @pytest.mark.skipif(

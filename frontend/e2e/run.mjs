@@ -12,14 +12,15 @@ const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
 const visual = process.argv.includes('--visual');
 const youtube = process.argv.includes('--youtube');
-const cpuOnly = visual || youtube;
-const arguments_ = process.argv.slice(2).filter(argument => !['--visual', '--youtube'].includes(argument));
+const cpu = process.argv.includes('--cpu');
+const cpuOnly = visual || youtube || cpu;
+const arguments_ = process.argv.slice(2).filter(argument => !['--visual', '--youtube', '--cpu'].includes(argument));
 if (youtube) arguments_.unshift('--config=playwright.youtube.config.ts');
 const app = cpuOnly ? 'audio-separator-key-analysis-no-gpu' : process.env.E2E_MODAL_APP_NAME;
 if (!app || app === 'audio-separator') {
   throw new Error('Set E2E_MODAL_APP_NAME to an explicitly isolated Modal test deployment (not audio-separator).');
 }
-console.log(youtube ? 'YouTube verification: real external download + full-song native key analysis, no GPU jobs' : visual ? 'Visual verification: real native key analysis, deterministic local audio, no GPU jobs' : `Real full-stack verification: Modal app=${app}; no mocked boundaries`);
+console.log(youtube ? 'YouTube verification: real external download + full-song native key analysis, no GPU jobs' : visual ? 'Visual verification: real native key analysis, deterministic local audio, no GPU jobs' : cpu ? 'CPU verification: real native processing and key analysis, deterministic local audio, no GPU jobs' : `Real full-stack verification: Modal app=${app}; no mocked boundaries`);
 const build = spawnSync('npm', ['run', 'build'], { cwd: frontend, stdio: 'inherit' });
 if (build.status !== 0) process.exit(build.status ?? 1);
 const fixtureSeed = cpuOnly ? 0 : randomBytes(4).readUInt32LE();

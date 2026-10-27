@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from backend import config, db, events, modal_client
+from backend.metadata import ensure_download_title
 from backend.models import (
     JobRecord,
     JobStatus,
@@ -61,13 +62,18 @@ def _persist_results(
     for label, stem_result in result.items():
         audio = transform_audio(stem_result.data, job.options)
         filename = f"{label}{modification_suffix(job.options)}.mp3"
-        (out_dir / filename).write_bytes(audio)
+        path = out_dir / filename
+        path.write_bytes(audio)
+        download_name = download_filename(
+            job.title, job.id, label, job.options, job.original_key
+        )
+        size_bytes = ensure_download_title(path, download_name)
         manifest.append(
             ResultManifestEntry(
                 label=label,
                 filename=filename,
-                download_name=download_filename(job.title, job.id, label, job.options),
-                size_bytes=len(audio),
+                download_name=download_name,
+                size_bytes=size_bytes,
                 duration_s=stem_result.duration_s,
             )
         )

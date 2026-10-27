@@ -237,6 +237,26 @@ def set_modal_call_id(job_id: int, call_id: str) -> None:
         )
 
 
+def update_result_size(job_id: int, label: str, size_bytes: int) -> None:
+    """Refresh one migrated result without losing concurrent manifest updates."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT result_manifest_json FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if row is None or row["result_manifest_json"] is None:
+            return
+        manifest = json.loads(row["result_manifest_json"])
+        for entry in manifest:
+            if entry["label"] == label:
+                entry["size_bytes"] = size_bytes
+                conn.execute(
+                    "UPDATE jobs SET result_manifest_json = ? WHERE id = ?",
+                    (json.dumps(manifest), job_id),
+                )
+                break
+
+
 def mark_done(job_id: int, manifest: list[ResultManifestEntry]) -> None:
     with _session() as conn:
         conn.execute(
