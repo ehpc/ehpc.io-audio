@@ -344,6 +344,12 @@ analysis. They can run without GPU work using
 `E2E_MODAL_APP_NAME=audio-adjustment-ui-check E2E_CHROMIUM_EXECUTABLE=/path/to/chromium npm --prefix frontend run test:e2e -- adjustments.spec.ts`.
 Chromium mobile emulation does not verify Safari's rendering or the iPhone keyboard.
 
+The responsive cases iterate every grouped processing control rather than pinning
+the number of controls. They check visibility and unobstructed hit targets,
+mobile state persistence, and the actual all-selected output preview (including
+the lead/instrument mix). They run without GPU work using
+`npm --prefix frontend run test:e2e -- --cpu responsive.spec.ts`.
+
 The metadata case uploads the deterministic local tonal fixture through the UI,
 waits for native key analysis, and applies fractional pitch and tempo changes to
 the full song with no extraction/GPU work. It downloads the actual generated MP3
