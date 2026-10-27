@@ -442,18 +442,19 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 43 cases with no skipped cases.
+a successful full-stack gate executes all 49 cases with no skipped cases.
 
 Both local domain suites also exhaust all **4096 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local
 combinatorial verification, **not** 4096 GPU runs or mathematical exhaustiveness
 over arbitrary numeric pitch/tempo values.
 
-CI runs native/backend/frontend checks, direct deployed GPU smoke, this
-43-case browser matrix against a unique test app, the separate real YouTube CPU
-case, and the 13-case visual suite below (**57 browser cases total**) for every push/PR. Only a passing main
-run promotes the production Modal deployment and publishes the image; both
-promotion jobs explicitly depend on visual and real YouTube success.
+CI runs native/backend/frontend checks, direct deployed GPU smoke, the
+49-case browser matrix against a unique test app, and the 13-case visual suite
+below (**62 required browser cases total**) for every push/PR. Only a passing
+main run promotes the production Modal deployment and publishes the image.
+Both promotion jobs retain the deterministic/native, full-stack, and visual
+release gates; the separate manual YouTube workflow is not a release dependency.
 
 ### Real external YouTube key analysis
 
@@ -467,13 +468,18 @@ asserts a standard major/minor key, and checks visible Original/Target key and
 the inline pitch badge at pitch zero. It does not hard-code the recording's
 musical key, mock network/media/analysis, submit a job, or invoke a GPU.
 
-The separate `youtube` CI job runs on every push/PR and gates promotion/image
-publication. YouTube bot/authentication restrictions, missing tools, and network
-failures **fail visibly**, not skip or fall back to fixtures. It retains
-`frontend/test-results/youtube/` response JSON, UI screenshot, backend log and
-Playwright failure artifacts plus `frontend/playwright-report/youtube/`.
-The CI runtime preflight checks the installed dependency environment, Deno,
-and EJS package version.
+The separate **Real YouTube key analysis** workflow
+(`.github/workflows/youtube.yml`) runs only through `workflow_dispatch`, selected
+from GitHub Actions' **Run workflow** control. It preserves this real external
+check without making YouTube's runner/IP authentication decisions a push/PR or
+release prerequisite. Together with required CI it covers **63 browser cases**.
+YouTube bot/authentication restrictions, missing tools, and network failures
+still **fail the manual workflow visibly**; it never skips or substitutes
+fixtures, submits a processing job, or invokes a GPU. Artifacts are uploaded
+with `always()`: `frontend/test-results/youtube/` response JSON, UI screenshot,
+backend log and Playwright failure artifacts, plus
+`frontend/playwright-report/youtube/`. The runtime preflight still checks the
+installed dependency environment, Deno, and EJS package version.
 To exercise an already released server instead of starting a local one:
 
 ```sh

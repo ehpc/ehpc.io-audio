@@ -83,61 +83,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  youtube:
-    name: Real YouTube CPU key analysis browser E2E
-    runs-on: ubuntu-latest
-    needs: [backend, frontend]
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install native audio tools
-        run: .github/scripts/install-ci-native-tools.sh
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Install Python dependencies
-        run: uv sync --frozen
-      - name: Set up Node
-        uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Set up downloader JavaScript runtime
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.8.3
-      - name: Check complete downloader runtime
-        run: |
-          uv pip check --python .venv/bin/python
-          deno --version
-          uv run python -c "import yt_dlp_ejs; print('yt-dlp-ejs', yt_dlp_ejs.version)"
-      - name: Install frontend and Chromium
-        run: |
-          npm --prefix frontend ci
-          npx --prefix frontend playwright install --with-deps chromium
-      - name: Analyze real external YouTube URL in Chromium without GPU jobs
-        # This explicitly external test must fail, not skip, if YouTube rejects
-        # this runner (bot/auth/network). Its artifacts retain the real error.
-        run: npm --prefix frontend run test:youtube
-      - name: Upload real YouTube response and browser evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: youtube-key-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            frontend/test-results/youtube/
-            frontend/playwright-report/youtube/
-          if-no-files-found: error
-          retention-days: 7
-
   image:
     name: Build & push image to GHCR
     runs-on: ubuntu-latest
     # Publish only after native/frontend checks, pinned visual comparisons,
     # real GPU smoke/browser E2E against the isolated app, and production promotion.
-    needs: [backend, frontend, visual, youtube, deploy-modal, deploy-production]
+    needs: [backend, frontend, visual, deploy-modal, deploy-production]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -221,7 +172,7 @@ jobs:
   deploy-production:
     name: Promote tested Modal app to production
     runs-on: ubuntu-latest
-    needs: [deploy-modal, visual, youtube]
+    needs: [deploy-modal, visual]
     if: github.ref == 'refs/heads/main'
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
