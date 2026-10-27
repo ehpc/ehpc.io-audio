@@ -9,6 +9,7 @@ class SeparationOptions:
     mix_female_instruments: bool = False
     mix_male_instruments: bool = False
     mix_backing_instruments: bool = False
+    mix_lead_instruments: bool = False
     decrowd: bool = False
     decrowd_vocals: bool = False
     dereverb: bool = False
@@ -52,6 +53,7 @@ class SeparationOptions:
             (self.mix_female_instruments, "female-instruments"),
             (self.mix_male_instruments, "male-instruments"),
             (self.mix_backing_instruments, "backing-instruments"),
+            (self.mix_lead_instruments, "lead-instruments"),
         ):
             if selected:
                 labels.append(label)

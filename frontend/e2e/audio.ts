@@ -71,21 +71,63 @@ export async function inspectAudio(page: Page, path: string, expectedDuration: n
   return { ...decoded, sha256: hash(bytes), size: bytes.length, rms, peak, quarterRms: quarters.map(value => Math.sqrt(value / (samples.length / 4))), fundamental };
 }
 
-export function inspectMix(mixPath: string, vocalPath: string, instrumentPath: string) {
-  const mix = pcm(mixPath), vocal = pcm(vocalPath), instrument = pcm(instrumentPath);
-  const count = Math.min(mix.length, vocal.length, instrument.length);
+interface MixTransform {
+  pitchSemitones: number;
+  tempoPercent: number;
+  referencePath: string;
+}
+
+export function inspectMix(mixPath: string, vocalPath: string, instrumentPath: string, transform?: MixTransform) {
+  const mix = pcm(mixPath);
+  let expected: Float32Array;
+  let instrument: Float32Array | undefined;
+  if (transform) {
+    const summed = `${transform.referencePath}-sum.mp3`;
+    const decoded = `${transform.referencePath}-decoded.wav`;
+    const adjusted = `${transform.referencePath}-adjusted.wav`;
+    // Build the oracle from untransformed real prerequisites: summing separately
+    // transformed stems would incorrectly assume Rubber Band is linear.
+    execFileSync('ffmpeg', [
+      '-nostdin', '-v', 'error', '-y', '-i', vocalPath, '-i', instrumentPath,
+      '-filter_complex',
+      '[0:a:0]aresample=48000:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo[v];' +
+      '[1:a:0]aresample=48000:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo[i];' +
+      '[v][i]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,' +
+      'alimiter=limit=0.89:attack=5:release=50:level=false:latency=true[out]',
+      '-map', '[out]', '-c:a', 'libmp3lame', '-q:a', '0', summed,
+    ]);
+    execFileSync('ffmpeg', [
+      '-nostdin', '-v', 'error', '-y', '-i', summed,
+      '-map', '0:a:0', '-vn', '-c:a', 'pcm_f32le', decoded,
+    ]);
+    execFileSync('rubberband', [
+      '--fine', '--formant', '--pitch', String(transform.pitchSemitones),
+      '--tempo', `100:${transform.tempoPercent}`, decoded, adjusted,
+    ]);
+    execFileSync('ffmpeg', [
+      '-nostdin', '-v', 'error', '-y', '-i', adjusted,
+      '-map', '0:a:0', '-vn', '-c:a', 'libmp3lame', '-q:a', '0', transform.referencePath,
+    ]);
+    expected = pcm(transform.referencePath);
+  } else {
+    expected = pcm(vocalPath);
+    instrument = pcm(instrumentPath);
+  }
+  const expectedLength = Math.max(expected.length, instrument?.length ?? 0);
+  expect(Math.abs(mix.length - expectedLength) / 96000, 'mix must retain the full sum duration').toBeLessThan(0.20);
+  const count = Math.min(mix.length, expectedLength);
   let dot = 0, sourceEnergy = 0, mixEnergy = 0, error = 0;
   // Ignore MP3 codec boundary padding, compare actual simultaneous waveforms.
   for (let i = 4800; i < count - 4800; i++) {
-    const expected = vocal[i] + instrument[i];
-    dot += mix[i] * expected;
-    sourceEnergy += expected ** 2;
+    const sample = (expected[i] ?? 0) + (instrument?.[i] ?? 0);
+    dot += mix[i] * sample;
+    sourceEnergy += sample ** 2;
     mixEnergy += mix[i] ** 2;
-    error += (mix[i] - expected) ** 2;
+    error += (mix[i] - sample) ** 2;
   }
   const correlation = dot / Math.sqrt(sourceEnergy * mixEnergy);
   const relativeError = Math.sqrt(error / sourceEnergy);
   expect(correlation, `mix must be an aligned sum: ${mixPath}`).toBeGreaterThan(0.97);
   expect(relativeError, `mix must retain unity gain: ${mixPath}`).toBeLessThan(0.20);
-  return { correlation, relativeError, comparedSamples: count };
+  return { correlation, relativeError, comparedSamples: count, transform };
 }

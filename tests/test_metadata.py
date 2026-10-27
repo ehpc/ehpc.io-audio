@@ -33,6 +33,7 @@ _ALL_OUTPUTS = SeparationOptions(
     mix_female_instruments=True,
     mix_male_instruments=True,
     mix_backing_instruments=True,
+    mix_lead_instruments=True,
     decrowd=True,
     decrowd_vocals=True,
     dereverb=True,
@@ -194,6 +195,41 @@ def test_title_replacement_is_atomic_idempotent_and_preserves_metadata(
         stat.st_mtime_ns,
     )
     assert sorted(p.name for p in tmp_path.iterdir()) == ["old.mp3"]
+
+
+def test_lead_mix_is_transformed_as_one_output_before_metadata_persistence(
+    tagged_mp3: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    options = SeparationOptions(
+        mix_lead_instruments=True, pitch_semitones=2, tempo_percent=120
+    )
+    job_id = db.insert_job("s1", "upload", "Source.mp3", options)
+    job = db.get_job(job_id)
+    assert job is not None
+    job.original_key = "C major"
+    mixed_audio = b"already mixed lead and instruments"
+    transformed = []
+
+    def transform(audio: bytes, selected: SeparationOptions) -> bytes:
+        transformed.append((audio, selected))
+        return tagged_mp3
+
+    monkeypatch.setattr(queue, "transform_audio", transform)
+    (entry,) = queue._persist_results(
+        job, {"lead-instruments": StemResult(mixed_audio, 0.3)}
+    )
+    assert transformed == [(mixed_audio, options)]
+    assert entry.label == "lead-instruments"
+    assert entry.filename == "lead-instruments - pitch+2st - tempo120pct.mp3"
+    assert entry.download_name == (
+        "Source - lead-instruments - source-key-C-major - pitch+2st - tempo120pct.mp3"
+    )
+    path = config.RESULTS_DIR / str(job_id) / entry.filename
+    assert _tags(path.read_bytes())["TIT2"].text == [
+        entry.download_name.removesuffix(".mp3")
+    ]
+    assert _tags(path.read_bytes())["TPE1"].text == ["Original artist"]
+    assert sorted(file.name for file in path.parent.iterdir()) == [entry.filename]
 
 
 @pytest.mark.skipif(shutil.which("rubberband") is None, reason="Rubber Band required")

@@ -17,6 +17,7 @@ it("shows transposition and tempo while preserving server download names and the
       mix_female_instruments: false,
       mix_male_instruments: false,
       mix_backing_instruments: false,
+      mix_lead_instruments: false,
       decrowd: false,
       decrowd_vocals: false,
       dereverb: false,

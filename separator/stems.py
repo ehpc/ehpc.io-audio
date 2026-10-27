@@ -197,6 +197,7 @@ def run_separation(
             (options.mix_female_instruments, "female-instruments", "vocals-female"),
             (options.mix_male_instruments, "male-instruments", "vocals-male"),
             (options.mix_backing_instruments, "backing-instruments", "backing"),
+            (options.mix_lead_instruments, "lead-instruments", "lead"),
         )
         if selected
     ]
@@ -220,7 +221,11 @@ def run_separation(
             or options.mix_male_instruments
         ):
             run(GENDER_STEMS, paths[vocal_source])
-        if options.lead_backing or options.mix_backing_instruments:
+        if (
+            options.lead_backing
+            or options.mix_backing_instruments
+            or options.mix_lead_instruments
+        ):
             run(LEAD_BACKING_STEMS, paths[vocal_source])
         dry_sources = [
             label.removesuffix("-dry") for label in requested if label.endswith("-dry")

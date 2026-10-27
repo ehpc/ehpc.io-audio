@@ -3,7 +3,7 @@
 A web app for downloading a song, transforming its pitch/tempo, or extracting
 selected vocal and instrument tracks. Submit a URL or upload a file: by default,
 only the original song is kept, with **no GPU separation**. Explicitly choose
-vocals, instruments, cleanup/split outputs, or female/male/backing vocals mixed
+vocals, instruments, cleanup/split outputs, or female/male/backing/lead vocals mixed
 with instruments. Play or download the results. Multiple people can use it at
 once; submissions go through a queue, and each visitor sees their live position.
 
@@ -75,6 +75,7 @@ original download is never retagged; its bytes remain unchanged.
 | Female vocals + instruments | `female-instruments` |
 | Male vocals + instruments | `male-instruments` |
 | Backing vocals + instruments | `backing-instruments` |
+| Lead vocals + instruments | `lead-instruments` |
 
 - Cleanup/split outputs work without selecting their parent extraction. Required
   intermediate tracks are internal unless their own output is selected.
@@ -85,9 +86,11 @@ original download is never retagged; its bytes remain unchanged.
 - Vocal splits use decrowded vocals when vocal crowd removal is selected.
   Mixes use those splits, their dry versions when dereverb is selected, and
   decrowded instruments when instrumental crowd removal is selected.
+- Lead vocals + instruments omits backing vocals, using the existing lead/backing
+  split. Its vocal and instrumental prerequisites stay hidden unless selected.
 - Download order is vocal wet/dry pairs (`vocals`, decrowded vocals, male,
-  female, lead, backing), then instrumental outputs, then female, male, and
-  backing mixes. A shared prerequisite/model pass runs only once.
+  female, lead, backing), then instrumental outputs, then female, male, backing,
+  and lead mixes. A shared prerequisite/model pass runs only once.
 - Mixes are simultaneous audio sums, not concatenations: FFmpeg aligns both
   inputs to stereo/48 kHz and sums at unity gain (`amix normalize=0`). A
   latency-compensated peak limiter with **no automatic makeup gain** reduces only
@@ -329,7 +332,7 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **49 cases**: the original 27 processing/behavior
+The browser matrix contains **50 cases**: 28 processing/behavior
 cases, one undetermined-source-key case, one actual-download metadata case,
 six native MP3 upload cases, seven responsive workspace cases, and seven focused
 adjustment-button cases (375/390/430px touch and 1440/1920/2560/3840px desktop):
@@ -380,15 +383,18 @@ Each case records `mp3-upload-proof.json`, selected-file MIME, actual request
 `multipart/form-data` headers, native codec/key results, original-byte hashes,
 and selection/Results/History PNGs under `frontend/test-results/`.
 
-- Each of the 12 boolean controls is submitted individually, plus all 12
+- Each of the 13 boolean controls is submitted individually, plus all 13
   together. Independent cleanup/splits and mix-only cases prove that internal
   prerequisites do not appear as extra downloads.
+  The lead-only mix case exposes exactly original + `lead-instruments`; a
+  separate real reference job supplies lead/instrument tracks for the audio-sum
+  comparison without exposing them in the lead-only job's manifest.
 - Mixes with dry vocal prerequisites, both crowd-cleanup selections plus dry
   mixes, and instruments-only plus dereverb exercise dependency-sensitive paths.
 - Identity, positive/negative fractional pitch, pitch-only, tempo-only,
   speedup/slowdown, and transformed separated output exercise native processing.
   Another all-options case applies fractional pitch and a tempo change to all
-  20 derived tracks, checking every modified name/duration while preserving the
+  21 derived tracks, checking every modified name/duration while preserving the
   original. The identity all-options case remains the raw mix-composition proof.
   Whole-song changes prove expected audio duration and the known generated
   fundamental's pitch shift; originals are downloaded and hash-checked.
@@ -415,7 +421,7 @@ and selection/Results/History PNGs under `frontend/test-results/`.
   navigation, option and pitch/tempo persistence, real source/key preview and
   errors, Advanced/action clearance, shortened keyboard viewports, and
   unobstructed Results/History downloads and audio playback. The all-enabled
-  processing case additionally captures all 20 real stems at all seven widths
+  processing case additionally captures all 21 real stems at all seven widths
   and checks that source-key chips and download names stay within the viewport.
   A native-scale pitched-song card crop shows the source label and download name.
   All cases use the real backend and native audio tools, with no mocked boundaries.
@@ -442,16 +448,16 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 49 cases with no skipped cases.
+a successful full-stack gate executes all 50 cases with no skipped cases.
 
-Both local domain suites also exhaust all **4096 boolean combinations** for
+Both local domain suites also exhaust all **8192 boolean combinations** for
 output/dependency contracts (including raw-cache policy). That is local
-combinatorial verification, **not** 4096 GPU runs or mathematical exhaustiveness
+combinatorial verification, **not** 8192 GPU runs or mathematical exhaustiveness
 over arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, direct deployed GPU smoke, the
-49-case browser matrix against a unique test app, and the 13-case visual suite
-below (**62 required browser cases total**) for every push/PR. Only a passing
+50-case browser matrix against a unique test app, and the 13-case visual suite
+below (**63 required browser cases total**) for every push/PR. Only a passing
 main run promotes the production Modal deployment and publishes the image.
 Both promotion jobs retain the deterministic/native, full-stack, and visual
 release gates; the separate manual YouTube workflow is not a release dependency.
@@ -512,8 +518,8 @@ The **13 visual cases** compare committed PNGs in
 screens, two 1440px/2560px desktop workspaces, and eight tightly cropped,
 focused pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
 native undetermined key, and a long fractional-cents badge). These complement,
-not replace, the **42 processing/UI cases** and **one external YouTube case**
-above (**56 browser cases total**, including these 13 visual cases).
+not replace, the **50 processing/UI cases**. The external YouTube case runs
+separately and manually; it is not part of the release gate.
 There is no redundant full-page viewport/state cross-product.
 
 The suite builds the production frontend and reuses the real isolated HTTP

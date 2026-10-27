@@ -406,6 +406,7 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
         "vocals-decrowded-dry": 1440.0,
         "vocals-male-dry": 1550.0,
         "vocals-female-dry": 1660.0,
+        "lead-dry": 1770.0,
         "backing-dry": 1880.0,
     }
     calls: list[tuple[Path, Stem]] = []
@@ -440,6 +441,7 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
             mix_female_instruments=True,
             mix_male_instruments=True,
             mix_backing_instruments=True,
+            mix_lead_instruments=True,
             decrowd=clean,
             decrowd_vocals=clean,
             dereverb=clean,
@@ -452,11 +454,17 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
         ["vocals-decrowded", "vocals-decrowded-dry", "instruments-decrowded"]
         if clean
         else []
-    ) + ["female-instruments", "male-instruments", "backing-instruments"]
+    ) + [
+        "female-instruments",
+        "male-instruments",
+        "backing-instruments",
+        "lead-instruments",
+    ]
     for label, vocal in (
         ("female-instruments", "vocals-female"),
         ("male-instruments", "vocals-male"),
         ("backing-instruments", "backing"),
+        ("lead-instruments", "lead"),
     ):
         audio = decode_audio(result[label].data)
         expected_frequencies = {

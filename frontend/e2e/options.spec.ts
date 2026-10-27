@@ -8,9 +8,15 @@ import { hash, inspectAudio, inspectMix, pcm } from './audio';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
-const booleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
+const booleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'mix_lead_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
 const defaults = Object.fromEntries([...booleanKeys.map(key => [key, false]), ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
-const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments', 'female-instruments', 'male-instruments', 'backing-instruments'];
+const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'];
+const mixInputs = [
+  { option: 'mix_female_instruments', label: 'female-instruments', vocal: 'vocals-female' },
+  { option: 'mix_male_instruments', label: 'male-instruments', vocal: 'vocals-male' },
+  { option: 'mix_backing_instruments', label: 'backing-instruments', vocal: 'backing' },
+  { option: 'mix_lead_instruments', label: 'lead-instruments', vocal: 'lead' },
+] as const;
 interface Case { name: string; selected: Partial<SeparationOptions>; labels: string[]; source?: 'url'; cache?: 'hit' | 'bypass'; }
 const cases: Case[] = [
   { name: 'identity-original-only', selected: {}, labels: [] },
@@ -19,6 +25,7 @@ const cases: Case[] = [
   { name: 'mix_female_instruments', selected: { mix_female_instruments: true }, labels: ['female-instruments'] },
   { name: 'mix_male_instruments', selected: { mix_male_instruments: true }, labels: ['male-instruments'] },
   { name: 'mix_backing_instruments', selected: { mix_backing_instruments: true }, labels: ['backing-instruments'] },
+  { name: 'mix_lead_instruments', selected: { mix_lead_instruments: true }, labels: ['lead-instruments'] },
   { name: 'decrowd', selected: { decrowd: true }, labels: ['instruments-decrowded'] },
   { name: 'decrowd_vocals', selected: { decrowd_vocals: true }, labels: ['vocals-decrowded'] },
   { name: 'dereverb', selected: { dereverb: true }, labels: ['vocals-dry'] },
@@ -30,8 +37,8 @@ const cases: Case[] = [
   { name: 'gpu-cache-bypass', selected: { extract_vocals: true, no_cache: true }, labels: ['vocals'], cache: 'bypass' },
   { name: 'all-booleans-enabled', selected: Object.fromEntries(booleanKeys.map(key => [key, true])), labels: allLabels },
   { name: 'all-options-with-transforms', selected: { ...Object.fromEntries(booleanKeys.map(key => [key, true])), pitch_semitones: 1.25, tempo_percent: 125 }, labels: allLabels },
-  { name: 'mixes-hidden-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, dereverb: true }, labels: ['female-instruments', 'male-instruments', 'backing-instruments'] },
-  { name: 'mixes-cleaned-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, decrowd: true, decrowd_vocals: true, dereverb: true }, labels: ['vocals-decrowded', 'vocals-decrowded-dry', 'instruments-decrowded', 'female-instruments', 'male-instruments', 'backing-instruments'] },
+  { name: 'mixes-hidden-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true, dereverb: true }, labels: ['female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'] },
+  { name: 'mixes-cleaned-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true, decrowd: true, decrowd_vocals: true, dereverb: true }, labels: ['vocals-decrowded', 'vocals-decrowded-dry', 'instruments-decrowded', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'] },
   { name: 'instrument-only-dereverb-no-hidden-vocal', selected: { extract_instruments: true, dereverb: true }, labels: ['instruments'] },
   { name: 'positive-fractional-pitch-speedup-no-extraction', selected: { pitch_semitones: 2.5, tempo_percent: 120 }, labels: ['song'] },
   { name: 'negative-fractional-pitch-slowdown-no-extraction', selected: { pitch_semitones: -1.25, tempo_percent: 80, no_cache: true }, labels: ['song'] },
@@ -83,6 +90,42 @@ async function complete(page: Page, id: number) {
   return job!;
 }
 
+async function referenceMixInputs(page: Page, info: TestInfo, options: SeparationOptions, labels: string[]) {
+  // A distinct real job publishes reference stems without exposing prerequisites
+  // in the mix-only job whose manifest and links were already asserted.
+  const referencePage = await page.context().newPage();
+  try {
+    const referenceOptions = {
+      ...defaults,
+      extract_instruments: true,
+      genders: options.mix_female_instruments || options.mix_male_instruments,
+      lead_backing: options.mix_backing_instruments || options.mix_lead_instruments,
+      decrowd: options.decrowd,
+      decrowd_vocals: options.decrowd_vocals,
+      dereverb: options.dereverb,
+    };
+    await referencePage.goto('/');
+    await chooseSource(referencePage, 'upload', 'musical-fixture');
+    await expect(referencePage.getByText('Original key: C major', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
+    await configure(referencePage, referenceOptions);
+    const id = await submit(referencePage);
+    const job = await complete(referencePage, id);
+    expect(job.options).toEqual(referenceOptions);
+    const files: Record<string, string> = {};
+    for (const label of labels) {
+      expect(job.manifest!.map(stem => stem.label)).toContain(label);
+      const response = await referencePage.request.get(`/api/jobs/${id}/results/${label}`);
+      expect(response.status()).toBe(200);
+      files[label] = info.outputPath(`reference-${id}-${label}.mp3`);
+      await writeFile(files[label], await response.body());
+      await inspectAudio(referencePage, files[label], 8);
+    }
+    return { job, files };
+  } finally {
+    await referencePage.close();
+  }
+}
+
 async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, originalKey: string) {
   const fixtureName = item.labels.length && item.labels[0] !== 'song' ? 'musical-fixture' : 'tone-fixture';
   const options = { ...defaults, ...item.selected };
@@ -102,6 +145,9 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   const links = page.locator(`a[download][href^='/api/jobs/${job.id}/']`).filter({ visible: true });
   // Results and History each expose exactly one link for every public track.
   expect(await links.count()).toBe((item.labels.length + 1) * 2);
+  expect(await links.evaluateAll(anchors => anchors.map(anchor => anchor.getAttribute('href')).sort())).toEqual(
+    ['original', ...item.labels.map(label => `results/${label}`)].flatMap(path => [`/api/jobs/${job.id}/${path}`, `/api/jobs/${job.id}/${path}`]).sort(),
+  );
   const files: Record<string, string> = {};
   const audio: Record<string, unknown> = {};
   const original = page.locator(`a[href='/api/jobs/${job.id}/original']`).first();
@@ -136,7 +182,15 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     files[stem.label] = info.outputPath(output.suggestedFilename());
     await output.saveAs(files[stem.label]);
     expect((await readFile(files[stem.label])).length).toBe(stem.size_bytes);
-    audio[stem.label] = await inspectAudio(page, files[stem.label], 8 * 100 / options.tempo_percent, stem.label === 'song' ? 261.6256 * 2 ** (options.pitch_semitones / 12) : undefined);
+    const metadata = JSON.parse(execFileSync('ffprobe', [
+      '-v', 'error', '-show_entries', 'format_tags=title:stream=codec_name', '-of', 'json', files[stem.label],
+    ], { encoding: 'utf8' }));
+    expect(metadata.streams[0].codec_name).toBe('mp3');
+    expect(metadata.format.tags.title).toBe(stem.download_name.slice(0, -4));
+    audio[stem.label] = {
+      ...await inspectAudio(page, files[stem.label], 8 * 100 / options.tempo_percent, stem.label === 'song' ? 261.6256 * 2 ** (options.pitch_semitones / 12) : undefined),
+      metadata,
+    };
     if (item.cache === 'hit') expect(stem.duration_s).toBe(0);
     if (item.cache === 'bypass') expect(stem.duration_s).toBeGreaterThan(0);
   }
@@ -144,10 +198,23 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     expect((await page.request.get(`/api/jobs/${job.id}/results/${label}`)).status()).toBe(404);
   }
   const mixes: Record<string, unknown> = {};
+  const selectedMixes = mixInputs.filter(mix => options[mix.option]);
+  const instrument = options.decrowd ? 'instruments-decrowded' : 'instruments';
+  const vocalLabel = (vocal: string) => `${vocal}${options.dereverb ? '-dry' : ''}`;
+  const transformed = options.pitch_semitones !== 0 || options.tempo_percent !== 100;
+  const requiredInputs = [...selectedMixes.map(mix => vocalLabel(mix.vocal)), instrument];
+  const reference = selectedMixes.length && (transformed || requiredInputs.some(label => !files[label]))
+    ? await referenceMixInputs(page, info, options, requiredInputs)
+    : undefined;
+  const sourceFiles = reference?.files ?? files;
+  for (const mix of selectedMixes) {
+    mixes[mix.label] = inspectMix(files[mix.label], sourceFiles[vocalLabel(mix.vocal)], sourceFiles[instrument], transformed ? {
+      pitchSemitones: options.pitch_semitones,
+      tempoPercent: options.tempo_percent,
+      referencePath: info.outputPath(`${mix.label}-expected-transformed.mp3`),
+    } : undefined);
+  }
   if (item.name === 'all-booleans-enabled') {
-    for (const [mix, vocal] of [['female-instruments', 'vocals-female-dry'], ['male-instruments', 'vocals-male-dry'], ['backing-instruments', 'backing-dry']]) {
-      mixes[mix] = inspectMix(files[mix], files[vocal], files['instruments-decrowded']);
-    }
     expect(hash(await readFile(files['vocals-male']))).not.toBe(hash(await readFile(files['vocals-female'])));
     expect(hash(await readFile(files.lead))).not.toBe(hash(await readFile(files.backing)));
     for (const width of [1440, 1920, 2560, 3840, 375, 390, 430]) {
@@ -178,7 +245,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     const card = page.locator(`a[href='/api/jobs/${job.id}/results/song']`).first().locator('../..');
     await card.screenshot({ path: info.outputPath('source-key-pitched-card-2560.png') });
   }
-  const proof = { case: item.name, modal_app: process.env.E2E_MODAL_APP_NAME, fixture_seed: process.env.E2E_FIXTURE_SEED, options, expected_labels: item.labels, job, queue, audio, mixes };
+  const proof = { case: item.name, modal_app: process.env.E2E_MODAL_APP_NAME, fixture_seed: process.env.E2E_FIXTURE_SEED, options, expected_labels: item.labels, job, queue, audio, mixes, reference };
   await writeFile(info.outputPath('proof.json'), JSON.stringify(proof, null, 2));
   await info.attach('per-option-proof', { path: info.outputPath('proof.json'), contentType: 'application/json' });
   await page.screenshot({ path: info.outputPath('completed.png'), fullPage: true });

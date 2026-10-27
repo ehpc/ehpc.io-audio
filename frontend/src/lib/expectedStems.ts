@@ -20,7 +20,7 @@ export function expectedStems(options: SeparationOptions): string[] {
   const labels: string[] = [];
   const selections = options.extract_vocals || options.extract_instruments ||
     options.mix_female_instruments || options.mix_male_instruments ||
-    options.mix_backing_instruments || options.decrowd || options.decrowd_vocals ||
+    options.mix_backing_instruments || options.mix_lead_instruments || options.decrowd || options.decrowd_vocals ||
     options.genders || options.lead_backing || options.drums;
   const dry = options.dereverb;
   const vocal = (label: string) => {
@@ -43,6 +43,7 @@ export function expectedStems(options: SeparationOptions): string[] {
   if (options.mix_female_instruments) labels.push("female-instruments");
   if (options.mix_male_instruments) labels.push("male-instruments");
   if (options.mix_backing_instruments) labels.push("backing-instruments");
+  if (options.mix_lead_instruments) labels.push("lead-instruments");
   if (dry && !selections) labels.push("vocals-dry");
   if (labels.length === 0 && (options.pitch_semitones !== 0 || options.tempo_percent !== 100)) labels.push("song");
   return labels;

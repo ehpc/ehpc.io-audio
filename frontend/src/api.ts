@@ -14,6 +14,7 @@ export interface SeparationOptions {
   mix_female_instruments: boolean;
   mix_male_instruments: boolean;
   mix_backing_instruments: boolean;
+  mix_lead_instruments: boolean;
   decrowd: boolean;
   decrowd_vocals: boolean;
   dereverb: boolean;
@@ -103,6 +104,7 @@ const OPTION_KEYS: BooleanOptionKey[] = [
   "mix_female_instruments",
   "mix_male_instruments",
   "mix_backing_instruments",
+  "mix_lead_instruments",
   "decrowd",
   "decrowd_vocals",
   "dereverb",

@@ -26,6 +26,7 @@ def test_submit_url_queues_job(client: TestClient) -> None:
     assert options["mix_female_instruments"] is False
     assert options["mix_male_instruments"] is False
     assert options["mix_backing_instruments"] is False
+    assert options["mix_lead_instruments"] is False
 
 
 def test_submit_requires_exactly_one_source(client: TestClient) -> None:
@@ -224,10 +225,12 @@ def test_old_jobs_survive_key_metadata_migration(client: TestClient) -> None:
     assert client.get(f"/api/jobs/{job_id}/results/vocals").content.endswith(b"old")
     assert job["options"]["extract_vocals"] is True
     assert job["options"]["extract_instruments"] is True
+    assert job["options"]["mix_lead_instruments"] is False
     retried_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
     retried = client.get(f"/api/jobs/{retried_id}").json()
     assert retried["options"]["extract_vocals"] is True
     assert retried["options"]["extract_instruments"] is True
+    assert retried["options"]["mix_lead_instruments"] is False
 
 
 def test_explicit_outputs_survive_submission_and_retry(client: TestClient) -> None:
@@ -237,6 +240,7 @@ def test_explicit_outputs_survive_submission_and_retry(client: TestClient) -> No
         "mix_female_instruments": True,
         "mix_male_instruments": True,
         "mix_backing_instruments": True,
+        "mix_lead_instruments": True,
     }
     job_id = client.post(
         "/api/jobs",
@@ -248,5 +252,34 @@ def test_explicit_outputs_survive_submission_and_retry(client: TestClient) -> No
     db.init_db()
     options = client.get(f"/api/jobs/{job_id}").json()["options"]
     assert {name: options[name] for name in selected} == selected
+    retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
+    assert client.get(f"/api/jobs/{retry_id}").json()["options"] == options
+
+
+def test_historical_explicit_mix_options_do_not_enable_lead_on_retry(
+    client: TestClient,
+) -> None:
+    job_id = client.post(
+        "/api/jobs",
+        data={"url": "https://example.com/song"},
+    ).json()["id"]
+    historical_options = {
+        "extract_vocals": False,
+        "extract_instruments": False,
+        "mix_backing_instruments": True,
+    }
+    with sqlite3.connect(config.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE jobs SET options_json = ? WHERE id = ?",
+            (json.dumps(historical_options), job_id),
+        )
+    db.init_db()
+    stored = db.get_job(job_id)
+    assert stored is not None
+    assert stored.options.mix_lead_instruments is False
+    assert stored.options.output_labels == ["backing-instruments"]
+    options = client.get(f"/api/jobs/{job_id}").json()["options"]
+    assert options["mix_backing_instruments"] is True
+    assert options["mix_lead_instruments"] is False
     retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
     assert client.get(f"/api/jobs/{retry_id}").json()["options"] == options
