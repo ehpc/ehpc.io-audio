@@ -75,6 +75,21 @@ describe("SubmitForm", () => {
     expect(tempo).toHaveValue(100);
   });
 
+  it("previews the pitched full source alongside selected stems and removes it when pitch resets", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Extract instruments", exact: true }));
+    const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
+    const tempo = screen.getByRole("spinbutton", { name: "Tempo (% of original)" });
+    fireEvent.input(pitch, { target: { value: "-1.25" } });
+    fireEvent.input(tempo, { target: { value: "119.5" } });
+    expect(screen.getByText("Original (unchanged)", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Full song (pitch -1.25 st, tempo 119.5%)", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("instruments (pitch -1.25 st, tempo 119.5%)", { exact: true })).toBeInTheDocument();
+    fireEvent.input(pitch, { target: { value: "0" } });
+    expect(screen.queryByText(/^Full song/)).not.toBeInTheDocument();
+    expect(screen.getByText("instruments (tempo 119.5%)", { exact: true })).toBeInTheDocument();
+  });
+
   it("shows the resulting key inside the editable pitch field and clears unknown, invalid and reset keys", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
     vi.mocked(api.submitJob).mockResolvedValue({ id: 10, status: "queued", position: 1 });
@@ -221,7 +236,7 @@ describe("SubmitForm", () => {
 
   it("has accessible extraction controls and predicts original-only by default", async () => {
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
-    expect(screen.getByText("Tracks you'll get (1)")).toBeInTheDocument();
+    expect(screen.getByText("Tracks and files you'll get (1)")).toBeInTheDocument();
     const extract = screen.getByRole("checkbox", { name: "Extract vocals" });
     expect(extract).not.toBeChecked();
     await userEvent.click(screen.getByText("Extract vocals"));
@@ -233,6 +248,40 @@ describe("SubmitForm", () => {
     expect(screen.getByText("female-instruments", { exact: true })).toBeInTheDocument();
     expect(screen.queryByText("vocals-female", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText("instruments", { exact: true })).not.toBeInTheDocument();
+  });
+  it("previews lyrics as a separate original-clock TXT output without audio transforms", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
+    const lyrics = screen.getByRole("checkbox", { name: "Extract lyrics", exact: true });
+    expect(lyrics).not.toBeChecked();
+    await userEvent.click(lyrics);
+    expect(screen.getByText("Lyrics (timestamped TXT)")).toBeInTheDocument();
+    expect(screen.getByText("Tracks and files you'll get (2)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Process audio" })).toBeInTheDocument();
+    expect(screen.getAllByText("Original (unchanged)")).toHaveLength(1);
+    await userEvent.click(screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" }));
+    await userEvent.clear(screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" }));
+    await userEvent.type(screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" }), "2");
+    expect(screen.getByText("Lyrics (timestamped TXT)")).toBeInTheDocument();
+    expect(screen.getByText("Full song (pitch +2 st)")).toBeInTheDocument();
+  });
+
+  it("submits a lyrics-only request without selecting an audio stem", async () => {
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 18, status: "queued", position: 1 });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true }));
+    await userEvent.click(screen.getByRole("button", { name: "Process audio" }));
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        extract_lyrics: true,
+        extract_vocals: false,
+        extract_instruments: false,
+        mix_female_instruments: false,
+        pitch_semitones: 0,
+        tempo_percent: 100,
+      }),
+    }));
   });
 
   it("analyzes an attached file automatically and updates the target key and notes", async () => {
@@ -339,14 +388,14 @@ describe("SubmitForm", () => {
     for (const name of groups) expect(screen.getByRole("group", { name, exact: true })).toBeInTheDocument();
     await userEvent.click(screen.getByText("Advanced · cache"));
     const checkboxes = screen.getAllByRole("checkbox");
-    expect(checkboxes).toHaveLength(13);
+    expect(checkboxes).toHaveLength(14);
     for (const checkbox of checkboxes) await userEvent.click(checkbox);
     await userEvent.click(submitButton());
     expect(api.submitJob).toHaveBeenCalledWith({
       url: "https://example.com/song",
       file: undefined,
       options: {
-        extract_vocals: true, extract_instruments: true,
+        extract_vocals: true, extract_instruments: true, extract_lyrics: true,
         mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true,
         mix_lead_instruments: true,
         decrowd: true, decrowd_vocals: true, dereverb: true,

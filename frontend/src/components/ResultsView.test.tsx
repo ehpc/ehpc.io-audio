@@ -14,6 +14,7 @@ it("shows transposition and tempo while preserving server download names and the
     options: {
       extract_vocals: true,
       extract_instruments: false,
+      extract_lyrics: false,
       mix_female_instruments: false,
       mix_male_instruments: false,
       mix_backing_instruments: false,
@@ -31,12 +32,25 @@ it("shows transposition and tempo while preserving server download names and the
     original_key: "C major",
     output_key: "D major",
     manifest: [{
+      label: "song",
+      filename: "song - pitch+2st - tempo120pct.mp3",
+      download_name: "song - song - source-key-C-major - pitch+2st - tempo120pct.mp3",
+      size_bytes: 2048,
+      duration_s: 0,
+    }, {
       label: "vocals",
       filename: "vocals.mp3",
       download_name: "song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3",
       size_bytes: 1024,
       duration_s: 10,
     }],
+    transcript: {
+      status: "recognized",
+      language: "en",
+      timestamp_reference: "original",
+      segments: [{ start_s: 0, end_s: 2.5, text: "<img src=x onerror=alert(1)>" }],
+      timestamped_text: "[00:00] <img src=x onerror=alert(1)>",
+    },
     error_message: null,
     created_at: 1700000000,
     has_original: true,
@@ -48,16 +62,30 @@ it("shows transposition and tempo while preserving server download names and the
 
   expect(screen.getByText("C major")).toBeInTheDocument();
   expect(screen.getByText("D major")).toBeInTheDocument();
-  expect(screen.getByText("Source key: C major")).toBeInTheDocument();
+  expect(screen.getAllByText("Source key: C major")).toHaveLength(2);
   expect(screen.queryByText("Source key: D major")).toBeNull();
   expect(screen.getByText("Notes (major): C · D · E · F · G · A · B")).toBeInTheDocument();
   expect(screen.getByText("Notes (major): D · E · F# · G · A · B · C#")).toBeInTheDocument();
   expect(screen.getByText("+2 semitones")).toBeInTheDocument();
   expect(screen.getByText("120% of original")).toBeInTheDocument();
   const stem = document.querySelector<HTMLAnchorElement>('a[href="/api/jobs/1/results/vocals"]')!;
-  expect(stem).toHaveAttribute("download", job.manifest![0].download_name);
+  expect(stem).toHaveAttribute("download", job.manifest![1].download_name);
   expect(stem).toHaveAttribute("href", "/api/jobs/1/results/vocals");
   const original = screen.getByRole("link", { name: "Download original" });
   expect(original).toHaveAttribute("href", "/api/jobs/1/original");
   expect(original).toHaveAttribute("download", "");
+  expect(screen.getByText("Full song (pitch +2 st, tempo 120%)")).toBeInTheDocument();
+  expect([...document.querySelectorAll("audio")].map(audio => audio.getAttribute("src"))).toEqual([
+    "/api/jobs/1/original", "/api/jobs/1/results/song", "/api/jobs/1/results/vocals",
+  ]);
+  expect(document.querySelector('a[href="/api/jobs/1/results/song"]')).toHaveAttribute(
+    "download", job.manifest![0].download_name,
+  );
+  expect(screen.getByText("Original audio timestamps · approximate segment timing. Automatic transcription may contain errors; review the text.")).toBeInTheDocument();
+  expect(screen.getByText("Language: en")).toBeInTheDocument();
+  expect(screen.getByText("[00:00] <img src=x onerror=alert(1)>")).toBeInTheDocument();
+  expect(document.querySelector("img")).toBeNull();
+  const lyrics = screen.getByRole("link", { name: "Download timestamped TXT" });
+  expect(lyrics).toHaveAttribute("href", "/api/jobs/1/lyrics/download");
+  expect(lyrics).toHaveAttribute("download", "");
 });

@@ -1,11 +1,12 @@
 # ehpc's Vocal Tools
 
 A web app for downloading a song, transforming its pitch/tempo, or extracting
-selected vocal and instrument tracks. Submit a URL or upload a file: by default,
-only the original song is kept, with **no GPU separation**. Explicitly choose
-vocals, instruments, cleanup/split outputs, or female/male/backing/lead vocals mixed
-with instruments. Play or download the results. Multiple people can use it at
-once; submissions go through a queue, and each visitor sees their live position.
+selected vocal and instrument tracks or timestamped lyrics. Submit a URL or
+upload a file: by default, only the original song is kept, with **no GPU
+separation**. Explicitly choose vocals, instruments, cleanup/split outputs,
+female/male/backing/lead vocal mixes, or lyrics. Play or download the results.
+Multiple people can use it at once; submissions go through a queue, and each
+visitor sees their live position.
 
 ## Architecture
 
@@ -24,21 +25,21 @@ once; submissions go through a queue, and each visitor sees their live position.
                                                   separator/modal_app.py ("audio-separator" Modal app)
                                                                 │
                                                                 ▼
-                                                     GPU container on Modal
-                                                     (audio-separator + models)
+                                                   GPU container (separation + Whisper ASR)
 ```
 
 - **`separator/`** — pure domain logic (stem-model configs, the actual
   separation pipeline, URL download, and CPU audio analysis/postprocessing)
-  plus `modal_app.py`, which defines the Modal app and GPU function. This is
-  the only place that knows about CUDA images, GPUs, or `audio-separator[gpu]`.
+  plus `modal_app.py`, which defines Modal GPU functions for separation and
+  lyric transcription. It owns the CUDA images and GPU-only model dependencies.
 - **`backend/`** — the always-on FastAPI app. It downloads/reads the source and
   detects its key with libkeyfinder. Download-only jobs and whole-song pitch/tempo
   changes run locally, without calling Modal (even with cache bypass enabled).
-  When separation outputs are selected, it submits to the *deployed* Modal
-  function, polls for completion, and persists results. Rubber Band R3 applies
-  pitch/tempo changes locally to each final output, after any mixing. A small
-  SQLite-backed queue caps concurrent jobs.
+  Normal separation uses the existing `separate` Modal call; lyric-enabled jobs
+  use `separate_with_lyrics` to combine transcription with any requested audio
+  stems in one call. Rubber Band R3 applies pitch/tempo changes locally to each
+  final audio output, after any mixing. A small SQLite-backed queue caps
+  concurrent jobs.
 - **`frontend/`** — SolidJS + Vite + Tailwind + Solid UI. Built to static
   assets at image-build time and served by the backend from the same origin,
   so there's exactly one port to expose.
@@ -54,8 +55,9 @@ once; submissions go through a queue, and each visitor sees their live position.
 
 The original source remains downloadable and unchanged by processing, preserving
 the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
-workflow. A completed download-only job has an empty result manifest; its original
-download is still available in Results and History.
+workflow. A completed job with no generated audio has an empty result manifest;
+its original download remains available in Results and History. Lyrics are a
+separate optional text output and do not create an audio stem.
 
 Each generated MP3 embeds a `Title` tag identical to its canonical download
 filename without the `.mp3` extension. This title includes the output stem and
@@ -63,9 +65,24 @@ any source-key, pitch, and tempo descriptors present in the filename. If the
 source key is unknown, no source-key descriptor or placeholder is added. The
 original download is never retagged; its bytes remain unchanged.
 
-| Selection | Output labels |
+When **Extract lyrics** is selected, Modal's faster-whisper large-v3 transcribes
+the source vocals before pitch/tempo changes. If the vocal stem was not selected,
+those vocals remain an internal prerequisite and aren't added to the audio
+manifest; a lyrics-only job uses Modal GPU ASR while ordinary download-only
+remains the no-GPU default. Results show the transcript inline, and History
+offers a collapsible inline view; both provide a timestamped UTF-8 TXT download.
+Transcription preserves the source language without translation and processes
+the full vocal input rather than speech-cropped chunks, relying on Whisper's
+no-speech gate for nonspeech. No accuracy is guaranteed: singing may be missed,
+misrecognized, or hallucinated. Approximate segment timestamps use the original
+audio clock and are not word-level or karaoke alignment. A successful no-speech
+recognition is shown as empty rather than replaced with a fabricated transcript.
+
+
+| Selection | Output label or file |
 |---|---|
 | Extract vocals | `vocals` |
+| Extract lyrics | Timestamped TXT (original audio clock) |
 | Extract instruments | `instruments` |
 | Remove crowd noise from vocals | `vocals-decrowded` |
 | Remove crowd noise from instrumental | `instruments-decrowded` |
@@ -137,10 +154,14 @@ and pitch/tempo never modify the original.
 - **Tempo (% of original):** `100` is unchanged, `120` is 20% faster, and `80`
   is 20% slower. Tempo must be positive. Pitch and tempo are independent.
 - With no separation selections, changing pitch or tempo produces a full-song
-  `song` output locally, displayed as **Full song** with the applied pitch
-  shift in semitones and/or tempo as a percentage of the original. The original
-  is always displayed as **Original (unchanged)**. Identity settings produce no
-  extra output.
+  `song` output locally. When pitch is nonzero, the full-song output is also
+  included alongside any selected transformed stems or mixes. The original is
+  always displayed as **Original (unchanged)**, so a pitch-shifted job offers the
+  unchanged source, the transformed full song, and each chosen transformed output
+  without duplicating the original. Full-song and stem download names follow the
+  same canonical naming convention, including the source title, label, detected
+  source key when available, and applied pitch/tempo descriptors. Identity
+  settings produce no extra output.
 - Every final output (including mixes and the full song) is rendered using one
   offline Rubber Band **R3/Finer** pass with both settings together and formant
   preservation. There is no separate pitch-first or tempo-first pass.
@@ -332,15 +353,25 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The browser matrix contains **50 cases**: 28 processing/behavior
-cases, one undetermined-source-key case, one actual-download metadata case,
-six native MP3 upload cases, seven responsive workspace cases, and seven focused
-adjustment-button cases (375/390/430px touch and 1440/1920/2560/3840px desktop):
+The default browser matrix contains **53 cases**, as confirmed by
+`playwright test --list`: 30 processing/behavior cases, one undetermined-source-key
+case, one actual-download metadata case, six native MP3 upload cases, seven
+responsive workspace cases, seven focused adjustment-button cases, and one
+real-speech lyrics case. The separate visual and manual YouTube suites are
+excluded from this default matrix.
 
-The adjustment cases exercise real taps/clicks, keyboard activation, fractional
-manual entry, positive-tempo bounds, tab persistence, reactive key/output previews,
-44px button geometry, and horizontal overflow against the real backend's key
-analysis. They can run without GPU work using
+The lyrics case runs two real jobs against checksum-verified public-domain JFK
+speech: lyrics-only, then lyrics with a selected vocal stem and pitch/tempo
+changes. It checks the known spoken phrases, original-clock timestamps,
+Results/History rendering, canonical TXT download bytes, unchanged source audio,
+and mobile readability. It attaches actual desktop/mobile transcript screenshots
+as test artifacts, not nondeterministic live-ASR screenshot baselines.
+
+The seven adjustment cases cover 375/390/430px touch and 1440/1920/2560/3840px
+desktop; they exercise real taps/clicks, keyboard activation, fractional manual
+entry, positive-tempo bounds, tab persistence, reactive key/output previews, 44px
+button geometry, and horizontal overflow against the real backend's key analysis.
+They run without GPU work using
 `E2E_MODAL_APP_NAME=audio-adjustment-ui-check E2E_CHROMIUM_EXECUTABLE=/path/to/chromium npm --prefix frontend run test:e2e -- adjustments.spec.ts`.
 Chromium mobile emulation does not verify Safari's rendering or the iPhone keyboard.
 
@@ -389,9 +420,9 @@ Each case records `mp3-upload-proof.json`, selected-file MIME, actual request
 `multipart/form-data` headers, native codec/key results, original-byte hashes,
 and selection/Results/History PNGs under `frontend/test-results/`.
 
-- Each of the 13 boolean controls is submitted individually, plus all 13
-  together. Independent cleanup/splits and mix-only cases prove that internal
-  prerequisites do not appear as extra downloads.
+- Each of the 13 audio boolean controls is submitted individually, plus all 13
+  audio controls together. Independent cleanup/splits and mix-only cases prove
+  that internal prerequisites do not appear as extra downloads.
   The lead-only mix case exposes exactly original + `lead-instruments`; a
   separate real reference job supplies lead/instrument tracks for the audio-sum
   comparison without exposing them in the lead-only job's manifest.
@@ -399,11 +430,13 @@ and selection/Results/History PNGs under `frontend/test-results/`.
   mixes, and instruments-only plus dereverb exercise dependency-sensitive paths.
 - Identity, positive/negative fractional pitch, pitch-only, tempo-only,
   speedup/slowdown, and transformed separated output exercise native processing.
-  Another all-options case applies fractional pitch and a tempo change to all
-  21 derived tracks, checking every modified name/duration while preserving the
-  original. The identity all-options case remains the raw mix-composition proof.
-  Whole-song changes prove expected audio duration and the known generated
-  fundamental's pitch shift; originals are downloaded and hash-checked.
+  The all-options transformation applies pitch and tempo to all 21 selected
+  outputs plus the full-source `song` output (22 transformed downloads total),
+  checking every modified name/duration while preserving the unchanged original.
+  Including the original, that job offers 23 downloads. The identity all-options
+  case remains the raw mix-composition proof. Whole-song changes prove expected
+  audio duration and the known generated fundamental's pitch shift; originals
+  are downloaded and hash-checked.
 - Cache bypass alone proves no Modal call is made. A separate explicit
   extraction warms through the browser, repeats with zero raw inference time,
   and bypasses with positive inference time. Persisted queue timestamps and
@@ -427,10 +460,11 @@ and selection/Results/History PNGs under `frontend/test-results/`.
   navigation, option and pitch/tempo persistence, real source/key preview and
   errors, Advanced/action clearance, shortened keyboard viewports, and
   unobstructed Results/History downloads and audio playback. The all-enabled
-  processing case additionally captures all 21 real stems at all seven widths
-  and checks that source-key chips and download names stay within the viewport.
-  A native-scale pitched-song card crop shows the source label and download name.
-  All cases use the real backend and native audio tools, with no mocked boundaries.
+  processing case additionally captures all 21 selected outputs at all seven widths
+  and checks that source-key chips and download names stay within the viewport;
+  its pitched full-song output is shown in the output preview. A native-scale
+  pitched-song card crop shows the source label and download name. All cases use
+  the real backend and native audio tools, with no mocked boundaries.
 
 The hosted stereo `C major` → `G major` failure was **not musical ambiguity**:
 the upstream keyfinder-cli compatibility path for FFmpeg 6 and older supplied
@@ -441,10 +475,11 @@ WAV/MP3, so an octave-equivalent mono result cannot conceal this decoder bug.
 The shared native build applies the exact decoder channel-count correction
 after verifying the upstream source checksum, for both CI and the Docker image.
 
-Every successful processing case downloads its exact manifest, checks public
-filenames/modification suffixes and absent hidden outputs, decodes every audio
-track in Chromium and FFmpeg, and measures channels, timing, finite samples,
-signal, and peak levels. The all-enabled case additionally compares each mix's
+Every successful audio-options matrix case downloads its exact audio manifest,
+checks public filenames/modification suffixes and absent hidden outputs, decodes
+every audio track in Chromium and FFmpeg, and measures channels, timing, finite
+samples, signal, and peak levels.
+The all-enabled case additionally compares each mix's
 PCM against the aligned unity-gain sum of its actual downloaded vocal and
 instrumental components. This checks real mixing, not just nonempty files.
 
@@ -454,19 +489,20 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 50 cases with no skipped cases.
+a successful full-stack gate executes all 53 cases with no skipped cases.
 
-Both local domain suites also exhaust all **8192 boolean combinations** for
-output/dependency contracts (including raw-cache policy). That is local
-combinatorial verification, **not** 8192 GPU runs or mathematical exhaustiveness
-over arbitrary numeric pitch/tempo values.
+Both local domain suites also exhaust all **8192 combinations of the 13 audio
+boolean controls** for output/dependency contracts, including raw-cache policy.
+This is local combinatorial verification, **not** 8192 GPU runs or mathematical
+proof over arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, direct deployed GPU smoke, the
-50-case browser matrix against a unique test app, and the 13-case visual suite
-below (**63 required browser cases total**) for every push/PR. Only a passing
+53-case browser matrix against a unique test app, and the 13-case visual suite
+below (**66 required browser cases total**) for every push/PR. Only a passing
 main run promotes the production Modal deployment and publishes the image.
 Both promotion jobs retain the deterministic/native, full-stack, and visual
-release gates; the separate manual YouTube workflow is not a release dependency.
+release gates. The separate manual YouTube workflow adds one optional browser
+case (**67 total if run**) and is not a release dependency.
 
 ### Real external YouTube key analysis
 

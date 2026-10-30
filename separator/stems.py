@@ -175,8 +175,13 @@ def run_separation(
     model_cache: str,
     stem_cache: str,
 ) -> SeparationResult:
+    """Run the stem graph, retaining raw vocals internally when ASR needs them.
+
+    Public audio outputs are filtered by run_processing; this prerequisite must
+    not change selected outputs or add dereverb passes.
+    """
     requested = options.output_labels
-    if not requested:
+    if not requested and not options.extract_lyrics:
         return {}
     use_cache = not options.no_cache
     results: SeparationResult = {}
@@ -203,6 +208,7 @@ def run_separation(
     ]
     needs_vocals = bool(
         options.extract_vocals
+        or options.extract_lyrics
         or options.decrowd_vocals
         or options.genders
         or options.lead_backing
@@ -251,4 +257,6 @@ def run_separation(
         start = time.monotonic()
         mix_audio(paths[vocal], paths[instrumental], output)
         results[label] = StemResult(output.read_bytes(), time.monotonic() - start)
+    if options.extract_lyrics and "vocals" not in requested:
+        requested.append("vocals")
     return {label: results[label] for label in requested}

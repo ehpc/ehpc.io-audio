@@ -71,7 +71,7 @@ def test_run_job_url_sets_title_from_download(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(
         modal_client,
         "poll",
-        lambda c, t: {"vocals": StemResult(data=b"v", duration_s=1.0)},
+        lambda c, t: {"vocals": StemResult(b"v", 1.0)},
     )
 
     job = db.get_job(job_id)
@@ -98,7 +98,7 @@ def test_run_job_url_persists_original(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         modal_client,
         "poll",
-        lambda c, t: {"vocals": StemResult(data=b"v", duration_s=1.0)},
+        lambda c, t: {"vocals": StemResult(b"v", 1.0)},
     )
 
     job = db.get_job(job_id)

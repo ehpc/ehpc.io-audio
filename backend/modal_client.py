@@ -1,29 +1,36 @@
+from functools import cache
+
 import modal
 from modal.exception import TimeoutError as ModalTimeoutError
 
 from backend import config
 from separator.options import SeparationOptions
+from separator.processing import ProcessingResult
 from separator.stems import SeparationResult
 
-_function: modal.Function | None = None
+LYRICS_FUNCTION_NAME = "separate_with_lyrics"
 
 
-def _get_function() -> modal.Function:
-    global _function
-    if _function is None:
-        _function = modal.Function.from_name(
-            config.MODAL_APP_NAME, config.MODAL_FUNCTION_NAME
-        )
-    return _function
+@cache
+def _get_function(name: str) -> modal.Function:
+    return modal.Function.from_name(config.MODAL_APP_NAME, name)
 
 
 def spawn(
     audio_bytes: bytes, filename: str, options: SeparationOptions
-) -> modal.functions.FunctionCall:
-    return _get_function().spawn(audio_bytes, filename, options)
+) -> modal.functions.FunctionCall[SeparationResult]:
+    return _get_function(config.MODAL_FUNCTION_NAME).spawn(
+        audio_bytes, filename, options
+    )
 
 
-def poll(call: modal.functions.FunctionCall, timeout: float) -> SeparationResult | None:
+def spawn_with_lyrics(
+    audio_bytes: bytes, filename: str, options: SeparationOptions
+) -> modal.functions.FunctionCall[ProcessingResult]:
+    return _get_function(LYRICS_FUNCTION_NAME).spawn(audio_bytes, filename, options)
+
+
+def poll[T](call: modal.functions.FunctionCall[T], timeout: float) -> T | None:
     """Returns the result once ready, or None if it's not done within `timeout`."""
     try:
         return call.get(timeout=timeout)

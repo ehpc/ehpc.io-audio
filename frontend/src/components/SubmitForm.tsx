@@ -25,6 +25,7 @@ interface OptionDescriptor {
 const PROCESSING_OPTIONS: OptionDescriptor[] = [
   { key: "extract_vocals", label: "Extract vocals", group: "Outputs" },
   { key: "extract_instruments", label: "Extract instruments", group: "Outputs" },
+  { key: "extract_lyrics", label: "Extract lyrics", group: "Outputs" },
   { key: "mix_female_instruments", label: "Female vocals + instruments", mobileLabel: "Female + instruments", group: "Mixes" },
   { key: "mix_male_instruments", label: "Male vocals + instruments", mobileLabel: "Male + instruments", group: "Mixes" },
   { key: "mix_backing_instruments", label: "Backing vocals + instruments", mobileLabel: "Backing + instruments", group: "Mixes" },
@@ -40,6 +41,7 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
 const DEFAULT_OPTIONS: SeparationOptions = {
   extract_vocals: false,
   extract_instruments: false,
+  extract_lyrics: false,
   mix_female_instruments: false,
   mix_male_instruments: false,
   mix_backing_instruments: false,
@@ -141,8 +143,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     setOptions(key, next);
   };
 
+  // The source is always retained. Lyrics are a separate non-audio output.
   const trimmedUrl = () => url().trim();
-  // The original source is always kept and downloadable.
   const stems = () => ["original", ...expectedStems(options)];
 
   const validationError = (): string | null => {
@@ -185,6 +187,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         output_key: null,
         options: { ...options },
         manifest: null,
+        transcript: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
@@ -330,7 +333,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                 </div>
               </div>
             </div>
-            <p class="workspace-helper">Pitch and tempo apply to every generated output, never the original. With no separation selected, they transform the full song.</p>
+            <p class="workspace-helper">Pitch and tempo apply to every generated output, never the original. Changing pitch always includes the full song.</p>
             <div class="workspace-keys" aria-live="polite">
               <div>
                 <p class="key-label">Original key</p>
@@ -355,21 +358,22 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             role={mobile() ? "tabpanel" : "region"} aria-label={mobile() ? undefined : "Output preview"}
             aria-labelledby={mobile() ? "tab-review" : undefined}>
             <h2>Output preview</h2>
-            <p class="workspace-helper">Tracks you'll get ({stems().length})</p>
+            <p class="workspace-helper">Tracks and files you'll get ({stems().length + Number(options.extract_lyrics)})</p>
             <div class="output-tags">
               <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options)}</span>}</For>
+              <Show when={options.extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
             </div>
             <p class="workspace-helper">Your original is included, unchanged.</p>
           </section>
 
           <div class="workspace-action">
             <div class="action-summary">
-              <span>{stems().length === 1 ? "Original only · unchanged" : `${stems().length} tracks · original included`}</span>
+              <span>{stems().length + Number(options.extract_lyrics) === 1 ? "Original only · unchanged" : `${stems().length + Number(options.extract_lyrics)} outputs · original included`}</span>
               <button type="button" onClick={() => showTab("review", true)}>Review →</button>
             </div>
             <Show when={error()}><p role="alert" class="text-sm text-destructive">{error()}</p></Show>
             <Button type="submit" disabled={submitting()} class="workspace-submit">
-              {submitting() ? "Submitting..." : expectedStems(options).length > 0 ? "Process audio" : "Download song"}
+              {submitting() ? "Submitting..." : expectedStems(options).length > 0 || options.extract_lyrics ? "Process audio" : "Download song"}
             </Button>
           </div>
         </aside>

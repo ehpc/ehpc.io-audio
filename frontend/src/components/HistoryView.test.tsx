@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobDTO } from "~/api";
@@ -20,6 +20,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     options: {
       extract_vocals: false,
       extract_instruments: false,
+      extract_lyrics: false,
       mix_female_instruments: false,
       mix_male_instruments: false,
       mix_backing_instruments: false,
@@ -37,6 +38,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     original_key: "C major",
     output_key: "C major",
     manifest: [],
+    transcript: null,
     error_message: null,
     created_at: 1700000000,
     has_original: true,
@@ -85,6 +87,7 @@ describe("HistoryView download chips", () => {
       options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
       output_key: "D major",
       manifest: [
+        { label: "song", filename: "song.mp3", download_name: "Great Song - song - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 0 },
         { label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
         { label: "instruments", filename: "instruments.mp3", download_name: "Great Song - instruments - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
       ],
@@ -101,13 +104,20 @@ describe("HistoryView download chips", () => {
     expect(screen.getByText("+2 semitones")).toBeInTheDocument();
     expect(screen.getByText("120% of original")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "instruments (pitch +2 st, tempo 120%) Source key: C major" })).toBeInTheDocument();
-    expect(screen.getAllByText("Source key: C major")).toHaveLength(2);
+    expect(screen.getAllByText("Source key: C major")).toHaveLength(3);
+    const song = screen.getByRole("link", { name: "Full song (pitch +2 st, tempo 120%) Source key: C major" });
+    expect(song).toHaveAttribute("href", "/api/jobs/1/results/song");
+    expect(song).toHaveAttribute("download", job.manifest![0].download_name);
+    expect([...document.querySelectorAll('a[download]')].map(link => link.getAttribute("href"))).toEqual([
+      "/api/jobs/1/original", "/api/jobs/1/results/song", "/api/jobs/1/results/vocals", "/api/jobs/1/results/instruments",
+    ]);
     expect(screen.queryByText("Source key: D major")).toBeNull();
 
     const original = document.querySelector<HTMLAnchorElement>('a[href="/api/jobs/1/original"]');
     expect(original).not.toBeNull();
 
     // Clicking a chip downloads, it must not also open the results view.
+    vocals.addEventListener("click", (event) => event.preventDefault());
     await userEvent.click(vocals);
     expect(onSelect).not.toHaveBeenCalled();
   });
@@ -135,6 +145,55 @@ describe("HistoryView download chips", () => {
       />
     ));
     expect(screen.queryByRole("link")).toBeNull();
+  });
+  it("shows timestamped lyrics and the protected TXT link without selecting the history row", async () => {
+    const transcript = {
+      status: "recognized" as const,
+      language: "en",
+      timestamp_reference: "original" as const,
+      segments: [{ start_s: 0, end_s: 1, text: "My fellow Americans" }],
+      timestamped_text: "[00:00] My fellow Americans",
+    };
+    const onSelect = vi.fn();
+    render(() => (
+      <HistoryView
+        jobs={[urlJob({ transcript })]}
+        onSelect={onSelect}
+        onRetried={vi.fn()}
+      />
+    ));
+    const transcriptView = screen.getByLabelText("Lyrics transcript");
+    expect(screen.getByText("[00:00] My fellow Americans")).not.toBeVisible();
+    const reveal = within(transcriptView).getByText("View lyrics");
+    await userEvent.click(reveal);
+    expect(screen.getByText("[00:00] My fellow Americans")).toBeInTheDocument();
+    expect(screen.getByText(/Original audio timestamps/)).toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+    const download = screen.getByRole("link", { name: "Download timestamped TXT" });
+    expect(download).toHaveAttribute("href", "/api/jobs/1/lyrics/download");
+    expect(download).toHaveAttribute("download", "");
+    download.addEventListener("click", (event) => event.preventDefault());
+    await userEvent.click(download);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows an explicit empty-transcript message and still links the TXT", async () => {
+    render(() => (
+      <HistoryView
+        jobs={[urlJob({ transcript: {
+          status: "empty",
+          language: null,
+          timestamp_reference: "original",
+          segments: [],
+          timestamped_text: "",
+        } })]}
+        onSelect={vi.fn()}
+        onRetried={vi.fn()}
+      />
+    ));
+    await userEvent.click(screen.getByText("View lyrics"));
+    expect(screen.getByText("No speech was recognized.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download timestamped TXT" })).toBeInTheDocument();
   });
 });
 

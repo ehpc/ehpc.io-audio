@@ -1,4 +1,5 @@
 from collections import Counter
+from dataclasses import replace
 from itertools import product
 from pathlib import Path
 from typing import NamedTuple
@@ -487,6 +488,13 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
         result = run(options)
         assert list(result) == expected, selected
         assert options.output_labels == expected, selected
+        assert options.result_labels == expected, selected
+        assert replace(
+            options, pitch_semitones=-2.5, tempo_percent=125
+        ).result_labels == ["song", *expected], selected
+        assert replace(options, tempo_percent=125).result_labels == (
+            expected or ["song"]
+        ), selected
         assert len({(call.source, call.stem.model) for call in calls}) == len(calls)
         available = {"original.mp3"}
         for call in calls:
@@ -511,3 +519,43 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
         assert len(mixes) == sum(
             selected[flag] for flag in flags if flag.startswith("mix_")
         )
+
+
+@pytest.mark.parametrize("no_cache", [False, True])
+def test_lyrics_prerequisite_does_not_add_raw_vocal_dereverb_passes(
+    graph, no_cache: bool
+) -> None:
+    run, calls, mixes = graph
+    result = run(
+        SeparationOptions(
+            extract_lyrics=True,
+            mix_lead_instruments=True,
+            dereverb=True,
+            no_cache=no_cache,
+        )
+    )
+    # Raw vocals are internal ASR input, not another selected wet/dry pair.
+    assert list(result) == ["lead-instruments", "vocals"]
+    assert Counter(call.stem.model for call in calls) == Counter(
+        {
+            stems.VOCALS_STEM.model: 1,
+            stems.LEAD_BACKING_STEMS[0].model: 1,
+            stems.DEREVERB_MODEL: 1,
+            stems.INSTRUMENTS_STEM.model: 1,
+        }
+    )
+    dry_calls = [call for call in calls if call.stem.model == stems.DEREVERB_MODEL]
+    assert dry_calls[0].source.name == "lead.mp3"
+    assert len(mixes) == 1
+    assert mixes[0].vocals.name == "lead-dry.mp3"
+    assert all(call.use_cache is not no_cache for call in calls)
+
+
+def test_lyrics_only_shares_one_raw_vocal_pass_and_no_audio_outputs(graph) -> None:
+    run, calls, mixes = graph
+    options = SeparationOptions(extract_lyrics=True, no_cache=True)
+    assert list(run(options)) == ["vocals"]
+    assert options.output_labels == []
+    assert options.result_labels == []
+    assert [call.stem.model for call in calls] == [stems.VOCALS_STEM.model]
+    assert mixes == []

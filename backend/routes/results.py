@@ -6,7 +6,14 @@ from fastapi.responses import FileResponse
 
 from backend import config, db
 from backend.metadata import ensure_download_title
-from backend.models import JobStatus, download_filename, original_filename
+from backend.models import (
+    JobRecord,
+    JobStatus,
+    TranscriptDTO,
+    download_filename,
+    lyrics_filename,
+    original_filename,
+)
 from backend.session import get_session_id
 
 router = APIRouter(tags=["results"])
@@ -61,4 +68,40 @@ async def get_result(
         path,
         media_type="audio/mpeg",
         filename=download_name,
+    )
+
+
+async def _lyrics_job(job_id: int, session_id: str) -> JobRecord:
+    job = await asyncio.to_thread(db.get_job, job_id)
+    if (
+        job is None
+        or job.session_id != session_id
+        or job.status != JobStatus.DONE
+        or job.transcript is None
+    ):
+        raise HTTPException(404, "lyrics not found")
+    return job
+
+
+@router.get("/jobs/{job_id}/lyrics")
+async def get_lyrics(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> TranscriptDTO:
+    job = await _lyrics_job(job_id, session_id)
+    assert job.transcript is not None
+    return TranscriptDTO.from_transcript(job.transcript)
+
+
+@router.get("/jobs/{job_id}/lyrics/download")
+async def download_lyrics(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> FileResponse:
+    job = await _lyrics_job(job_id, session_id)
+    path = config.RESULTS_DIR / str(job_id) / "lyrics.txt"
+    if not path.is_file():
+        raise HTTPException(404, "lyrics not found")
+    return FileResponse(
+        path,
+        media_type="text/plain; charset=utf-8",
+        filename=lyrics_filename(job.title, job_id),
     )

@@ -3,13 +3,14 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import type { BooleanOptionKey, JobDTO, SeparationOptions } from '../src/api';
+import { displayOutputLabel } from '../src/lib/expectedStems';
 import { keyScale, transposeKey } from '../src/lib/music';
-import { hash, inspectAudio, inspectMix, pcm } from './audio';
+import { hash, inspectAudio, inspectMix, inspectTransformedSource, pcm } from './audio';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
-const booleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'mix_lead_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
-const defaults = Object.fromEntries([...booleanKeys.map(key => [key, false]), ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
+const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'mix_lead_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
+const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
 const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'];
 const mixInputs = [
   { option: 'mix_female_instruments', label: 'female-instruments', vocal: 'vocals-female' },
@@ -17,7 +18,7 @@ const mixInputs = [
   { option: 'mix_backing_instruments', label: 'backing-instruments', vocal: 'backing' },
   { option: 'mix_lead_instruments', label: 'lead-instruments', vocal: 'lead' },
 ] as const;
-interface Case { name: string; selected: Partial<SeparationOptions>; labels: string[]; source?: 'url'; cache?: 'hit' | 'bypass'; }
+interface Case { name: string; selected: Partial<SeparationOptions>; labels: string[]; source?: 'url'; cache?: 'hit' | 'bypass'; fixture?: 'tone-fixture'; }
 const cases: Case[] = [
   { name: 'identity-original-only', selected: {}, labels: [] },
   { name: 'extract_vocals', selected: { extract_vocals: true }, labels: ['vocals'] },
@@ -35,8 +36,8 @@ const cases: Case[] = [
   { name: 'no_cache-without-gpu', selected: { no_cache: true }, labels: [] },
   { name: 'gpu-cache-hit', selected: { extract_vocals: true }, labels: ['vocals'], cache: 'hit' },
   { name: 'gpu-cache-bypass', selected: { extract_vocals: true, no_cache: true }, labels: ['vocals'], cache: 'bypass' },
-  { name: 'all-booleans-enabled', selected: Object.fromEntries(booleanKeys.map(key => [key, true])), labels: allLabels },
-  { name: 'all-options-with-transforms', selected: { ...Object.fromEntries(booleanKeys.map(key => [key, true])), pitch_semitones: 1.25, tempo_percent: 125 }, labels: allLabels },
+  { name: 'all-booleans-enabled', selected: Object.fromEntries(audioBooleanKeys.map(key => [key, true])), labels: allLabels },
+  { name: 'all-options-with-transforms', selected: { ...Object.fromEntries(audioBooleanKeys.map(key => [key, true])), pitch_semitones: 1.25, tempo_percent: 125 }, labels: ['song', ...allLabels] },
   { name: 'mixes-hidden-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true, dereverb: true }, labels: ['female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'] },
   { name: 'mixes-cleaned-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true, decrowd: true, decrowd_vocals: true, dereverb: true }, labels: ['vocals-decrowded', 'vocals-decrowded-dry', 'instruments-decrowded', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'] },
   { name: 'instrument-only-dereverb-no-hidden-vocal', selected: { extract_instruments: true, dereverb: true }, labels: ['instruments'] },
@@ -44,7 +45,9 @@ const cases: Case[] = [
   { name: 'negative-fractional-pitch-slowdown-no-extraction', selected: { pitch_semitones: -1.25, tempo_percent: 80, no_cache: true }, labels: ['song'] },
   { name: 'pitch-only', selected: { pitch_semitones: 2 }, labels: ['song'] },
   { name: 'tempo-only', selected: { tempo_percent: 80 }, labels: ['song'] },
-  { name: 'separated-output-pitch-and-tempo', selected: { extract_instruments: true, pitch_semitones: -2.5, tempo_percent: 125 }, labels: ['instruments'] },
+  { name: 'separated-output-pitch-and-tempo', selected: { extract_instruments: true, pitch_semitones: -2.5, tempo_percent: 125 }, labels: ['song', 'instruments'] },
+  { name: 'pitched-full-source-with-selected-stem', selected: { extract_instruments: true, pitch_semitones: -1.25, tempo_percent: 119.5 }, labels: ['song', 'instruments'], fixture: 'tone-fixture' },
+  { name: 'tempo-only-selected-stem-without-extra-song', selected: { extract_instruments: true, tempo_percent: 125 }, labels: ['instruments'] },
   { name: 'real-http-url-download', selected: {}, labels: [], source: 'url' },
 ];
 
@@ -59,7 +62,7 @@ async function chooseSource(page: Page, source: 'url' | 'upload' = 'upload', fil
 
 async function configure(page: Page, options: SeparationOptions) {
   if (options.no_cache) await page.getByText('Advanced · cache', { exact: true }).click();
-  for (const key of booleanKeys) {
+  for (const key of audioBooleanKeys) {
     if (options[key]) await page.locator(`#option-${key}`).click();
   }
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill(String(options.pitch_semitones));
@@ -127,7 +130,7 @@ async function referenceMixInputs(page: Page, info: TestInfo, options: Separatio
 }
 
 async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, originalKey: string) {
-  const fixtureName = item.labels.length && item.labels[0] !== 'song' ? 'musical-fixture' : 'tone-fixture';
+  const fixtureName = item.fixture ?? (item.labels.some(label => label !== 'song') ? 'musical-fixture' : 'tone-fixture');
   const options = { ...defaults, ...item.selected };
   expect(job.options).toEqual(options);
   expect(job.manifest!.map(stem => stem.label)).toEqual(item.labels);
@@ -140,7 +143,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   ], { cwd: process.env.E2E_REPO_ROOT, encoding: 'utf8' }));
   expect(queue.started_at).not.toBeNull();
   expect(queue.finished_at).toBeGreaterThanOrEqual(queue.started_at);
-  if (item.labels.length && item.labels[0] !== 'song') expect(queue.modal_call_id).toMatch(/^fc-/);
+  if (item.labels.some(label => label !== 'song')) expect(queue.modal_call_id).toMatch(/^fc-/);
   else expect(queue.modal_call_id).toBeNull();
   const links = page.locator(`a[download][href^='/api/jobs/${job.id}/']`).filter({ visible: true });
   // Results and History each expose exactly one link for every public track.
@@ -175,6 +178,28 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     if (job.output_key !== originalKey) {
       await expect(card.getByText(`Source key: ${job.output_key}`, { exact: true })).toHaveCount(0);
     }
+    if (stem.label === 'song') {
+      await expect(card.getByText(displayOutputLabel('song', options), { exact: true })).toBeVisible();
+      const playback = await card.locator('audio').evaluate(async element => {
+        const player = element as HTMLAudioElement;
+        player.load();
+        await player.play();
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Full-song player did not advance')), 10_000);
+          const advanced = () => {
+            if (player.currentTime > 0) { clearTimeout(timeout); player.removeEventListener('timeupdate', advanced); resolve(); }
+          };
+          player.addEventListener('timeupdate', advanced);
+          advanced();
+        });
+        player.pause();
+        return { currentTime: player.currentTime, duration: player.duration, error: player.error?.message ?? null };
+      });
+      expect(playback.currentTime).toBeGreaterThan(0);
+      expect(playback.error).toBeNull();
+      expect(playback.duration).toBeCloseTo(8 * 100 / options.tempo_percent, 0);
+      audio.songPlayback = playback;
+    }
     const event = page.waitForEvent('download');
     await page.locator(`a[href='/api/jobs/${job.id}/results/${stem.label}']`).first().click();
     const output = await event;
@@ -188,9 +213,15 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     expect(metadata.streams[0].codec_name).toBe('mp3');
     expect(metadata.format.tags.title).toBe(stem.download_name.slice(0, -4));
     audio[stem.label] = {
-      ...await inspectAudio(page, files[stem.label], 8 * 100 / options.tempo_percent, stem.label === 'song' ? 261.6256 * 2 ** (options.pitch_semitones / 12) : undefined),
+      ...await inspectAudio(page, files[stem.label], 8 * 100 / options.tempo_percent, stem.label === 'song' && fixtureName === 'tone-fixture' ? 261.6256 * 2 ** (options.pitch_semitones / 12) : undefined),
       metadata,
     };
+    if (stem.label === 'song') {
+      audio.songSourceFidelity = inspectTransformedSource(
+        files.song, files.original, options.pitch_semitones, options.tempo_percent,
+        info.outputPath('full-source-reference.mp3'),
+      );
+    }
     if (item.cache === 'hit') expect(stem.duration_s).toBe(0);
     if (item.cache === 'bypass') expect(stem.duration_s).toBeGreaterThan(0);
   }
@@ -255,7 +286,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
 for (const item of cases) {
   test(item.name, async ({ page, browser }, info) => {
     const options = { ...defaults, ...item.selected };
-    const fixtureName = item.labels.length && item.labels[0] !== 'song' ? 'musical-fixture' : 'tone-fixture';
+    const fixtureName = item.fixture ?? (item.labels.some(label => label !== 'song') ? 'musical-fixture' : 'tone-fixture');
     await page.goto('/');
     const analysisResponse = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
     await chooseSource(page, item.source === 'url' ? 'url' : 'upload', fixtureName);

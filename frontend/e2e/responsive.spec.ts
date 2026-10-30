@@ -103,8 +103,10 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await assertUncovered(page, cache.locator('..'));
     await cache.check();
     await page.getByRole('tab', { name: 'Review', exact: true }).click();
-    await expect(page.getByText('Tracks you\'ll get (22)', { exact: true })).toBeVisible();
-    await expect(page.locator('.output-tags')).toContainText('pitch +2 st');
+    await expect(page.locator('.output-tags').getByText('Original (unchanged)', { exact: true })).toBeVisible();
+    await expect(page.locator('.output-tags').getByText('Full song (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
+    await expect(page.locator('.output-tags').getByText('lead-instruments (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
+    await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toHaveValue('2');
     await expect(page.getByRole('spinbutton', { name: 'Tempo (% of original)' })).toHaveValue('120');
@@ -112,10 +114,11 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     expect(await page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' }).evaluate(el => Number.parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
     for (const option of await options.all()) { await expect(option).toBeChecked(); await option.uncheck(); }
+    await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toHaveCount(0);
     await expect(cache).toBeChecked();
     await page.getByRole('button', { name: 'Review →', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Review', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByText('Tracks you\'ll get (2)', { exact: true })).toBeVisible();
+    await expect(page.getByText(/Tracks and files you'll get \(2\)/)).toBeVisible();
     const response = page.waitForResponse(res => res.url().endsWith('/api/jobs') && res.request().method() === 'POST');
     await page.getByRole('button', { name: 'Process audio', exact: true }).click();
     const submitted = await (await response).json();

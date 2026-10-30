@@ -131,3 +131,32 @@ export function inspectMix(mixPath: string, vocalPath: string, instrumentPath: s
   expect(relativeError, `mix must retain unity gain: ${mixPath}`).toBeLessThan(0.20);
   return { correlation, relativeError, comparedSamples: count, transform };
 }
+
+/** Compare the full-song output to one independent combined render of the source. */
+export function inspectTransformedSource(outputPath: string, sourcePath: string, pitch: number, tempo: number, referencePath: string) {
+  const decoded = `${referencePath}-decoded.wav`;
+  const adjusted = `${referencePath}-adjusted.wav`;
+  execFileSync('ffmpeg', [
+    '-nostdin', '-v', 'error', '-y', '-i', sourcePath,
+    '-map', '0:a:0', '-vn', '-c:a', 'pcm_f32le', decoded,
+  ]);
+  execFileSync('rubberband', [
+    '--fine', '--formant', '--pitch', String(pitch),
+    '--tempo', `100:${tempo}`, decoded, adjusted,
+  ]);
+  execFileSync('ffmpeg', [
+    '-nostdin', '-v', 'error', '-y', '-i', adjusted,
+    '-map', '0:a:0', '-vn', '-c:a', 'libmp3lame', '-q:a', '0', referencePath,
+  ]);
+  const expected = pcm(referencePath);
+  const actual = pcm(outputPath);
+  expect(actual.length, 'full song must retain the complete transformed source').toBe(expected.length);
+  let error = 0, energy = 0;
+  for (let index = 0; index < expected.length; index++) {
+    error += (actual[index] - expected[index]) ** 2;
+    energy += expected[index] ** 2;
+  }
+  const relativeError = Math.sqrt(error / energy);
+  expect(relativeError, 'full song must be the transformed original, not a reconstructed stem mix').toBeLessThan(0.02);
+  return { relativeError, comparedSamples: expected.length, referencePath };
+}

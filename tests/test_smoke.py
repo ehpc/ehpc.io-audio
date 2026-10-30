@@ -19,7 +19,7 @@ import pytest
 from backend import config
 from separator.modal_app import TIMEOUT as MODAL_FUNCTION_TIMEOUT_S
 from separator.options import SeparationOptions
-from separator.stems import StemResult
+from separator.stems import SeparationResult
 
 # The suite-wide --timeout is sized for local tests; a cold run here waits on a
 # container boot, a model download and the GPU pass. Allow more than the Modal
@@ -169,7 +169,7 @@ def test_deployed_function_separates_audio(
     without populating the shared raw-stem cache with fixture outputs.
     """
     fn = modal.Function.from_name(config.MODAL_APP_NAME, config.MODAL_FUNCTION_NAME)
-    result: dict[str, StemResult] = fn.remote(
+    result: SeparationResult = fn.remote(
         voiced_wav,
         "smoke-voiced-music.wav",
         options,

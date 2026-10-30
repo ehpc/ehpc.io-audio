@@ -7,11 +7,14 @@ than importing this module directly.
 """
 
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import modal
 
 from separator.options import SeparationOptions
+from separator.processing import ProcessingResult, run_processing
 from separator.stems import SeparationResult, run_separation
 
 app = modal.App("audio-separator")
@@ -32,6 +35,7 @@ TIMEOUT = 1200  # 20 minutes — up to nine sequential separator passes on L40S
 # H100    75s   $0.082  x2.2      x3.1       $0.017
 # B200    69s   $0.119  x3.1      x3.4       $0.030
 GPU = "L40S"
+ASR_PYTHON = "/opt/lyrics-asr/bin/python"
 
 image = (
     # onnxruntime-gpu needs CUDA 12 + cuDNN 9 system libraries.
@@ -50,6 +54,13 @@ image = (
         "librosa==0.11.0",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
+    # Silero VAD uses CPU onnxruntime, sharing a namespace with the separator's
+    # onnxruntime-gpu. Keep their complete dependency environments isolated.
+    .run_commands(
+        "python -m venv /opt/lyrics-asr",
+        # PyAV 19 removed metadata_errors, used by faster-whisper's decoder.
+        "/opt/lyrics-asr/bin/pip install faster-whisper==1.2.1 av==16.1.0",
+    )
     # This module lives inside the `separator` package and imports its siblings
     # (separator.options / separator.stems). Modal only auto-includes the entrypoint
     # file itself, so the package must be added explicitly or the container
@@ -67,6 +78,15 @@ def healthcheck() -> str:
     return "ok"
 
 
+@contextmanager
+def _source_audio(audio_bytes: bytes, filename: str) -> Iterator[tuple[Path, Path]]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        input_path = tmp / filename
+        input_path.write_bytes(audio_bytes)
+        yield tmp, input_path
+
+
 @app.function(
     image=image,
     gpu=GPU,
@@ -76,10 +96,26 @@ def healthcheck() -> str:
 def separate(
     audio_bytes: bytes, filename: str, options: SeparationOptions
 ) -> SeparationResult:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        input_path = tmp / filename
-        input_path.write_bytes(audio_bytes)
+    """Core audio RPC: keep its dictionary result usable by audio-only clients."""
+    with _source_audio(audio_bytes, filename) as (tmp, input_path):
         results = run_separation(input_path, options, tmp, MODEL_CACHE, STEM_CACHE)
+        model_volume.commit()
+        return results
+
+
+@app.function(
+    image=image,
+    gpu=GPU,
+    volumes={MODEL_CACHE: model_volume},
+    timeout=TIMEOUT,
+)
+def separate_with_lyrics(
+    audio_bytes: bytes, filename: str, options: SeparationOptions
+) -> ProcessingResult:
+    """Multimodal RPC for callers explicitly requesting a transcript."""
+    with _source_audio(audio_bytes, filename) as (tmp, input_path):
+        results = run_processing(
+            input_path, options, tmp, MODEL_CACHE, STEM_CACHE, TIMEOUT, ASR_PYTHON
+        )
         model_volume.commit()
         return results

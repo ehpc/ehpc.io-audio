@@ -5,6 +5,7 @@ import { displayOutputLabel } from "~/lib/expectedStems";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
+import TranscriptView from "~/components/TranscriptView";
 
 function formatSize(bytes: number): string {
   const mb = bytes / (1024 * 1024);
@@ -85,6 +86,13 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
             </Card>
           )}
         </For>
+        <Show when={props.job.transcript}>
+          <Card>
+            <CardContent class="p-4">
+              <TranscriptView job={props.job} />
+            </CardContent>
+          </Card>
+        </Show>
       </div>
 
       <Button variant="outline" onClick={props.onReset}>

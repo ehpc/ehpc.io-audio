@@ -31,6 +31,17 @@ await writeFile(resolve(temporary, 'musical-fixture.wav'), fixture);
 await writeFile(resolve(temporary, 'tone-fixture.wav'), toneFixture);
 await writeFile(resolve(temporary, 'silent-fixture.wav'), silentFixture());
 await writeFile(resolve(temporary, 'invalid.wav'), 'not audio');
+// The pinned ASR reference is only needed by GPU lyrics tests, never CPU,
+// visual, YouTube, or explicitly selected unrelated GPU specs.
+const selectedSpecs = arguments_.filter(argument => /\.spec\.ts(?:$|:)/.test(argument));
+const needsLyricsFixture = !cpuOnly && (selectedSpecs.length === 0 || selectedSpecs.some(argument => /lyrics\.spec\.ts(?:$|:)/.test(argument)));
+if (needsLyricsFixture) {
+  const reference = spawnSync('uv', ['run', 'python', 'tests/lyrics_fixture.py', resolve(temporary, 'jfk.flac')], { cwd: root, stdio: 'inherit' });
+  if (reference.status !== 0) {
+    await rm(temporary, { recursive: true, force: true });
+    throw new Error('Failed to stage the checksum-verified ASR reference fixture.');
+  }
+}
 let serveRecovered = false;
 const source = createServer((req, res) => {
   if (req.url === '/recover' && req.method === 'POST') {

@@ -6,6 +6,7 @@ from math import isfinite
 class SeparationOptions:
     extract_vocals: bool = False
     extract_instruments: bool = False
+    extract_lyrics: bool = False
     mix_female_instruments: bool = False
     mix_male_instruments: bool = False
     mix_backing_instruments: bool = False
@@ -59,4 +60,18 @@ class SeparationOptions:
                 labels.append(label)
         if self.dereverb and not labels:
             labels.append("vocals-dry")
+        return labels
+
+    @property
+    def result_labels(self) -> list[str]:
+        """Public transformed outputs, including the full source when pitched.
+
+        Tempo-only jobs retain their existing full-song fallback when no stems
+        are selected. The source song is CPU-only, never a separation output.
+        """
+        labels = self.output_labels
+        if self.pitch_semitones != 0 or (
+            not self.output_labels and self.tempo_percent != 100
+        ):
+            labels.insert(0, "song")
         return labels

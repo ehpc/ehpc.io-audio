@@ -1,11 +1,13 @@
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from backend import config
 from separator.audio import modification_suffix, transposed_key
+from separator.lyrics import Transcript, TranscriptSegment, transcript_text
 from separator.options import SeparationOptions
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
@@ -37,6 +39,10 @@ def original_filename(title: str | None, job_id: int, suffix: str) -> str:
     return f"{_download_base(title, job_id)} - original{suffix or '.mp3'}"
 
 
+def lyrics_filename(title: str | None, job_id: int) -> str:
+    return f"{_download_base(title, job_id)} - lyrics.txt"
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -50,6 +56,27 @@ class ResultManifestEntry(BaseModel):
     size_bytes: int
     duration_s: float
     download_name: str = ""
+
+
+class TranscriptDTO(BaseModel):
+    segments: list[TranscriptSegment]
+    language: str | None
+    status: Literal["recognized", "empty"]
+    timestamp_reference: Literal["original"]
+
+    @computed_field
+    @property
+    def timestamped_text(self) -> str:
+        return transcript_text(self.segments)
+
+    @classmethod
+    def from_transcript(cls, transcript: Transcript) -> "TranscriptDTO":
+        return cls(
+            segments=transcript.segments,
+            language=transcript.language,
+            status=transcript.status,
+            timestamp_reference=transcript.timestamp_reference,
+        )
 
 
 @dataclass
@@ -70,6 +97,7 @@ class JobRecord:
     started_at: int | None
     finished_at: int | None
     original_key: str | None = None
+    transcript: Transcript | None = None
 
 
 class JobDTO(BaseModel):
@@ -88,6 +116,7 @@ class JobDTO(BaseModel):
     has_original: bool
     original_key: str | None
     output_key: str | None
+    transcript: TranscriptDTO | None = None
 
 
 def _has_original(job_id: int) -> bool:
@@ -128,6 +157,9 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         has_original=_has_original(job.id),
         original_key=job.original_key,
         output_key=transposed_key(job.original_key, job.options.pitch_semitones),
+        transcript=(
+            TranscriptDTO.from_transcript(job.transcript) if job.transcript else None
+        ),
     )
 
 

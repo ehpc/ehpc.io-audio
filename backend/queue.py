@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import modal
 from fastapi import FastAPI
 
 from backend import config, db, events, modal_client
@@ -18,6 +19,8 @@ from backend.models import (
 )
 from separator.audio import detect_key, modification_suffix, transform_audio
 from separator.download import download_mp3
+from separator.lyrics import Transcript, transcript_text
+from separator.processing import ProcessingResult
 from separator.stems import SeparationResult, StemResult
 
 log = logging.getLogger(__name__)
@@ -80,6 +83,33 @@ def _persist_results(
     return manifest
 
 
+def _persist_transcript(job_id: int, transcript: Transcript) -> None:
+    directory = config.RESULTS_DIR / str(job_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "lyrics.txt").write_text(
+        transcript_text(transcript.segments), encoding="utf-8"
+    )
+
+
+async def _await_modal[T](job_id: int, call: modal.functions.FunctionCall[T]) -> T:
+    log.info("job %s spawned on modal (call_id=%s)", job_id, call.object_id)
+    await asyncio.to_thread(db.set_modal_call_id, job_id, call.object_id)
+    result: T | None = None
+    polls = 0
+    while result is None:
+        polls += 1
+        result = await asyncio.to_thread(
+            lambda: modal_client.poll(call, config.MODAL_CALL_POLL_TIMEOUT_S)
+        )
+        if result is None:
+            log.info(
+                "job %s still running (waited %.0fs)",
+                job_id,
+                polls * config.MODAL_CALL_POLL_TIMEOUT_S,
+            )
+    return result
+
+
 async def _run_job(job: JobRecord) -> None:
     await _publish_status(job.id)
     try:
@@ -106,38 +136,35 @@ async def _run_job(job: JobRecord) -> None:
         job.original_key = await asyncio.to_thread(detect_key, audio_bytes, filename)
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
         await _publish_status(job.id)
-        result: SeparationResult = {}
-        if job.options.output_labels:
-            call = await asyncio.to_thread(
+        processed = ProcessingResult(audio={})
+        if job.options.extract_lyrics:
+            lyrics_call = await asyncio.to_thread(
+                modal_client.spawn_with_lyrics, audio_bytes, filename, job.options
+            )
+            processed = await _await_modal(job.id, lyrics_call)
+        elif job.options.output_labels:
+            audio_call = await asyncio.to_thread(
                 modal_client.spawn, audio_bytes, filename, job.options
             )
-            log.info("job %s spawned on modal (call_id=%s)", job.id, call.object_id)
-            await asyncio.to_thread(db.set_modal_call_id, job.id, call.object_id)
-
-            remote_result = None
-            polls = 0
-            while remote_result is None:
-                polls += 1
-                remote_result = await asyncio.to_thread(
-                    modal_client.poll, call, config.MODAL_CALL_POLL_TIMEOUT_S
-                )
-                if remote_result is None:
-                    log.info(
-                        "job %s still running (waited %.0fs)",
-                        job.id,
-                        polls * config.MODAL_CALL_POLL_TIMEOUT_S,
-                    )
-            result = remote_result
+            processed = ProcessingResult(audio=await _await_modal(job.id, audio_call))
+        if job.options.output_labels or job.options.extract_lyrics:
             log.info(
                 "job %s modal returned %d outputs: %s",
                 job.id,
-                len(result),
-                ", ".join(result),
+                len(processed.audio),
+                ", ".join(processed.audio),
             )
-        elif job.options.pitch_semitones != 0 or job.options.tempo_percent != 100:
-            result = {"song": StemResult(audio_bytes, 0.0)}
+        result = processed.audio
+        if job.options.extract_lyrics:
+            if processed.transcript is None:
+                raise RuntimeError("Lyrics extraction returned no transcript")
+            await asyncio.to_thread(_persist_transcript, job.id, processed.transcript)
+        if "song" in job.options.result_labels:
+            # Transform the complete source, not a separated/reconstructed mix.
+            # Persisting applies pitch and tempo together once, as for each stem.
+            result = {"song": StemResult(audio_bytes, 0.0), **result}
         manifest = await asyncio.to_thread(_persist_results, job, result)
-        await asyncio.to_thread(db.mark_done, job.id, manifest)
+        await asyncio.to_thread(db.mark_done, job.id, manifest, processed.transcript)
         log.info("job %s done", job.id)
     except Exception as exc:
         log.exception("job %s failed", job.id)

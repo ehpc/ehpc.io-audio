@@ -11,6 +11,7 @@ export interface StemManifestEntry {
 export interface SeparationOptions {
   extract_vocals: boolean;
   extract_instruments: boolean;
+  extract_lyrics: boolean;
   mix_female_instruments: boolean;
   mix_male_instruments: boolean;
   mix_backing_instruments: boolean;
@@ -26,9 +27,19 @@ export interface SeparationOptions {
   tempo_percent: number;
 }
 
-export type BooleanOptionKey = {
-  [K in keyof SeparationOptions]: SeparationOptions[K] extends boolean ? K : never;
-}[keyof SeparationOptions];
+export interface TranscriptSegmentDTO {
+  start_s: number;
+  end_s: number;
+  text: string;
+}
+
+export interface TranscriptDTO {
+  status: "recognized" | "empty";
+  language: string | null;
+  timestamp_reference: "original";
+  segments: TranscriptSegmentDTO[];
+  timestamped_text: string;
+}
 
 export interface JobDTO {
   id: number;
@@ -41,10 +52,16 @@ export interface JobDTO {
   output_key: string | null;
   options: SeparationOptions;
   manifest: StemManifestEntry[] | null;
+  transcript: TranscriptDTO | null;
   error_message: string | null;
   created_at: number;
   has_original: boolean;
 }
+
+export type BooleanOptionKey = {
+  [K in keyof SeparationOptions]: SeparationOptions[K] extends boolean ? K : never;
+}[keyof SeparationOptions];
+
 
 /** What to show a user for a job: the resolved track title, else the raw source. */
 export function jobLabel(job: JobDTO): string {
@@ -111,6 +128,7 @@ const OPTION_KEYS: BooleanOptionKey[] = [
   "genders",
   "lead_backing",
   "drums",
+  "extract_lyrics",
   "no_cache",
 ];
 function isTerminal(status: JobStatus): boolean {
@@ -226,9 +244,18 @@ export async function getStatus(): Promise<StatusDTO> {
   return (await res.json()) as StatusDTO;
 }
 
+export function lyricsUrl(id: number): string {
+  return `${API_BASE}/jobs/${id}/lyrics`;
+}
+
+export function lyricsDownloadUrl(id: number): string {
+  return `${lyricsUrl(id)}/download`;
+}
+
 export function resultUrl(id: number, label: string): string {
   return `${API_BASE}/jobs/${id}/results/${encodeURIComponent(label)}`;
 }
+
 
 export function originalUrl(id: number): string {
   return `${API_BASE}/jobs/${id}/original`;

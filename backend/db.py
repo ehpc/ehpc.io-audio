@@ -7,6 +7,7 @@ from dataclasses import asdict, fields
 
 from backend import config
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
+from separator.lyrics import Transcript, transcript_from_json
 from separator.options import SeparationOptions
 
 _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     options_json TEXT NOT NULL,
     modal_call_id TEXT,
     result_manifest_json TEXT,
+    transcript_json TEXT,
     error_message TEXT,
     created_at INTEGER NOT NULL,
     started_at INTEGER,
@@ -52,6 +54,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN title TEXT")
     if "original_key" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN original_key TEXT")
+    if "transcript_json" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN transcript_json TEXT")
     # Prior to explicit extraction, every job always requested both base stems.
     # Persist that intent once so history and retries retain the old behavior.
     for row in conn.execute("SELECT id, options_json FROM jobs").fetchall():
@@ -112,6 +116,11 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         created_at=row["created_at"],
         started_at=row["started_at"],
         finished_at=row["finished_at"],
+        transcript=(
+            transcript_from_json(row["transcript_json"])
+            if row["transcript_json"] is not None
+            else None
+        ),
     )
 
 
@@ -257,13 +266,20 @@ def update_result_size(job_id: int, label: str, size_bytes: int) -> None:
                 break
 
 
-def mark_done(job_id: int, manifest: list[ResultManifestEntry]) -> None:
+def mark_done(
+    job_id: int,
+    manifest: list[ResultManifestEntry],
+    transcript: Transcript | None = None,
+) -> None:
     with _session() as conn:
         conn.execute(
             "UPDATE jobs SET status = 'done', result_manifest_json = ?, "
-            "finished_at = ? WHERE id = ?",
+            "transcript_json = ?, finished_at = ? WHERE id = ?",
             (
                 json.dumps([entry.model_dump() for entry in manifest]),
+                json.dumps(asdict(transcript), ensure_ascii=False)
+                if transcript
+                else None,
                 int(time.time()),
                 job_id,
             ),

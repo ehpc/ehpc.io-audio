@@ -360,6 +360,11 @@ def test_pitch_and_tempo_modify_every_download_but_not_the_original(
     assert job["original_key"] == "C major"
     assert job["output_key"] == "D major"
     assert worker_client.get(f"/api/jobs/{job_id}/original").content == source
+    assert [entry["label"] for entry in job["manifest"]] == [
+        "song",
+        "vocals",
+        "instruments",
+    ]
 
     for entry in job["manifest"]:
         assert "pitch+2st" in entry["filename"]
@@ -494,5 +499,71 @@ def test_whole_song_jobs_bypass_modal_and_preserve_original(
         assert (
             worker_client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
         )
+    historical = worker_client.get("/api/jobs").json()[0]
+    assert historical["manifest"] == job["manifest"]
+
+
+@pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in ("ffmpeg", "rubberband", "ffprobe")),
+    reason="Native audio tools required",
+)
+@pytest.mark.parametrize(("pitch", "tempo"), [(12, 125), (-2.5, 80), (0.125, 100)])
+def test_pitched_full_source_is_not_reconstructed_from_selected_stem(
+    worker_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    pitch: float,
+    tempo: float,
+) -> None:
+    source = tone_wav((440.0,), duration_s=2)
+    separated = tone_wav((220.0,), duration_s=2)
+    call = _FakeCall(
+        "fc-distinct-source",
+        {"instruments": StemResult(separated, 1.0)},
+    )
+    monkeypatch.setattr(modal_client, "spawn", lambda *args: call)
+    monkeypatch.setattr(modal_client, "poll", lambda *args: call.result)
+    response = worker_client.post(
+        "/api/jobs",
+        files={"file": ("complete-source.wav", source, "audio/wav")},
+        data={
+            "extract_instruments": "true",
+            "pitch_semitones": str(pitch),
+            "tempo_percent": str(tempo),
+        },
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    job = _wait_for_terminal(worker_client, job_id, timeout_s=30)
+    assert job["status"] == JobStatus.DONE, job["error_message"]
+    assert [entry["label"] for entry in job["manifest"]] == ["song", "instruments"]
+    assert worker_client.get(f"/api/jobs/{job_id}/original").content == source
+    for entry, frequency in zip(job["manifest"], (440, 220), strict=True):
+        result = worker_client.get(f"/api/jobs/{job_id}/results/{entry['label']}")
+        assert result.status_code == 200
+        duration, actual_frequency = mp3_measurements(result.content)
+        assert duration == pytest.approx(2 * 100 / tempo, abs=0.12)
+        assert actual_frequency == pytest.approx(
+            frequency * 2 ** (pitch / 12), rel=0.02
+        )
+        metadata = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format_tags=title",
+                "-of",
+                "json",
+                str(config.RESULTS_DIR / str(job_id) / entry["filename"]),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert (
+            json.loads(metadata.stdout)["format"]["tags"]["title"]
+            == entry["download_name"][:-4]
+        )
+        assert "source-key-C-major" in entry["download_name"]
     historical = worker_client.get("/api/jobs").json()[0]
     assert historical["manifest"] == job["manifest"]

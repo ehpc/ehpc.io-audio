@@ -35,6 +35,7 @@ async def submit_job(
     file: Annotated[UploadFile | None, File()] = None,
     extract_vocals: Annotated[bool, Form()] = False,
     extract_instruments: Annotated[bool, Form()] = False,
+    extract_lyrics: Annotated[bool, Form()] = False,
     mix_female_instruments: Annotated[bool, Form()] = False,
     mix_male_instruments: Annotated[bool, Form()] = False,
     mix_backing_instruments: Annotated[bool, Form()] = False,
@@ -57,6 +58,7 @@ async def submit_job(
     options = SeparationOptions(
         extract_vocals=extract_vocals,
         extract_instruments=extract_instruments,
+        extract_lyrics=extract_lyrics,
         mix_female_instruments=mix_female_instruments,
         mix_male_instruments=mix_male_instruments,
         mix_backing_instruments=mix_backing_instruments,

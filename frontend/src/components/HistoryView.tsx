@@ -5,6 +5,7 @@ import { displayOutputLabel } from "~/lib/expectedStems";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
+import TranscriptView from "~/components/TranscriptView";
 
 const STATUS_STYLES: Record<JobStatus, string> = {
   queued: "bg-muted text-muted-foreground",
@@ -52,6 +53,7 @@ const HistoryView: Component<{
         output_key: null,
         options: job.options,
         manifest: null,
+        transcript: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
@@ -131,6 +133,9 @@ const HistoryView: Component<{
                         )}
                       </For>
                     </div>
+                  </Show>
+                  <Show when={job.status === "done" && job.transcript}>
+                    <TranscriptView job={job} compact />
                   </Show>
 
                   <Show when={job.status === "failed"}>

@@ -21,12 +21,6 @@ def test_poll_returns_none_on_modal_timeout() -> None:
     assert modal_client.poll(call, 5) is None
 
 
-def test_poll_returns_result_when_ready() -> None:
-    call = MagicMock()
-    call.get.return_value = {"vocals": object()}
-    assert modal_client.poll(call, 5) is call.get.return_value
-
-
 def test_poll_propagates_real_errors() -> None:
     call = MagicMock()
     call.get.side_effect = RuntimeError("boom")

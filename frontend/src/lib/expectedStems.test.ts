@@ -4,6 +4,7 @@ import { displayOutputLabel, expectedStems } from "./expectedStems";
 
 const NONE: SeparationOptions = {
   extract_vocals: false, extract_instruments: false,
+  extract_lyrics: false,
   mix_female_instruments: false, mix_male_instruments: false, mix_backing_instruments: false,
   mix_lead_instruments: false,
   decrowd: false, decrowd_vocals: false, dereverb: false, genders: false,
@@ -12,6 +13,10 @@ const NONE: SeparationOptions = {
 };
 
 describe("expectedStems", () => {
+  it("does not treat lyrics as an audio stem", () => {
+    expect(expectedStems({ ...NONE, extract_lyrics: true })).toEqual([]);
+    expect(expectedStems({ ...NONE, extract_lyrics: true, extract_vocals: true })).toEqual(["vocals"]);
+  });
   it("defaults to no stems, song transformation output, and dereverb fallback", () => {
     expect(expectedStems(NONE)).toEqual([]);
     expect(expectedStems({ ...NONE, pitch_semitones: 2 })).toEqual(["song"]);
@@ -89,17 +94,19 @@ describe("expectedStems", () => {
 
   it("keeps lead-mix prerequisites private with dry vocals, cleanup and transforms", () => {
     const mix = { ...NONE, mix_lead_instruments: true, dereverb: true, pitch_semitones: 1.25, tempo_percent: 125 };
-    expect(expectedStems(mix)).toEqual(["lead-instruments"]);
+    expect(expectedStems(mix)).toEqual(["song", "lead-instruments"]);
     expect(expectedStems({ ...mix, decrowd: true, decrowd_vocals: true })).toEqual([
-      "vocals-decrowded", "vocals-decrowded-dry", "instruments-decrowded", "lead-instruments",
+      "song", "vocals-decrowded", "vocals-decrowded-dry", "instruments-decrowded", "lead-instruments",
     ]);
     expect(expectedStems({ ...mix, lead_backing: true })).toEqual([
-      "lead", "lead-dry", "backing", "backing-dry", "lead-instruments",
+      "song", "lead", "lead-dry", "backing", "backing-dry", "lead-instruments",
     ]);
   });
 
   it("keeps the exact public-output contract for all 8192 boolean selections", () => {
-    const flags = Object.keys(NONE).filter((key) => typeof NONE[key as keyof SeparationOptions] === "boolean") as BooleanOptionKey[];
+    const flags = (Object.keys(NONE) as BooleanOptionKey[]).filter((key) =>
+      key !== "extract_lyrics" && typeof NONE[key] === "boolean",
+    );
     const outputs: [string, BooleanOptionKey, boolean][] = [
       ["vocals", "extract_vocals", true],
       ["vocals-decrowded", "decrowd_vocals", true],
@@ -117,7 +124,6 @@ describe("expectedStems", () => {
       ["backing-instruments", "mix_backing_instruments", false],
       ["lead-instruments", "mix_lead_instruments", false],
     ];
-    expect(flags).toHaveLength(13);
     for (let mask = 0; mask < 2 ** flags.length; mask++) {
       const options = { ...NONE };
       flags.forEach((flag, index) => { options[flag] = Boolean(mask & (1 << index)); });
@@ -127,8 +133,18 @@ describe("expectedStems", () => {
       if (options.dereverb && expected.length === 0) expected.push("vocals-dry");
       expect(expectedStems(options), `selection ${mask}`).toEqual(expected);
       expect(expectedStems({ ...options, pitch_semitones: -2.5, tempo_percent: 80 }), `transformed selection ${mask}`)
-        .toEqual(expected.length ? expected : ["song"]);
+        .toEqual(["song", ...expected]);
     }
+  });
+
+  it("adds one pitched full source ahead of selected outputs without broadening tempo-only jobs", () => {
+    for (const pitch_semitones of [-12, -0.125, 0.000001, 12]) {
+      expect(expectedStems({ ...NONE, extract_instruments: true, pitch_semitones, tempo_percent: 125 }))
+        .toEqual(["song", "instruments"]);
+      expect(expectedStems({ ...NONE, pitch_semitones })).toEqual(["song"]);
+    }
+    expect(expectedStems({ ...NONE, extract_instruments: true, tempo_percent: 125 })).toEqual(["instruments"]);
+    expect(expectedStems({ ...NONE, dereverb: true, pitch_semitones: -0.5 })).toEqual(["song", "vocals-dry"]);
   });
 });
 

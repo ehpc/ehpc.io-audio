@@ -14,8 +14,8 @@ export function displayOutputLabel(label: string, options: SeparationOptions): s
   return adjustments.length ? `${base} (${adjustments.join(", ")})` : base;
 }
 
-// Mirrors SeparationOptions.output_labels: only explicit outputs, with each
-// requested wet vocal immediately followed by its dry variant.
+// Mirrors SeparationOptions.result_labels: full source first when pitched,
+// then explicit stems with each wet vocal immediately followed by its dry variant.
 export function expectedStems(options: SeparationOptions): string[] {
   const labels: string[] = [];
   const selections = options.extract_vocals || options.extract_instruments ||
@@ -45,6 +45,6 @@ export function expectedStems(options: SeparationOptions): string[] {
   if (options.mix_backing_instruments) labels.push("backing-instruments");
   if (options.mix_lead_instruments) labels.push("lead-instruments");
   if (dry && !selections) labels.push("vocals-dry");
-  if (labels.length === 0 && (options.pitch_semitones !== 0 || options.tempo_percent !== 100)) labels.push("song");
+  if (options.pitch_semitones !== 0 || (labels.length === 0 && options.tempo_percent !== 100)) labels.unshift("song");
   return labels;
 }
