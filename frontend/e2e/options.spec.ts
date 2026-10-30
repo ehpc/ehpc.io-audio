@@ -10,6 +10,7 @@ import { hash, inspectAudio, inspectMix, inspectTransformedSource, pcm } from '.
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
 const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'mix_lead_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
+const booleanKeys: BooleanOptionKey[] = [...audioBooleanKeys, 'extract_lyrics'];
 const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
 const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'];
 const mixInputs = [
@@ -61,9 +62,13 @@ async function chooseSource(page: Page, source: 'url' | 'upload' = 'upload', fil
 }
 
 async function configure(page: Page, options: SeparationOptions) {
-  if (options.no_cache) await page.getByText('Advanced · cache', { exact: true }).click();
-  for (const key of audioBooleanKeys) {
-    if (options[key]) await page.locator(`#option-${key}`).click();
+  for (const key of booleanKeys) {
+    const checkbox = page.locator(`#option-${key}`);
+    if (await checkbox.isChecked() === options[key]) continue;
+    if (key === 'no_cache' && !await checkbox.isVisible()) {
+      await page.getByText('Advanced · cache', { exact: true }).click();
+    }
+    await checkbox.setChecked(Boolean(options[key]));
   }
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill(String(options.pitch_semitones));
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill(String(options.tempo_percent));

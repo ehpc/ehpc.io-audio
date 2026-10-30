@@ -460,9 +460,10 @@ and selection/Results/History PNGs under `frontend/test-results/`.
   audio duration and the known generated fundamental's pitch shift; originals
   are downloaded and hash-checked.
 - Cache bypass alone proves no Modal call is made. A separate explicit
-  extraction warms through the browser, repeats with zero raw inference time,
-  and bypasses with positive inference time. Persisted queue timestamps and
-  actual Modal call IDs are included in the evidence.
+  extraction warms through the browser, repeats with the retained extraction
+  selection and zero raw inference time, and bypasses with positive inference
+  time. Persisted queue timestamps and actual Modal call IDs are included in the
+  evidence.
 - File and real HTTP URL inputs exercise key preview and yt-dlp downloads;
   spinner/progress, target keys/notes, stale-key clearing, invalid audio/source
   errors, retry after source recovery, reload/history, and session isolation are

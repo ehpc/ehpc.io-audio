@@ -146,7 +146,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await assertNoOverflow(page);
     await page.screenshot({ path: info.outputPath(`mobile-${viewport.width}-results.png`), fullPage: true });
     await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
-    await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toHaveValue('0');
-    await expect(page.getByRole('spinbutton', { name: 'Tempo (% of original)' })).toHaveValue('100');
+    await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toHaveValue('2');
+    await expect(page.getByRole('spinbutton', { name: 'Tempo (% of original)' })).toHaveValue('120');
   });
 }
