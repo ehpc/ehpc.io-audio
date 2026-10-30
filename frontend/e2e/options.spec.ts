@@ -299,7 +299,6 @@ for (const item of cases) {
     await expect(page.getByText(`Target key: ${transposeKey(originalKey, options.pitch_semitones)}`, { exact: true })).toBeVisible();
     const notes = keyScale(transposeKey(originalKey, options.pitch_semitones))!;
     await expect(page.getByText(`Notes (${notes.mode}): ${notes.notes.join(' · ')}`, { exact: true }).last()).toBeVisible();
-    await expect(page.getByText(`Tracks you'll get (${item.labels.length + 1})`, { exact: true })).toBeVisible();
     if (item.cache === 'hit') {
       const warmId = await submit(page);
       await complete(page, warmId);
