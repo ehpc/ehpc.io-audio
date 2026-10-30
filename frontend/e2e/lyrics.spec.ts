@@ -50,7 +50,9 @@ async function assertTranscriptAndDownload(page: Page, job: JobDTO) {
   expect(lower).toContain('my fellow americans');
   expect(lower).toContain('your country');
   expect(lower).toContain('do for you');
-  expect(text).toMatch(/^\[\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}\.\d{3}\] /m);
+  expect(text).toMatch(/^\[\d{2}:\d{2}\] /m);
+  expect(job.transcript!.sections.length).toBeGreaterThan(0);
+  expect(text).toMatch(/^\[(Intro|Verse|Pre-chorus|Chorus|Bridge|Instrumental|Outro|Silence)\]$/m);
   const maxEndS = Math.max(...job.transcript!.segments.map(segment => segment.end_s));
   expect(maxEndS).toBeLessThanOrEqual(11.0);
   if (job.options.tempo_percent === 120) expect(maxEndS).toBeGreaterThan(11 / 1.2);

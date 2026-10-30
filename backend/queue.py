@@ -19,7 +19,6 @@ from backend.models import (
 )
 from separator.audio import detect_key, modification_suffix, transform_audio
 from separator.download import download_mp3
-from separator.lyrics import Transcript, transcript_text
 from separator.processing import ProcessingResult
 from separator.stems import SeparationResult, StemResult
 
@@ -81,14 +80,6 @@ def _persist_results(
             )
         )
     return manifest
-
-
-def _persist_transcript(job_id: int, transcript: Transcript) -> None:
-    directory = config.RESULTS_DIR / str(job_id)
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / "lyrics.txt").write_text(
-        transcript_text(transcript.segments), encoding="utf-8"
-    )
 
 
 async def _await_modal[T](job_id: int, call: modal.functions.FunctionCall[T]) -> T:
@@ -155,10 +146,8 @@ async def _run_job(job: JobRecord) -> None:
                 ", ".join(processed.audio),
             )
         result = processed.audio
-        if job.options.extract_lyrics:
-            if processed.transcript is None:
-                raise RuntimeError("Lyrics extraction returned no transcript")
-            await asyncio.to_thread(_persist_transcript, job.id, processed.transcript)
+        if job.options.extract_lyrics and processed.transcript is None:
+            raise RuntimeError("Lyrics extraction returned no transcript")
         if "song" in job.options.result_labels:
             # Transform the complete source, not a separated/reconstructed mix.
             # Persisting applies pitch and tempo together once, as for each stem.

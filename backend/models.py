@@ -7,7 +7,12 @@ from pydantic import BaseModel, computed_field
 
 from backend import config
 from separator.audio import modification_suffix, transposed_key
-from separator.lyrics import Transcript, TranscriptSegment, transcript_text
+from separator.lyrics import (
+    Transcript,
+    TranscriptSection,
+    TranscriptSegment,
+    transcript_text,
+)
 from separator.options import SeparationOptions
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
@@ -63,11 +68,13 @@ class TranscriptDTO(BaseModel):
     language: str | None
     status: Literal["recognized", "empty"]
     timestamp_reference: Literal["original"]
+    sections: list[TranscriptSection]
+    structure_model: str | None
 
     @computed_field
     @property
     def timestamped_text(self) -> str:
-        return transcript_text(self.segments)
+        return transcript_text(self.segments, self.sections)
 
     @classmethod
     def from_transcript(cls, transcript: Transcript) -> "TranscriptDTO":
@@ -76,6 +83,8 @@ class TranscriptDTO(BaseModel):
             language=transcript.language,
             status=transcript.status,
             timestamp_reference=transcript.timestamp_reference,
+            sections=transcript.sections,
+            structure_model=transcript.structure_model,
         )
 
 

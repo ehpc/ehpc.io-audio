@@ -51,5 +51,15 @@ def sung_excerpt() -> bytes:
     return data
 
 
+def full_sung_song() -> bytes:
+    """Uncut 141.5s original of the public-domain recording documented above."""
+    path = Path(__file__).with_name("fixtures") / "auld-lang-syne-full.ogg"
+    data = path.read_bytes()
+    expected = "0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04"
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise ValueError("Full sung reference fixture checksum mismatch")
+    return data
+
+
 if __name__ == "__main__":
     Path(sys.argv[1]).write_bytes(intelligible_speech())

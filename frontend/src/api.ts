@@ -26,11 +26,26 @@ export interface SeparationOptions {
   pitch_semitones: number;
   tempo_percent: number;
 }
-
 export interface TranscriptSegmentDTO {
   start_s: number;
   end_s: number;
   text: string;
+}
+
+export type TranscriptSectionLabel =
+  | "intro"
+  | "verse"
+  | "chorus"
+  | "bridge"
+  | "inst"
+  | "outro"
+  | "silence"
+  | "pre-chorus";
+
+export interface TranscriptSectionDTO {
+  start_s: number;
+  end_s: number;
+  label: TranscriptSectionLabel;
 }
 
 export interface TranscriptDTO {
@@ -38,6 +53,8 @@ export interface TranscriptDTO {
   language: string | null;
   timestamp_reference: "original";
   segments: TranscriptSegmentDTO[];
+  sections: TranscriptSectionDTO[];
+  structure_model: string | null;
   timestamped_text: string;
 }
 

@@ -69,14 +69,24 @@ When **Extract lyrics** is selected, Modal's faster-whisper large-v3 transcribes
 the source vocals before pitch/tempo changes. If the vocal stem was not selected,
 those vocals remain an internal prerequisite and aren't added to the audio
 manifest; a lyrics-only job uses Modal GPU ASR while ordinary download-only
-remains the no-GPU default. Results show the transcript inline, and History
-offers a collapsible inline view; both provide a timestamped UTF-8 TXT download.
+remains the no-GPU default. The transcript includes estimated musical-section
+headers (Intro, Verse, Pre-chorus, Chorus, Bridge, Instrumental, Outro, Silence)
+alongside recognized lyrics in Results and History, with a timestamped UTF-8 TXT
+download. Timestamps are approximate segment onsets floored to whole seconds on
+the original audio clock; they are not word-level or karaoke alignment.
 Transcription preserves the source language without translation and processes
-the full vocal input rather than speech-cropped chunks, relying on Whisper's
-no-speech gate for nonspeech. No accuracy is guaranteed: singing may be missed,
-misrecognized, or hallucinated. Approximate segment timestamps use the original
-audio clock and are not word-level or karaoke alignment. A successful no-speech
-recognition is shown as empty rather than replaced with a fabricated transcript.
+the full vocal input rather than speech-cropped chunks. No accuracy is
+guaranteed: singing may be missed, misrecognized, or hallucinated. Empty speech
+recognition still displays estimated section headers, without inventing lyrics.
+Musical structure estimation is experimental and may be inaccurate. It uses
+[SongFormer](https://github.com/ASLP-lab/SongFormer/tree/a75880ed1b7375ac71860ec6c4fc9c899cf99515)
+([CC-BY-4.0 license](https://github.com/ASLP-lab/SongFormer/blob/a75880ed1b7375ac71860ec6c4fc9c899cf99515/LICENSE))
+and incorporates [MuQ](https://github.com/tencent-ailab/MuQ) embeddings with
+[CC-BY-NC-4.0 weights](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter).
+The MuQ weights' noncommercial license requires separate rights for commercial
+use. This project's authorized use includes noncommercial local development,
+runtime verification, and deployment of this personal music tool; that project
+authorization does not grant additional rights under the model licenses.
 
 
 | Selection | Output label or file |

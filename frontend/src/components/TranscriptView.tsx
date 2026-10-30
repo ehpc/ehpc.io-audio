@@ -10,10 +10,14 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
       <Show when={transcript()?.language}>
         {(language) => <p class="text-xs text-muted-foreground">Language: {language()}</p>}
       </Show>
-      <Show when={transcript()?.status === "recognized"} fallback={
+      <Show when={(transcript()?.sections.length ?? 0) > 0}>
+        <p class="text-xs text-muted-foreground">Musical section labels are automatic estimates and may be inaccurate.</p>
+      </Show>
+      <Show when={transcript()?.status === "empty"}>
         <p class="text-sm text-muted-foreground">No speech was recognized.</p>
-      }>
-        <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm leading-relaxed">{transcript()?.timestamped_text}</pre>
+      </Show>
+      <Show when={transcript()?.timestamped_text}>
+        {(text) => <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm leading-relaxed">{text()}</pre>}
       </Show>
     </>
   );

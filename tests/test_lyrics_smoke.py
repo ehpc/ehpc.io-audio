@@ -65,9 +65,9 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
     for segment in transcript.segments:
         assert previous_end <= segment.start_s < segment.end_s <= duration + 0.1
         previous_end = segment.end_s
-    text = transcript_text(transcript.segments)
+    text = transcript_text(transcript.segments, transcript.sections)
     assert text.encode("utf-8").decode("utf-8") == text
-    assert " --> " in text
+    assert " --> " not in text
     print(
         "SMOKE_LYRICS "
         + json.dumps(
@@ -99,7 +99,7 @@ def test_deployed_lyrics_retains_later_sung_verse() -> None:
     later = " ".join(s.text for s in transcript.segments if s.end_s > 20).casefold()
     assert re.search(r"\b(?:auld|old)\s+(?:lang|long)\s+(?:syne|sign)\b", later), later
     assert all(0 <= s.start_s < s.end_s <= 30.1 for s in transcript.segments)
-    print("SMOKE_SINGING " + transcript_text(transcript.segments))
+    print("SMOKE_SINGING " + transcript_text(transcript.segments, transcript.sections))
 
 
 def test_gpu_asr_silence_is_empty_and_runtime_dependencies_are_isolated() -> None:

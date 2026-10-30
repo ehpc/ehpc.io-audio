@@ -59,10 +59,7 @@ def test_lyrics_download_matches_browser_text_and_survives_history(
     assert job["options"]["extract_lyrics"] is True
     assert job["manifest"] == []
     assert job["has_original"] is True
-    expected = (
-        "[00:01.250 --> 00:04.000] こんにちは、世界\n"
-        "[01:01.125 --> 01:04.500] Cœur et âme\n"
-    )
+    expected = "[00:01] こんにちは、世界\n[01:01] Cœur et âme\n"
     payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
     assert payload == job["transcript"]
     assert payload["status"] == "recognized"
@@ -139,12 +136,13 @@ def test_older_job_without_lyrics_fields_remains_download_only() -> None:
     ]
 
 
-def test_timestamp_rounding_and_utf8_roundtrip() -> None:
-    assert format_timestamp(59.9996) == "01:00.000"
-    assert format_timestamp(3600.125) == "60:00.125"
+def test_timestamp_flooring_and_utf8_roundtrip() -> None:
+    assert format_timestamp(59.9996) == "00:59"
+    assert format_timestamp(60.999) == "01:00"
+    assert format_timestamp(3600.125) == "60:00"
     transcript = Transcript([TranscriptSegment(1.0, 2.0, "سلام 世界")], language="ar")
     restored = transcript_from_json(json.dumps(asdict(transcript), ensure_ascii=False))
-    assert transcript_text(restored.segments) == "[00:01.000 --> 00:02.000] سلام 世界\n"
+    assert transcript_text(restored.segments) == "[00:01] سلام 世界\n"
 
 
 @pytest.mark.parametrize("start,end", [(-1, 1), (2, 1), (0, float("nan"))])
@@ -200,6 +198,6 @@ def test_transformed_audio_does_not_rescale_original_lyrics_clock(
     assert frequency_amplitude(decoded, 880) > frequency_amplitude(decoded, 440) * 10
     assert client.get(f"/api/jobs/{job_id}/original").content == source
     assert job["transcript"]["timestamp_reference"] == "original"
-    expected = "[00:02.500 --> 00:03.500] Original clock\n"
+    expected = "[00:02] Original clock\n"
     assert job["transcript"]["timestamped_text"] == expected
     assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == expected

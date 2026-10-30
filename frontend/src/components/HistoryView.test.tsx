@@ -152,7 +152,9 @@ describe("HistoryView download chips", () => {
       language: "en",
       timestamp_reference: "original" as const,
       segments: [{ start_s: 0, end_s: 1, text: "My fellow Americans" }],
-      timestamped_text: "[00:00] My fellow Americans",
+      sections: [{ start_s: 0, end_s: 1, label: "chorus" as const }],
+      structure_model: "SongFormer",
+      timestamped_text: "[00:00]\n[Chorus]\n[00:00] My fellow Americans",
     };
     const onSelect = vi.fn();
     render(() => (
@@ -163,10 +165,11 @@ describe("HistoryView download chips", () => {
       />
     ));
     const transcriptView = screen.getByLabelText("Lyrics transcript");
-    expect(screen.getByText("[00:00] My fellow Americans")).not.toBeVisible();
+    expect(transcriptView.querySelector("pre")).not.toBeVisible();
     const reveal = within(transcriptView).getByText("View lyrics");
     await userEvent.click(reveal);
-    expect(screen.getByText("[00:00] My fellow Americans")).toBeInTheDocument();
+    expect(transcriptView.querySelector("pre")).toHaveTextContent("[00:00] [Chorus] [00:00] My fellow Americans");
+    expect(screen.getByText(/section labels are automatic estimates/)).toBeInTheDocument();
     expect(screen.getByText(/Original audio timestamps/)).toBeInTheDocument();
     expect(onSelect).not.toHaveBeenCalled();
     const download = screen.getByRole("link", { name: "Download timestamped TXT" });
@@ -185,7 +188,9 @@ describe("HistoryView download chips", () => {
           language: null,
           timestamp_reference: "original",
           segments: [],
-          timestamped_text: "",
+          sections: [{ start_s: 0, end_s: 2, label: "chorus" }],
+          structure_model: "SongFormer",
+          timestamped_text: "[00:00]\n[Chorus]\n",
         } })]}
         onSelect={vi.fn()}
         onRetried={vi.fn()}
@@ -193,6 +198,8 @@ describe("HistoryView download chips", () => {
     ));
     await userEvent.click(screen.getByText("View lyrics"));
     expect(screen.getByText("No speech was recognized.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Lyrics transcript").querySelector("pre"))
+      .toHaveTextContent("[00:00] [Chorus]");
     expect(screen.getByRole("link", { name: "Download timestamped TXT" })).toBeInTheDocument();
   });
 });

@@ -49,6 +49,8 @@ it("shows transposition and tempo while preserving server download names and the
       language: "en",
       timestamp_reference: "original",
       segments: [{ start_s: 0, end_s: 2.5, text: "<img src=x onerror=alert(1)>" }],
+      sections: [],
+      structure_model: null,
       timestamped_text: "[00:00] <img src=x onerror=alert(1)>",
     },
     error_message: null,

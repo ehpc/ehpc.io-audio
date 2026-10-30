@@ -1,8 +1,9 @@
 import asyncio
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from backend import config, db
 from backend.metadata import ensure_download_title
@@ -15,6 +16,7 @@ from backend.models import (
     original_filename,
 )
 from backend.session import get_session_id
+from separator.lyrics import transcript_text
 
 router = APIRouter(tags=["results"])
 
@@ -95,13 +97,12 @@ async def get_lyrics(
 @router.get("/jobs/{job_id}/lyrics/download")
 async def download_lyrics(
     job_id: int, session_id: Annotated[str, Depends(get_session_id)]
-) -> FileResponse:
+) -> Response:
     job = await _lyrics_job(job_id, session_id)
-    path = config.RESULTS_DIR / str(job_id) / "lyrics.txt"
-    if not path.is_file():
-        raise HTTPException(404, "lyrics not found")
-    return FileResponse(
-        path,
+    assert job.transcript is not None
+    name = quote(lyrics_filename(job.title, job_id))
+    return Response(
+        transcript_text(job.transcript.segments, job.transcript.sections),
         media_type="text/plain; charset=utf-8",
-        filename=lyrics_filename(job.title, job_id),
+        headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )
