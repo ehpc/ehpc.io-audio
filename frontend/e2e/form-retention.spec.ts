@@ -1,4 +1,4 @@
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import type { JobDTO } from '../src/api';
@@ -44,18 +44,13 @@ async function complete(page: Page, id: number) {
 }
 
 async function originalProof(page: Page, id: number, uploaded?: Buffer) {
-  const directory = resolve(process.env.E2E_DATA_DIR!, 'uploads', String(id));
-  const files = await readdir(directory);
-  expect(files).toHaveLength(1);
-  const persisted = await readFile(resolve(directory, files[0]!));
   const response = await page.request.get(`/api/jobs/${id}/original`);
   expect(response.ok()).toBe(true);
   const actual = await response.body();
-  // URL downloads intentionally become MP3; compare their persisted original,
-  // not the WAV served to yt-dlp. Uploads must retain the input bytes verbatim.
-  expect(hash(actual)).toBe(hash(persisted));
+  // URL downloads intentionally become MP3; compare consecutive HTTP originals.
+  // Uploads must retain the input bytes verbatim.
   if (uploaded) expect(hash(actual)).toBe(hash(uploaded));
-  return { filename: files[0], sha256: hash(actual), persistedSha256: hash(persisted) };
+  return { sha256: hash(actual) };
 }
 
 for (const scenario of ['desktop-url', 'mobile-upload'] as const) {

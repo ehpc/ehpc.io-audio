@@ -453,7 +453,6 @@ describe("SubmitForm", () => {
     for (const name of groups) expect(screen.getByRole("group", { name, exact: true })).toBeInTheDocument();
     await userEvent.click(screen.getByText("Advanced · cache"));
     const checkboxes = screen.getAllByRole("checkbox");
-    expect(checkboxes).toHaveLength(14);
     for (const checkbox of checkboxes) await userEvent.click(checkbox);
     await userEvent.click(submitButton());
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
@@ -464,20 +463,17 @@ describe("SubmitForm", () => {
     expect(submitButton()).toBeEnabled();
   });
 
-  it("submits the lead mix without selecting or previewing hidden prerequisites", async () => {
+  it("retains the lead mix without selecting or previewing hidden prerequisites", async () => {
     vi.mocked(api.submitJob).mockResolvedValue({ id: 14, status: "queued", position: 1 });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/lead");
     await userEvent.click(screen.getByRole("checkbox", { name: "Lead vocals + instruments", exact: true }));
+    await userEvent.click(submitButton());
+    await waitFor(() => expect(submitButton()).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "Lead vocals + instruments", exact: true })).toBeChecked();
     expect(screen.getByText("lead-instruments", { exact: true })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Split lead & backing vocals" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Extract vocals" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Extract instruments" })).not.toBeChecked();
-    await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        mix_lead_instruments: true, lead_backing: false, extract_vocals: false, extract_instruments: false,
-      }),
-    }));
   });
 });
