@@ -128,7 +128,6 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   // are not overwritten while their valueAsNumber is temporarily NaN.
   let pitchInput!: HTMLInputElement;
   let tempoInput!: HTMLInputElement;
-  let fileInput: HTMLInputElement | undefined;
 
   // Direct entry stays fractional (step="any"); buttons move by one semitone
   // or one percentage point without crossing tempo's exclusive zero bound.
@@ -167,42 +166,36 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     setSubmitting(true);
 
     const usingUrl = mode() === "url";
+    const chosenUrl = trimmedUrl();
     const chosenFile = file();
+    const submittedOptions = { ...options };
     try {
       const result = await submitJob({
-        url: usingUrl ? trimmedUrl() : undefined,
+        url: usingUrl ? chosenUrl : undefined,
         file: usingUrl ? undefined : chosenFile ?? undefined,
-        options: { ...options },
+        options: submittedOptions,
       });
       props.onSubmitted({
         id: result.id,
         status: result.status,
         position: result.position,
         source_type: usingUrl ? "url" : "upload",
-        source_value: usingUrl ? trimmedUrl() : chosenFile!.name,
+        source_value: usingUrl ? chosenUrl : chosenFile!.name,
         // A URL's title is resolved server-side after download; an upload's
         // filename is its title.
         title: usingUrl ? null : chosenFile!.name,
         original_key: null,
         output_key: null,
-        options: { ...options },
+        options: submittedOptions,
         manifest: null,
         transcript: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
       });
-      // The form stays mounted permanently (never swapped away), so reset it
-      // for the next submission instead of relying on a remount to do so.
-      setUrl("");
-      setFile(null);
-      if (fileInput) fileInput.value = "";
-      setOptions({ ...DEFAULT_OPTIONS });
-      pitchInput.value = String(DEFAULT_OPTIONS.pitch_semitones);
-      tempoInput.value = String(DEFAULT_OPTIONS.tempo_percent);
-      setSubmitting(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Submission failed.");
+    } finally {
       setSubmitting(false);
     }
   };
@@ -225,7 +218,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             <div class="source-field">
               <Label for="file-input">Audio file</Label>
               {/* Providers can omit an audio MIME type; extensions keep those files selectable. */}
-              <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac,.opus,.webm" ref={fileInput}
+              <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac,.opus,.webm"
                 onChange={(e) => { setFile(e.currentTarget.files?.[0] ?? null); setError(null); }} />
               <Show when={file()}>{(f) => <p class="workspace-helper">Selected: {f().name}</p>}</Show>
             </div>

@@ -50,7 +50,7 @@ describe("SubmitForm", () => {
     expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ source_type: "upload", source_value: name }));
   });
 
-  it("accepts fractional pitch and positive fractional tempo, then restores defaults", async () => {
+  it("retains fractional pitch and positive fractional tempo after submission", async () => {
     vi.mocked(api.submitJob).mockResolvedValue({
       id: 7,
       status: "queued",
@@ -71,8 +71,9 @@ describe("SubmitForm", () => {
     await userEvent.type(screen.getByPlaceholderText("https://..."), "https://example.com/x");
     await userEvent.click(submitButton());
 
-    await waitFor(() => expect(pitch).toHaveValue(0));
-    expect(tempo).toHaveValue(100);
+    await waitFor(() => expect(api.submitJob).toHaveBeenCalled());
+    expect(pitch).toHaveValue(-2.25);
+    expect(tempo).toHaveValue(120.5);
   });
 
   it("previews the pitched full source alongside selected stems and removes it when pitch resets", async () => {
@@ -90,7 +91,7 @@ describe("SubmitForm", () => {
     expect(screen.getByText("instruments (tempo 119.5%)", { exact: true })).toBeInTheDocument();
   });
 
-  it("shows the resulting key inside the editable pitch field and clears unknown, invalid and reset keys", async () => {
+  it("shows the resulting key inside the editable pitch field and clears unknown and invalid keys", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
     vi.mocked(api.submitJob).mockResolvedValue({ id: 10, status: "queued", position: 1 });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
@@ -123,12 +124,73 @@ describe("SubmitForm", () => {
 
     vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
     await userEvent.upload(source, new File(["known"], "known.wav", { type: "audio/wav" }));
-    await waitFor(() => expect(badge()).toHaveTextContent("Bb major (-25 cents)"));
+    expect(badge()).toHaveTextContent("Bb major (-25 cents)");
     await userEvent.click(submitButton());
-    await waitFor(() => expect(pitch).toHaveValue(0));
-    expect(badge()).not.toBeInTheDocument();
-    expect(pitch).not.toHaveAttribute("aria-describedby");
+    await waitFor(() => expect(pitch).toHaveValue(-2.25));
+    expect(badge()).toHaveTextContent("Bb major (-25 cents)");
+    expect(pitch).toHaveAttribute("aria-describedby");
   });
+  it("keeps the URL and selections after success and submits later edits as a new snapshot", async () => {
+    const pending = Promise.withResolvers<{ id: number; status: "queued"; position: number }>();
+    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
+      id: 11, status: "queued", position: 1,
+    });
+    const onSubmitted = vi.fn();
+    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    const url = screen.getByLabelText("Track URL");
+    fireEvent.input(url, { target: { value: "https://example.com/song" } });
+    const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
+    await userEvent.click(vocals);
+    await userEvent.click(screen.getByText("Advanced · cache"));
+    const cache = screen.getByRole("checkbox", { name: /reprocess from scratch/i });
+    await userEvent.click(cache);
+    const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
+    const tempo = screen.getByRole("spinbutton", { name: "Tempo (% of original)" });
+    fireEvent.input(pitch, { target: { value: "-1.25" } });
+    fireEvent.input(tempo, { target: { value: "119.5" } });
+    await userEvent.click(screen.getByRole("tab", { name: "Review" }));
+
+    await userEvent.click(submitButton());
+    expect(api.submitJob).toHaveBeenLastCalledWith({
+      url: "https://example.com/song", file: undefined,
+      options: expect.objectContaining({ extract_vocals: true, no_cache: true, pitch_semitones: -1.25, tempo_percent: 119.5 }),
+    });
+    fireEvent.input(url, { target: { value: "https://example.com/edited" } });
+    fireEvent.input(pitch, { target: { value: "2.5" } });
+    pending.resolve({ id: 10, status: "queued", position: 1 });
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
+    expect(onSubmitted.mock.calls[0][0]).toEqual(expect.objectContaining({
+      source_value: "https://example.com/song",
+      options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5, extract_vocals: true, no_cache: true }),
+    }));
+    expect(url).toHaveValue("https://example.com/edited");
+    expect(pitch).toHaveValue(2.5);
+    expect(tempo).toHaveValue(119.5);
+    expect(vocals).toBeChecked();
+    expect(cache).toBeChecked();
+    expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute("aria-selected", "true");
+
+    await userEvent.click(submitButton());
+    expect(api.submitJob).toHaveBeenCalledTimes(2);
+    expect(api.submitJob).toHaveBeenLastCalledWith(expect.objectContaining({
+      url: "https://example.com/edited",
+      options: expect.objectContaining({ pitch_semitones: 2.5, tempo_percent: 119.5, extract_vocals: true, no_cache: true }),
+    }));
+  });
+
+  it("retains form state when submission fails", async () => {
+    vi.mocked(api.submitJob).mockRejectedValueOnce(new Error("Queue unavailable"));
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    const url = screen.getByLabelText("Track URL");
+    fireEvent.input(url, { target: { value: "https://example.com/song" } });
+    const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
+    await userEvent.click(vocals);
+    await userEvent.click(submitButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Queue unavailable");
+    expect(url).toHaveValue("https://example.com/song");
+    expect(vocals).toBeChecked();
+  });
+
 
   it("steps pitch and tempo from defaults and fractional entries, updates previews, and submits the adjusted values", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
@@ -167,8 +229,9 @@ describe("SubmitForm", () => {
     expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5 }),
     }));
-    await waitFor(() => expect(pitch).toHaveValue(0));
-    expect(tempo).toHaveValue(100);
+    await waitFor(() => expect(api.submitJob).toHaveBeenCalled());
+    expect(pitch).toHaveValue(-1.25);
+    expect(tempo).toHaveValue(119.5);
   });
 
   it("keeps tempo strictly positive without imposing a minimum on fractional manual entry", async () => {
@@ -359,7 +422,7 @@ describe("SubmitForm", () => {
     }
   });
 
-  it("shows analysis failures independently and clears preview after successful submission", async () => {
+  it("shows analysis failures independently and retains the selected file after submission", async () => {
     vi.mocked(api.analyzeKey).mockRejectedValueOnce(new Error("Unsupported audio format"));
     vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1 });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
@@ -373,17 +436,19 @@ describe("SubmitForm", () => {
     expect(await screen.findByText("Original key: F major")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await userEvent.click(submitButton());
-    await waitFor(() => expect(screen.queryByText("Original key: F major")).not.toBeInTheDocument());
-    expect(screen.queryByText(/Target key:/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Notes \(/)).not.toBeInTheDocument();
-    expect(input).toHaveValue("");
+    await waitFor(() => expect(api.submitJob).toHaveBeenCalled());
+    expect(await screen.findByText("Original key: F major")).toBeInTheDocument();
+    expect(input.files).toHaveLength(1);
+    expect(input.files?.[0]?.name).toBe("good.wav");
     expect(screen.getByRole("button", { name: "Download song" })).toBeInTheDocument();
   });
 
-  it("submits every grouped option and Advanced cache without altering the API payload", async () => {
+  it("retains every grouped selection, Advanced cache, and URL after submission", async () => {
     vi.mocked(api.submitJob).mockResolvedValue({ id: 12, status: "queued", position: 1 });
-    render(() => <SubmitForm onSubmitted={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
+    const onSubmitted = vi.fn();
+    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    const url = screen.getByLabelText("Track URL");
+    await userEvent.type(url, "https://example.com/song");
     const groups = ["Outputs", "Mixes", "Cleanup", "Splits"];
     for (const name of groups) expect(screen.getByRole("group", { name, exact: true })).toBeInTheDocument();
     await userEvent.click(screen.getByText("Advanced · cache"));
@@ -391,18 +456,12 @@ describe("SubmitForm", () => {
     expect(checkboxes).toHaveLength(14);
     for (const checkbox of checkboxes) await userEvent.click(checkbox);
     await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenCalledWith({
-      url: "https://example.com/song",
-      file: undefined,
-      options: {
-        extract_vocals: true, extract_instruments: true, extract_lyrics: true,
-        mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true,
-        mix_lead_instruments: true,
-        decrowd: true, decrowd_vocals: true, dereverb: true,
-        genders: true, lead_backing: true, drums: true, no_cache: true,
-        pitch_semitones: 0, tempo_percent: 100,
-      },
-    });
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
+    expect(url).toHaveValue("https://example.com/song");
+    for (const checkbox of checkboxes) expect(checkbox).toBeChecked();
+    expect(screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" })).toHaveValue(0);
+    expect(screen.getByRole("spinbutton", { name: "Tempo (% of original)" })).toHaveValue(100);
+    expect(submitButton()).toBeEnabled();
   });
 
   it("submits the lead mix without selecting or previewing hidden prerequisites", async () => {

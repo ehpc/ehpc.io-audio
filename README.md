@@ -154,7 +154,11 @@ accessible. Editable fields use 16px text; controls and mobile downloads have
 44px minimum touch targets. Safe-area insets are respected, and focusing a source
 or numeric input releases the sticky action for shorter keyboard viewports.
 Advanced contains the cache-bypass option. Download-only remains the default,
-and pitch/tempo never modify the original.
+and pitch/tempo never modify the original. After submission, the source selection
+and all form options remain in place so you can submit the same URL or selected
+file again without re-entering them.
+The frontend regression inventory includes CPU-browser checks for URL and upload
+form retention across completed repeat submissions.
 
 
 ## Pitch, tempo, and musical key
@@ -363,12 +367,20 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The default browser matrix contains **53 cases**, as confirmed by
+The default browser matrix contains **55 cases**, as confirmed by
 `playwright test --list`: 30 processing/behavior cases, one undetermined-source-key
 case, one actual-download metadata case, six native MP3 upload cases, seven
-responsive workspace cases, seven focused adjustment-button cases, and one
-real-speech lyrics case. The separate visual and manual YouTube suites are
-excluded from this default matrix.
+responsive workspace cases, seven focused adjustment-button cases, two
+post-submit form-retention cases, and one real-speech lyrics case. The separate
+visual and manual YouTube suites are excluded from this default matrix.
+
+The form-retention cases use real native processing without GPU calls: desktop
+URL and mobile file upload each complete two submissions without refilling or
+reselecting the source. They check native FileList/URL, every option, fractional
+pitch/tempo, key/output previews and selected workspace tab after both POST and
+completion, alongside persisted job options and unchanged original-download
+hashes. Run only these cases with
+`npm --prefix frontend run test:e2e -- --cpu form-retention.spec.ts`.
 
 The lyrics case runs two real jobs against checksum-verified public-domain JFK
 speech: lyrics-only, then lyrics with a selected vocal stem and pitch/tempo
@@ -499,7 +511,7 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 53 cases with no skipped cases.
+a successful full-stack gate executes all 55 cases with no skipped cases.
 
 Both local domain suites also exhaust all **8192 combinations of the 13 audio
 boolean controls** for output/dependency contracts, including raw-cache policy.
@@ -507,12 +519,12 @@ This is local combinatorial verification, **not** 8192 GPU runs or mathematical
 proof over arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, direct deployed GPU smoke, the
-53-case browser matrix against a unique test app, and the 13-case visual suite
-below (**66 required browser cases total**) for every push/PR. Only a passing
+55-case browser matrix against a unique test app, and the 13-case visual suite
+below (**68 required browser cases total**) for every push/PR. Only a passing
 main run promotes the production Modal deployment and publishes the image.
 Both promotion jobs retain the deterministic/native, full-stack, and visual
 release gates. The separate manual YouTube workflow adds one optional browser
-case (**67 total if run**) and is not a release dependency.
+case (**69 total if run**) and is not a release dependency.
 
 ### Real external YouTube key analysis
 
@@ -530,7 +542,7 @@ The separate **Real YouTube key analysis** workflow
 (`.github/workflows/youtube.yml`) runs only through `workflow_dispatch`, selected
 from GitHub Actions' **Run workflow** control. It preserves this real external
 check without making YouTube's runner/IP authentication decisions a push/PR or
-release prerequisite. Together with required CI it covers **63 browser cases**.
+release prerequisite. Together with required CI it covers **69 browser cases**.
 YouTube bot/authentication restrictions, missing tools, and network failures
 still **fail the manual workflow visibly**; it never skips or substitutes
 fixtures, submits a processing job, or invokes a GPU. Artifacts are uploaded
