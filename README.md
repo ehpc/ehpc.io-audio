@@ -1,10 +1,10 @@
 # ehpc's Vocal Tools
 
-A web app for downloading a song, transforming its pitch/tempo, or extracting
-selected vocal and instrument tracks or timestamped lyrics. Submit a URL or
-upload a file: by default, only the original song is kept, with **no GPU
-separation**. Explicitly choose vocals, instruments, cleanup/split outputs,
-female/male/backing/lead vocal mixes, or lyrics. Play or download the results.
+A web app for downloading a song, transforming its pitch/tempo, extracting
+selected vocal and instrument tracks or timestamped lyrics, and detecting
+vocal melody notes. Submit a URL or upload a file: by default, only the original
+song is kept, with **no GPU separation or pitch/lyrics inference**. Explicitly
+choose the audio outputs, lyrics, or vocal pitch analysis you want.
 Multiple people can use it at once; submissions go through a queue, and each
 visitor sees their live position.
 
@@ -25,19 +25,19 @@ visitor sees their live position.
                                                   separator/modal_app.py ("audio-separator" Modal app)
                                                                 │
                                                                 ▼
-                                                   GPU container (separation + Whisper ASR)
+                                                   GPU container (separation + optional lyrics/pitch)
 ```
 
 - **`separator/`** — pure domain logic (stem-model configs, the actual
   separation pipeline, URL download, and CPU audio analysis/postprocessing)
   plus `modal_app.py`, which defines Modal GPU functions for separation and
-  lyric transcription. It owns the CUDA images and GPU-only model dependencies.
+  optional lyric/pitch analysis. It owns the CUDA images and GPU-only dependencies.
 - **`backend/`** — the always-on FastAPI app. It downloads/reads the source and
   detects its key with libkeyfinder. Download-only jobs and whole-song pitch/tempo
   changes run locally, without calling Modal (even with cache bypass enabled).
-  Normal separation uses the existing `separate` Modal call; lyric-enabled jobs
-  use `separate_with_lyrics` to combine transcription with any requested audio
-  stems in one call. Rubber Band R3 applies pitch/tempo changes locally to each
+  Normal separation uses the existing `separate` Modal call; lyrics or vocal-pitch
+  jobs use the backward-compatible `separate_with_lyrics` analysis RPC alongside
+  any requested stems. Rubber Band R3 applies pitch/tempo changes locally to each
   final audio output, after any mixing. A small SQLite-backed queue caps
   concurrent jobs.
 - **`frontend/`** — SolidJS + Vite + Tailwind + Solid UI. Built to static
@@ -72,8 +72,9 @@ manifest; a lyrics-only job uses Modal GPU ASR while ordinary download-only
 remains the no-GPU default. The transcript includes estimated musical-section
 headers (Intro, Verse, Pre-chorus, Chorus, Bridge, Instrumental, Outro, Silence)
 alongside recognized lyrics in Results and History, with a timestamped UTF-8 TXT
-download. Timestamps are approximate segment onsets floored to whole seconds on
-the original audio clock; they are not word-level or karaoke alignment.
+download. TXT timestamps are approximate segment onsets floored to whole seconds
+on the original audio clock. The JSON additionally retains Whisper's approximate
+word timestamps; these are not exact sung syllable or karaoke alignment.
 Transcription preserves the source language without translation and processes
 the full vocal input rather than speech-cropped chunks. No accuracy is
 guaranteed: singing may be missed, misrecognized, or hallucinated. Empty speech
@@ -92,7 +93,8 @@ authorization does not grant additional rights under the model licenses.
 | Selection | Output label or file |
 |---|---|
 | Extract vocals | `vocals` |
-| Extract lyrics | Timestamped TXT (original audio clock) |
+| Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
+| Detect vocal pitch | Musical-note timeline and pitch JSON (output audio clock) |
 | Extract instruments | `instruments` |
 | Remove crowd noise from vocals | `vocals-decrowded` |
 | Remove crowd noise from instrumental | `instruments-decrowded` |
@@ -157,9 +159,87 @@ Advanced contains the cache-bypass option. Download-only remains the default,
 and pitch/tempo never modify the original. After submission, the source selection
 and all form options remain in place so you can submit the same URL or selected
 file again without re-entering them.
+
+All audio players in the workspace share one-at-a-time playback: starting any
+source, result, or history audio pauses the other players without resetting their
+playback positions. Newly mounted players follow the same rule.
 The frontend regression inventory includes CPU-browser checks for URL and upload
 form retention across completed repeat submissions.
 
+
+## Vocal pitch detection
+
+**Detect vocal pitch** is opt-in and independent of the global musical-key
+estimate or the pitch-shift control. It analyzes every selected vocal-only stem:
+full/decrowded vocals, male/female, lead/backing, and their selected dry versions.
+Instrument stems and vocal-plus-instrument mixes are never passed to the
+monophonic estimator. If no vocal output is selected, full vocals are extracted
+internally for analysis without adding an unwanted vocal download.
+
+The estimator is [torchcrepe 0.0.24](https://github.com/maxrmorrison/torchcrepe),
+using the **full CREPE neural model**, its official **weighted-argmax decoder**,
+16 kHz mono audio, 10 ms frames, and a 50–2006 Hz source-frequency range.
+The upstream default Viterbi decoder locked to the upper range edge on a
+calibrated C4/A4-plus-silence test; the official local decoder passed that same
+known-frequency boundary. Frames below 0.21 model periodicity or −60 dBFS RMS
+are omitted. Median smoothing, semitone transition hysteresis and an 80 ms
+source-time minimum produce note regions while preserving real rests.
+These are automatic monophonic melody estimates, **not an engraved score or
+polyphonic transcription**. Bleed, harmonies, noisy recordings, vibrato and
+octave errors can produce incorrect or fragmented notes. Confidence is model
+periodicity, not a guarantee of musical accuracy.
+
+Both the [torchcrepe implementation/license](https://github.com/maxrmorrison/torchcrepe/blob/master/LICENSE)
+and the original [CREPE model repository/license](https://github.com/marl/crepe/blob/master/LICENSE)
+are MIT-licensed. torchcrepe's
+[weight provenance](https://github.com/maxrmorrison/torchcrepe#readme) explicitly
+identifies its bundled full/tiny weights as conversions of those original CREPE
+models. No additional pitch-model license restriction was found in those
+upstream sources. Pitch inference runs in a subprocess in the isolated
+Python 3.12/Torch environment; it does not replace the separator's global ONNX
+runtime, load Whisper/SongFormer for pitch-only jobs, or change the no-GPU default.
+SongFormer's separate noncommercial restrictions still apply when lyrics are selected.
+
+Results show time horizontally and chromatic note/octave vertically, with
+detected note rectangles labeled `C#4`, `F3`, etc. Selecting a rectangle seeks
+the native reference player and shows its estimated frequency, residual cents,
+confidence and interval. The reference audio is explicitly named: matching vocal
+output when available, otherwise the transformed full song or unchanged original
+full song. The playhead follows that audio. Phones scroll within the timeline
+instead of squeezing the song to screen width; buttons and a native zoom slider
+provide 40–640 px/s. The initial vertical view centers the typical vocal register,
+while every detected high/low row remains reachable by scrolling.
+
+**Pitch times and pitches use the output clock/key.** Detection runs once on
+the original, untransformed stem. A tempo of `125%` divides note and word times
+by `1.25`; a shift of `+1.25` adds exactly `1.25` to detected MIDI pitch and
+multiplies frequency by `2 ** (1.25 / 12)`. Chromatic labels/cents follow the
+resulting fractional pitch. These are **projections of original detections,
+not a second measurement of the rendered waveform**. If unchanged-original
+audio is the available reference, its original playback clock is mapped to
+the output timeline and the UI says so. Original audio bytes and the separate
+lyrics transcript's original-clock timestamps are never transformed.
+
+Selecting **Extract lyrics** too adds genuine faster-whisper word timestamps
+from full source vocals, not interpolated segment times. Word intervals below
+the notes are visibly labeled **approximate**; selecting a word highlights its
+overlapping notes. A word may span several notes (melisma), without inventing
+syllable boundaries. Split-voice tracks share that full-vocal word reference;
+the UI does not pretend to have independently recognized/aligned every singer.
+Tentative reference-assisted spelling corrections happen before these word links
+are made and retain the original ASR in the lyrics provenance view/download.
+Missed words and empty voiced tracks stay honestly empty.
+
+**Download pitch JSON** is available from Results and History through the
+session-protected `/api/jobs/{id}/pitch` endpoint. The same canonical payload
+appears as `pitch` in job detail/history/SSE. Version 1 includes model,
+source/output durations, requested pitch/tempo, explicit output timestamp/pitch
+references, and per-stem `tracks`. Each note has `start_s`, `end_s`, fractional
+`midi`, `frequency_hz`, `note`, residual `cents`, `confidence`, and `word_indices`
+into the shared timed `words` list. `word_alignment` is `whisper-approximate`
+when lyrics were requested, or `null` otherwise. Existing jobs remain compatible;
+the additive stored analysis defaults to absent, and GPU-first promotion
+transports new nested analysis/provenance as canonical JSON primitives.
 
 ## Pitch, tempo, and musical key
 
@@ -367,12 +447,12 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The default browser matrix contains **55 cases**, as confirmed by
-`playwright test --list`: 30 processing/behavior cases, one undetermined-source-key
-case, one actual-download metadata case, six native MP3 upload cases, seven
-responsive workspace cases, seven focused adjustment-button cases, two
-post-submit form-retention cases, and one real-speech lyrics case. The separate
-visual and manual YouTube suites are excluded from this default matrix.
+The default browser matrix contains **59 cases**: 30 processing/behavior cases,
+one undetermined-source-key case, one actual-download metadata case, six native
+MP3 upload cases, seven responsive workspace cases, seven focused adjustment
+cases, two post-submit form-retention cases, one real-speech lyrics case, two
+exclusive-playback cases, and two real vocal-pitch cases. The separate visual
+and manual YouTube suites are excluded from this default matrix.
 
 The form-retention cases use real native processing without GPU calls: desktop
 URL and mobile file upload each complete two submissions without refilling or
@@ -388,6 +468,25 @@ changes. It checks the known spoken phrases, original-clock timestamps,
 Results/History rendering, canonical TXT download bytes, unchanged source audio,
 and mobile readability. It attaches actual desktop/mobile transcript screenshots
 as test artifacts, not nondeterministic live-ASR screenshot baselines.
+
+The pitch cases process the uncut, checksum-verified 141.5-second public-domain
+*Auld Lang Syne* fixture through actual separation, CREPE, Whisper and native
+audio rendering, plus a pitch-only sung excerpt with a hidden vocal prerequisite.
+They verify selected per-stem note/word consumers, known sung phrases, real
+word-to-many-note links, fractional pitch/tempo clocks, native seek/playhead and
+exclusive playback, JSON/original downloads, History, and session isolation.
+Desktop and 390px touch-context screenshots include the shortest associated
+note at maximum zoom, checking that its full 12px note label fits its true
+time-width rectangle without making the page horizontally overflow.
+
+The singing source is [Frank C. Stanley's 1910 *Auld Lang Syne* recording](https://commons.wikimedia.org/wiki/File:Auld_Lang_Syne.ogg)
+(Indestructible #1267 / UCSB Cylinder4410), marked public domain by Commons.
+The uncut source is `tests/fixtures/auld-lang-syne-full.ogg`, SHA-256
+`0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04`.
+The 30-second FLAC excerpt is source12–42s, decoded/resampled to mono16kHz;
+neither source fixture is pitch/tempo modified. The visual JSON retains actual
+CREPE/Whisper detections/recognition from that recording, not hosted reference lyrics.
+
 
 The seven adjustment cases cover 375/390/430px touch and 1440/1920/2560/3840px
 desktop; they exercise real taps/clicks, keyboard activation, fractional manual
@@ -512,7 +611,7 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 55 cases with no skipped cases.
+a successful full-stack gate executes all 59 cases with no skipped cases.
 
 Both local domain suites also exhaust all **8192 combinations of the 13 audio
 boolean controls** for output/dependency contracts, including raw-cache policy.
@@ -520,12 +619,12 @@ This is local combinatorial verification, **not** 8192 GPU runs or mathematical
 proof over arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, direct deployed GPU smoke, the
-55-case browser matrix against a unique test app, and the 13-case visual suite
-below (**68 required browser cases total**) for every push/PR. Only a passing
+59-case browser matrix against a unique test app, and the 15-case visual suite
+below (**74 required browser cases total**) for every push/PR. Only a passing
 main run promotes the production Modal deployment and publishes the image.
 Both promotion jobs retain the deterministic/native, full-stack, and visual
 release gates. The separate manual YouTube workflow adds one optional browser
-case (**69 total if run**) and is not a release dependency.
+case (**75 total if run**) and is not a release dependency.
 
 ### Real external YouTube key analysis
 
@@ -578,23 +677,27 @@ using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
 Updating Playwright requires updating the Docker image version/digest and reviewing
 all regenerated baselines together.
 
-The **13 visual cases** compare committed PNGs in
+The **15 visual cases** compare committed PNGs in
 `frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
-screens, two 1440px/2560px desktop workspaces, and eight tightly cropped,
-focused pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
-native undetermined key, and a long fractional-cents badge). These complement,
-not replace, the **50 processing/UI cases**. The external YouTube case runs
-separately and manually; it is not part of the release gate.
+screens, two 1440px/2560px desktop workspaces, eight tightly cropped focused
+pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
+undetermined key, and long fractional cents), and two detected-vocal timelines
+with linked sung words (390px/1440px). These complement, not replace, the
+**59 functional cases**. The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
 
 The suite builds the production frontend and reuses the real isolated HTTP
-backend harness. It uploads locally synthesized sustained C/E/G audio or
-silence and asserts real native keyfinder analysis before taking screenshots;
-it does not intercept API responses, fetch external recordings/URLs, submit
-GPU jobs, or require Modal credentials. Each case starts a fresh browser
-context, with fixed viewport, device scale, clock, locale, timezone, color
-scheme and reduced motion, uses CPU rasterization with a fixed sRGB profile,
-waits for fonts/analysis, disables animations, and hides the caret.
+backend harness. Workspace cases upload synthesized C/E/G audio or silence and
+assert real native keyfinder analysis. Timeline cases use committed genuine
+CREPE/Whisper output filtered to output9.5–15.2s of the public-domain full-song
+fixture (`frontend/e2e/fixtures/pitch-visual-window.json`), preserving its original
+clock and notes rather than synthesizing results. They upload the unchanged
+source, run the real native full-song transform/storage/API consumers, and
+publish the captured inference with queue workers disabled. No API responses are
+intercepted, external recording fetched, or Modal function called by visual tests.
+Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
+timezone, colors, fonts and CPU rasterization; native audio metadata is loaded
+before timeline capture. Animations are disabled and the caret hidden.
 Comparisons allow **zero differing pixels** above a strict **0.005 YIQ color
 threshold** (only about one RGB level of native-control raster rounding);
 there is no pixel-count or percentage allowance for layout changes. A missing
@@ -750,3 +853,56 @@ MIME restriction; changing the picker or backend alone cannot remove it.
   can submit jobs. Job history and downloads are scoped to that signed cookie.
 - No automatic cleanup of old uploads/results — `/data` grows unbounded.
 - Single-pod only, as noted above.
+
+## Reference-assisted lyrics comparison
+
+Lyrics extraction can compare ASR with the public
+[LRCLIB API](https://lrclib.net/docs), without an API key, web scraping, or an
+external LLM. Only credible structured artist/title metadata and the original
+audio duration qualify for lookup; filenames and uploader names are not song
+identity. Missing metadata, missing word alignment, no matching record, or a
+provider outage leaves the transcription unchanged and reports why.
+
+Automatic changes are deliberately narrow and **tentative**, not verified
+lyrics: exact normalized artist/title (and album when available), a duration
+difference of at most two seconds, and at least 90% ordered agreement across
+at least 20 words are required. Known live, cover, remix, translated, and other
+alternate-version titles/albums are skipped. Only an isolated low-confidence
+ASR word with a one-character spelling difference, three exact matching words
+on each side, and an unambiguous reference context may change. High-confidence
+words, repeated ambiguous phrases, missing lines, and word splits are not
+rewritten. Even these safeguards cannot establish what was actually sung;
+listen to the audio when accuracy matters.
+
+Corrections retain the original ASR segments/words and word confidence, identify
+the LRCLIB record and individual changes, and keep every ASR timestamp. Provider
+timestamps, section labels, and unrecognized lyrics are never imported.
+SongFormer remains the source of musical-section estimates. Reference status
+and provenance accompany the same saved transcript used by Results and History;
+the timestamped TXT renders its existing segment text on the original clock.
+Results/History show the comparison status/reason, source, tentative word changes,
+and an expandable **Original ASR** view. **Download lyrics JSON + original ASR**
+uses `/api/jobs/{id}/lyrics/download.json`, retaining recognized words,
+unchanged original times, correction provenance and original ASR text alongside
+the canonical TXT. Uploaded identity comes only from actual artist/title tags;
+URL identity comes only from yt-dlp's structured artist/track/duration fields.
+The narrow download metadata sidecar is stored outside original-audio folders,
+so it cannot become an original download.
+
+
+LRCLIB explicitly documents anonymous access, identified clients, and rate
+limits. The client makes one bounded request with an application User-Agent;
+HTTP errors, including throttling, do not trigger immediate retries. Its
+[server code is MIT-licensed](https://github.com/tranxuanthang/lrclib), which does
+**not** grant rights to every lyric hosted by the service. Lyrics remain subject
+to their own rights; this integration does not claim blanket redistribution
+permission.
+
+Runtime evidence (2026-10-31): the documented search endpoint returned HTTP 200
+for a public-domain *Auld Lang Syne* record. Its actual returned text exercised
+unchanged comparison and a single spelling correction while preserving timing
+and original text. The metadata lookup endpoint also returned HTTP 503 during
+verification, exercising the honest unavailable path; a successful production
+metadata lookup was not established in that run. Permanent reference-comparison
+test fixtures contain synthetic lyrics only; the separate pitch/visual singing
+fixture is the public-domain recording documented above.

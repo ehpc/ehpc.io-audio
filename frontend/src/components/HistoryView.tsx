@@ -1,6 +1,6 @@
 import { createSignal, For, Show, type Component } from "solid-js";
 import type { JobDTO, JobStatus } from "~/api";
-import { jobLabel, originalUrl, resultUrl, retryJob } from "~/api";
+import { jobLabel, originalUrl, pitchDownloadUrl, resultUrl, retryJob } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
@@ -54,6 +54,7 @@ const HistoryView: Component<{
         options: job.options,
         manifest: null,
         transcript: null,
+        pitch: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
@@ -136,6 +137,15 @@ const HistoryView: Component<{
                   </Show>
                   <Show when={job.status === "done" && job.transcript}>
                     <TranscriptView job={job} compact />
+                  </Show>
+                  <Show when={job.status === "done" && job.pitch}>
+                    <div class="flex flex-wrap items-center gap-3 border-t border-border pt-2 text-sm">
+                      <button type="button" class="font-medium text-primary hover:underline"
+                        onClick={() => props.onSelect(job)}>View vocal pitch timeline</button>
+                      <a href={pitchDownloadUrl(job.id)} download=""
+                        class="font-medium text-primary hover:underline"
+                        onClick={(event) => event.stopPropagation()}>Download pitch JSON</a>
+                    </div>
                   </Show>
 
                   <Show when={job.status === "failed"}>

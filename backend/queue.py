@@ -17,6 +17,7 @@ from backend.models import (
     download_filename,
     job_to_dto,
 )
+from backend.source_metadata import reference_metadata
 from separator.audio import detect_key, modification_suffix, transform_audio
 from separator.download import download_mp3
 from separator.processing import ProcessingResult
@@ -47,11 +48,16 @@ def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
     # stays downloadable from history, matching how uploads are kept.
     dest = config.UPLOADS_DIR / str(job.id)
     dest.mkdir(parents=True, exist_ok=True)
+    metadata_path = None
+    if job.options.extract_lyrics:
+        metadata_path = config.DATA_DIR / "source-metadata" / f"{job.id}.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
     return download_mp3(
         job.source_value,
         str(dest),
         max_attempts=config.DOWNLOAD_MAX_ATTEMPTS,
         backoff_s=config.DOWNLOAD_RETRY_BACKOFF_S,
+        metadata_path=metadata_path,
     )
 
 
@@ -128,17 +134,36 @@ async def _run_job(job: JobRecord) -> None:
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
         await _publish_status(job.id)
         processed = ProcessingResult(audio={})
-        if job.options.extract_lyrics:
-            lyrics_call = await asyncio.to_thread(
-                modal_client.spawn_with_lyrics, audio_bytes, filename, job.options
+        if job.options.extract_lyrics or job.options.detect_pitch:
+            metadata = None
+            if job.options.extract_lyrics:
+                metadata = await asyncio.to_thread(
+                    reference_metadata,
+                    audio_bytes,
+                    downloaded_metadata=(
+                        config.DATA_DIR / "source-metadata" / f"{job.id}.json"
+                        if job.source_type == "url"
+                        else None
+                    ),
+                )
+            analysis_call = await asyncio.to_thread(
+                modal_client.spawn_with_lyrics,
+                audio_bytes,
+                filename,
+                job.options,
+                *([metadata] if metadata is not None else []),
             )
-            processed = await _await_modal(job.id, lyrics_call)
+            processed = await _await_modal(job.id, analysis_call)
         elif job.options.output_labels:
             audio_call = await asyncio.to_thread(
                 modal_client.spawn, audio_bytes, filename, job.options
             )
             processed = ProcessingResult(audio=await _await_modal(job.id, audio_call))
-        if job.options.output_labels or job.options.extract_lyrics:
+        if (
+            job.options.output_labels
+            or job.options.extract_lyrics
+            or job.options.detect_pitch
+        ):
             log.info(
                 "job %s modal returned %d outputs: %s",
                 job.id,
@@ -148,12 +173,16 @@ async def _run_job(job: JobRecord) -> None:
         result = processed.audio
         if job.options.extract_lyrics and processed.transcript is None:
             raise RuntimeError("Lyrics extraction returned no transcript")
+        if job.options.detect_pitch and processed.pitch_json is None:
+            raise RuntimeError("Pitch detection returned no analysis")
         if "song" in job.options.result_labels:
             # Transform the complete source, not a separated/reconstructed mix.
             # Persisting applies pitch and tempo together once, as for each stem.
             result = {"song": StemResult(audio_bytes, 0.0), **result}
         manifest = await asyncio.to_thread(_persist_results, job, result)
-        await asyncio.to_thread(db.mark_done, job.id, manifest, processed.transcript)
+        await asyncio.to_thread(
+            db.mark_done, job.id, manifest, processed.transcript, processed.pitch_json
+        )
         log.info("job %s done", job.id)
     except Exception as exc:
         log.exception("job %s failed", job.id)

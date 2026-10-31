@@ -9,7 +9,7 @@ from pathlib import Path
 # Installed only in the isolated Python 3.13 GPU ASR environment, not the web venv.
 from faster_whisper import WhisperModel  # ty: ignore[unresolved-import]
 
-from separator.lyrics import Transcript, TranscriptSegment
+from separator.lyrics import Transcript, TranscriptSegment, TranscriptWord
 
 MODEL = "large-v3"
 
@@ -36,12 +36,14 @@ def transcribe(source: Path, model_cache: Path) -> Transcript:
         # The default 1s initial-timestamp limit misdates vocals after an intro.
         # Allow the actual onset anywhere inside the model's decoding window.
         max_initial_timestamp=model.feature_extractor.chunk_length,
-        word_timestamps=False,
+        word_timestamps=True,
     )
     if not math.isfinite(info.duration) or info.duration <= 0:
         raise ValueError("Lyrics extraction requires audio with a finite duration")
     recognized = []
     previous_end = 0.0
+    words = []
+    previous_word_end = 0.0
     # faster-whisper performs inference lazily: consume the entire generator.
     for segment in segments:
         text = " ".join(segment.text.split())
@@ -55,8 +57,24 @@ def transcribe(source: Path, model_cache: Path) -> Transcript:
             raise ValueError("ASR returned invalid segment timing")
         recognized.append(TranscriptSegment(start, end, text))
         previous_end = end
+        for word in segment.words or []:
+            token = word.word.strip()
+            if not token:
+                continue
+            if not all(
+                math.isfinite(v) for v in (word.start, word.end, word.probability)
+            ):
+                raise ValueError("ASR returned non-finite word timing or probability")
+            word_start = max(previous_word_end, min(info.duration, max(0, word.start)))
+            word_end = min(info.duration, word.end)
+            # Whisper can assign punctuation/zero-duration tokens; do not invent
+            # intervals for them or claim that they identify sung syllables.
+            if word_end <= word_start:
+                continue
+            words.append(TranscriptWord(word_start, word_end, token, word.probability))
+            previous_word_end = word_end
     return Transcript(
-        segments=recognized, language=info.language if recognized else None
+        segments=recognized, language=info.language if recognized else None, words=words
     )
 
 

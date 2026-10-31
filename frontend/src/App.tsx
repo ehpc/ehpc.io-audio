@@ -1,4 +1,4 @@
-import { createSignal, onMount, Show, type Component } from "solid-js";
+import { createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
 import type { JobDTO } from "./api";
 import { getCurrentJob, listJobs } from "./api";
 import SubmitForm from "./components/SubmitForm";
@@ -9,6 +9,18 @@ import HistoryView from "./components/HistoryView";
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
   const [history, setHistory] = createSignal<JobDTO[]>([]);
+
+  onMount(() => {
+    const pauseOtherAudio = (event: Event) => {
+      const current = event.target;
+      if (!(current instanceof HTMLAudioElement)) return;
+      document.querySelectorAll("audio").forEach((audio) => {
+        if (audio !== current && !audio.paused) audio.pause();
+      });
+    };
+    document.addEventListener("play", pauseOtherAudio, true);
+    onCleanup(() => document.removeEventListener("play", pauseOtherAudio, true));
+  });
 
   const refreshHistory = async () => {
     try {

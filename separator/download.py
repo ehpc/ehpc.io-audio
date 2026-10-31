@@ -30,6 +30,7 @@ def download_mp3(
     *,
     max_attempts: int = 3,
     backoff_s: float = 10.0,
+    metadata_path: Path | None = None,
 ) -> tuple[bytes, str]:
     last_error = "Download failed"
     for attempt in range(1, max(1, max_attempts) + 1):
@@ -54,6 +55,15 @@ def download_mp3(
                     / "%(artist,creator|)s%(artist,creator& - |)s%(title)s.%(ext)s"
                 ),
                 url,
+                *(
+                    [
+                        "--print-to-file",
+                        "after_move:%(.{artist,track,album,duration})j",
+                        str(metadata_path),
+                    ]
+                    if metadata_path is not None
+                    else []
+                ),
             ],
             capture_output=True,
             text=True,

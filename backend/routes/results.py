@@ -17,6 +17,7 @@ from backend.models import (
 )
 from backend.session import get_session_id
 from separator.lyrics import transcript_text
+from separator.pitch import pitch_from_json, pitch_to_json
 
 router = APIRouter(tags=["results"])
 
@@ -104,5 +105,43 @@ async def download_lyrics(
     return Response(
         transcript_text(job.transcript.segments, job.transcript.sections),
         media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
+    )
+
+
+@router.get("/jobs/{job_id}/lyrics/download.json")
+async def download_lyrics_json(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> Response:
+    job = await _lyrics_job(job_id, session_id)
+    assert job.transcript is not None
+    name = quote(lyrics_filename(job.title, job_id).removesuffix(".txt") + ".json")
+    return Response(
+        TranscriptDTO.from_transcript(job.transcript).model_dump_json(),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
+    )
+
+
+@router.get("/jobs/{job_id}/pitch")
+async def get_pitch(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> Response:
+    job = await asyncio.to_thread(db.get_job, job_id)
+    if (
+        job is None
+        or job.session_id != session_id
+        or job.status != JobStatus.DONE
+        or job.pitch_json is None
+    ):
+        raise HTTPException(404, "pitch analysis not found")
+    # The same canonical payload backs the browser, history, and JSON download.
+    content = pitch_to_json(pitch_from_json(job.pitch_json))
+    name = quote(
+        lyrics_filename(job.title, job_id).removesuffix("lyrics.txt") + "pitch.json"
+    )
+    return Response(
+        content,
+        media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )

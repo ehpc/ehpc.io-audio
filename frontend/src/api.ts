@@ -12,6 +12,7 @@ export interface SeparationOptions {
   extract_vocals: boolean;
   extract_instruments: boolean;
   extract_lyrics: boolean;
+  detect_pitch: boolean;
   mix_female_instruments: boolean;
   mix_male_instruments: boolean;
   mix_backing_instruments: boolean;
@@ -55,7 +56,71 @@ export interface TranscriptDTO {
   segments: TranscriptSegmentDTO[];
   sections: TranscriptSectionDTO[];
   structure_model: string | null;
+  words?: AlignedWordDTO[];
+  reference?: ReferenceReviewDTO | null;
+  original_timestamped_text?: string | null;
   timestamped_text: string;
+}
+
+export interface AlignedWordDTO {
+  start_s: number;
+  end_s: number;
+  text: string;
+  probability: number;
+}
+
+export interface PitchNoteDTO {
+  start_s: number;
+  end_s: number;
+  midi: number;
+  frequency_hz: number;
+  confidence: number;
+  note: string;
+  cents: number;
+  word_indices: number[];
+}
+
+export interface PitchTrackDTO {
+  label: string;
+  notes: PitchNoteDTO[];
+}
+
+export interface PitchAnalysisDTO {
+  version: number;
+  model: string;
+  source_duration_s: number;
+  duration_s: number;
+  pitch_shift_semitones: number;
+  tempo_percent: number;
+  timestamp_reference: "output";
+  pitch_reference: "output";
+  word_alignment: "whisper-approximate" | null;
+  tracks: PitchTrackDTO[];
+  words: AlignedWordDTO[];
+}
+
+export interface ReferenceCorrectionDTO {
+  word_index: number;
+  original: string;
+  replacement: string;
+  start_s: number;
+  end_s: number;
+}
+
+export interface ReferenceReviewDTO {
+  status: "skipped" | "unavailable" | "not_found" | "rejected" | "compared" | "corrected";
+  reason: string;
+  provider: string;
+  source_url: string | null;
+  record_id: number | null;
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+  duration_s: number | null;
+  agreement: number | null;
+  corrections: ReferenceCorrectionDTO[];
+  original_segments: TranscriptSegmentDTO[];
+  original_words: AlignedWordDTO[];
 }
 
 export interface JobDTO {
@@ -70,6 +135,8 @@ export interface JobDTO {
   options: SeparationOptions;
   manifest: StemManifestEntry[] | null;
   transcript: TranscriptDTO | null;
+  /** Absent in historical API payloads predating vocal pitch analysis. */
+  pitch?: PitchAnalysisDTO | null;
   error_message: string | null;
   created_at: number;
   has_original: boolean;
@@ -146,6 +213,7 @@ const OPTION_KEYS: BooleanOptionKey[] = [
   "lead_backing",
   "drums",
   "extract_lyrics",
+  "detect_pitch",
   "no_cache",
 ];
 function isTerminal(status: JobStatus): boolean {
@@ -267,6 +335,14 @@ export function lyricsUrl(id: number): string {
 
 export function lyricsDownloadUrl(id: number): string {
   return `${lyricsUrl(id)}/download`;
+}
+
+export function lyricsJsonDownloadUrl(id: number): string {
+  return `${lyricsUrl(id)}/download.json`;
+}
+
+export function pitchDownloadUrl(id: number): string {
+  return `${API_BASE}/jobs/${id}/pitch`;
 }
 
 export function resultUrl(id: number, label: string): string {

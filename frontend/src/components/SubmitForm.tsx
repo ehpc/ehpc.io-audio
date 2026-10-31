@@ -26,6 +26,7 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
   { key: "extract_vocals", label: "Extract vocals", group: "Outputs" },
   { key: "extract_instruments", label: "Extract instruments", group: "Outputs" },
   { key: "extract_lyrics", label: "Extract lyrics", group: "Outputs" },
+  { key: "detect_pitch", label: "Detect vocal pitch", group: "Outputs" },
   { key: "mix_female_instruments", label: "Female vocals + instruments", mobileLabel: "Female + instruments", group: "Mixes" },
   { key: "mix_male_instruments", label: "Male vocals + instruments", mobileLabel: "Male + instruments", group: "Mixes" },
   { key: "mix_backing_instruments", label: "Backing vocals + instruments", mobileLabel: "Backing + instruments", group: "Mixes" },
@@ -42,6 +43,7 @@ const DEFAULT_OPTIONS: SeparationOptions = {
   extract_vocals: false,
   extract_instruments: false,
   extract_lyrics: false,
+  detect_pitch: false,
   mix_female_instruments: false,
   mix_male_instruments: false,
   mix_backing_instruments: false,
@@ -146,6 +148,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const trimmedUrl = () => url().trim();
   const stems = () => ["original", ...expectedStems(options)];
 
+  const outputCount = () => stems().length + Number(options.extract_lyrics) + Number(options.detect_pitch);
   const validationError = (): string | null => {
     const hasUrl = mode() === "url" && trimmedUrl().length > 0;
     const hasFile = mode() === "file" && file() !== null;
@@ -189,6 +192,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         options: submittedOptions,
         manifest: null,
         transcript: null,
+        pitch: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
@@ -279,6 +283,9 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             )}</For>
           </div>
           <p class="workspace-helper">{mobile() ? "Mixes auto-extract vocals + instruments." : "Mixes automatically extract their required vocal and instrumental parts."}</p>
+          <Show when={options.detect_pitch}>
+            <p class="workspace-helper">Vocal melody notes for each selected vocal stem, or full vocals internally if none selected. Add lyrics for approximate sung-word alignment.</p>
+          </Show>
           <details class="workspace-advanced">
             <summary>Advanced · cache</summary>
             <label class="workspace-option" for="option-no_cache">
@@ -351,22 +358,23 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             role={mobile() ? "tabpanel" : "region"} aria-label={mobile() ? undefined : "Output preview"}
             aria-labelledby={mobile() ? "tab-review" : undefined}>
             <h2>Output preview</h2>
-            <p class="workspace-helper">Tracks and files you'll get ({stems().length + Number(options.extract_lyrics)})</p>
+            <p class="workspace-helper">Tracks and files you'll get ({outputCount()})</p>
             <div class="output-tags">
               <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options)}</span>}</For>
               <Show when={options.extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
+              <Show when={options.detect_pitch}><span>Vocal pitch timeline + JSON</span></Show>
             </div>
             <p class="workspace-helper">Your original is included, unchanged.</p>
           </section>
 
           <div class="workspace-action">
             <div class="action-summary">
-              <span>{stems().length + Number(options.extract_lyrics) === 1 ? "Original only · unchanged" : `${stems().length + Number(options.extract_lyrics)} outputs · original included`}</span>
+              <span>{outputCount() === 1 ? "Original only · unchanged" : `${outputCount()} outputs · original included`}</span>
               <button type="button" onClick={() => showTab("review", true)}>Review →</button>
             </div>
             <Show when={error()}><p role="alert" class="text-sm text-destructive">{error()}</p></Show>
             <Button type="submit" disabled={submitting()} class="workspace-submit">
-              {submitting() ? "Submitting..." : expectedStems(options).length > 0 || options.extract_lyrics ? "Process audio" : "Download song"}
+              {submitting() ? "Submitting..." : outputCount() > 1 ? "Process audio" : "Download song"}
             </Button>
           </div>
         </aside>

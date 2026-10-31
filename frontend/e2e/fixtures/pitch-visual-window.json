@@ -1,0 +1,1854 @@
+{
+  "pitch": {
+    "source_duration_s": 141.5456875,
+    "duration_s": 113.23655000000001,
+    "tracks": [
+      {
+        "label": "vocals",
+        "notes": [
+          {
+            "start_s": 10.716,
+            "end_s": 10.788,
+            "midi": 65.49297720696485,
+            "frequency_hz": 359.3156128931878,
+            "confidence": 0.5272037386894226,
+            "note": "F4",
+            "cents": 49.3,
+            "word_indices": [
+              0
+            ]
+          },
+          {
+            "start_s": 10.852,
+            "end_s": 10.924,
+            "midi": 70.86042871864,
+            "frequency_hz": 489.9176440732211,
+            "confidence": 0.7427524924278259,
+            "note": "B4",
+            "cents": -14.0,
+            "word_indices": [
+              0
+            ]
+          },
+          {
+            "start_s": 10.924,
+            "end_s": 10.988,
+            "midi": 49.1128879578979,
+            "frequency_hz": 139.49797571098094,
+            "confidence": 0.8676468729972839,
+            "note": "C#3",
+            "cents": 11.3,
+            "word_indices": [
+              0
+            ]
+          },
+          {
+            "start_s": 11.044,
+            "end_s": 11.236,
+            "midi": 49.12237561378262,
+            "frequency_hz": 139.57444552841537,
+            "confidence": 0.80940842628479,
+            "note": "C#3",
+            "cents": 12.2,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.292,
+            "end_s": 11.443999999999999,
+            "midi": 52.1565384075831,
+            "frequency_hz": 166.31078455693532,
+            "confidence": 0.8839841485023499,
+            "note": "E3",
+            "cents": 15.7,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.443999999999999,
+            "end_s": 11.572,
+            "midi": 53.208054392992125,
+            "frequency_hz": 176.72523453204963,
+            "confidence": 0.8561395406723022,
+            "note": "F3",
+            "cents": 20.8,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.572,
+            "end_s": 11.644,
+            "midi": 54.8758121601445,
+            "frequency_hz": 194.59678437557014,
+            "confidence": 0.8992355465888977,
+            "note": "G3",
+            "cents": -12.4,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.644,
+            "end_s": 11.716,
+            "midi": 53.091924883245255,
+            "frequency_hz": 175.54374579536366,
+            "confidence": 0.8443419933319092,
+            "note": "F3",
+            "cents": 9.2,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.716,
+            "end_s": 11.78,
+            "midi": 54.303836973715136,
+            "frequency_hz": 188.27262832072554,
+            "confidence": 0.9168716371059418,
+            "note": "F#3",
+            "cents": 30.4,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.78,
+            "end_s": 11.844,
+            "midi": 53.20337863945623,
+            "frequency_hz": 176.67751065190083,
+            "confidence": 0.8721291124820709,
+            "note": "F3",
+            "cents": 20.3,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.9,
+            "end_s": 11.964,
+            "midi": 53.30537972876773,
+            "frequency_hz": 177.72153425111364,
+            "confidence": 0.819696694612503,
+            "note": "F3",
+            "cents": 30.5,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.964,
+            "end_s": 12.028,
+            "midi": 54.50041804761442,
+            "frequency_hz": 190.4226415731702,
+            "confidence": 0.8957901895046234,
+            "note": "G3",
+            "cents": -50.0,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.028,
+            "end_s": 12.092,
+            "midi": 53.11010709009765,
+            "frequency_hz": 175.72820666353525,
+            "confidence": 0.7939326167106628,
+            "note": "F3",
+            "cents": 11.0,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.139999999999999,
+            "end_s": 12.203999999999999,
+            "midi": 53.105025549664404,
+            "frequency_hz": 175.67663426361185,
+            "confidence": 0.8548150360584259,
+            "note": "F3",
+            "cents": 10.5,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.203999999999999,
+            "end_s": 12.267999999999999,
+            "midi": 54.50241194013564,
+            "frequency_hz": 190.44457414469537,
+            "confidence": 0.8853248357772827,
+            "note": "G3",
+            "cents": -49.8,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.324,
+            "end_s": 12.42,
+            "midi": 54.09195917362608,
+            "frequency_hz": 185.98248848908003,
+            "confidence": 0.5649852156639099,
+            "note": "F#3",
+            "cents": 9.2,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.644,
+            "end_s": 12.724,
+            "midi": 54.29538328523921,
+            "frequency_hz": 188.18071644893433,
+            "confidence": 0.34138794243335724,
+            "note": "F#3",
+            "cents": 29.5,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.884,
+            "end_s": 12.948000000000002,
+            "midi": 54.29678486965045,
+            "frequency_hz": 188.19595192998182,
+            "confidence": 0.524529442191124,
+            "note": "F#3",
+            "cents": 29.7,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.996,
+            "end_s": 13.108,
+            "midi": 53.51346223044625,
+            "frequency_hz": 179.8705144059698,
+            "confidence": 0.8627429008483887,
+            "note": "F#3",
+            "cents": -48.7,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 13.108,
+            "end_s": 13.244,
+            "midi": 54.666432253881226,
+            "frequency_hz": 192.25745546708885,
+            "confidence": 0.8039684295654297,
+            "note": "G3",
+            "cents": -33.4,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 13.34,
+            "end_s": 13.404000000000002,
+            "midi": 55.61538166770743,
+            "frequency_hz": 203.08992378216362,
+            "confidence": 0.7916453778743744,
+            "note": "G#3",
+            "cents": -38.5,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.476000000000003,
+            "end_s": 13.540000000000001,
+            "midi": 56.63411188140855,
+            "frequency_hz": 215.39919336008145,
+            "confidence": 0.7401138544082642,
+            "note": "A3",
+            "cents": -36.6,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.596,
+            "end_s": 13.724,
+            "midi": 57.21827321771865,
+            "frequency_hz": 222.79130957781246,
+            "confidence": 0.8100274801254272,
+            "note": "A3",
+            "cents": 21.8,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.724,
+            "end_s": 13.804000000000002,
+            "midi": 55.297430125310484,
+            "frequency_hz": 199.3940971419649,
+            "confidence": 0.7613652646541595,
+            "note": "G3",
+            "cents": 29.7,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.804000000000002,
+            "end_s": 13.868,
+            "midi": 56.42590642070705,
+            "frequency_hz": 212.8242272537344,
+            "confidence": 0.4579624533653259,
+            "note": "G#3",
+            "cents": 42.6,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.868,
+            "end_s": 13.956,
+            "midi": 55.070808302058,
+            "frequency_hz": 196.80099965834543,
+            "confidence": 0.7368137836456299,
+            "note": "G3",
+            "cents": 7.1,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.996,
+            "end_s": 14.092000000000002,
+            "midi": 55.18108700562795,
+            "frequency_hz": 198.0586129473946,
+            "confidence": 0.8178600668907166,
+            "note": "G3",
+            "cents": 18.1,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.092000000000002,
+            "end_s": 14.276000000000002,
+            "midi": 56.124358404328134,
+            "frequency_hz": 209.14933208662225,
+            "confidence": 0.8252357244491577,
+            "note": "G#3",
+            "cents": 12.4,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.276000000000002,
+            "end_s": 14.356,
+            "midi": 54.965947035759925,
+            "frequency_hz": 195.61257402441754,
+            "confidence": 0.8359978497028351,
+            "note": "G3",
+            "cents": -3.4,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.356,
+            "end_s": 14.420000000000002,
+            "midi": 56.12707809794378,
+            "frequency_hz": 209.18219112064955,
+            "confidence": 0.8919086456298828,
+            "note": "G#3",
+            "cents": 12.7,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.420000000000002,
+            "end_s": 14.620000000000001,
+            "midi": 55.08939455839126,
+            "frequency_hz": 197.0123955701838,
+            "confidence": 0.8790488243103027,
+            "note": "G3",
+            "cents": 8.9,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.620000000000001,
+            "end_s": 14.684000000000001,
+            "midi": 56.52166460954768,
+            "frequency_hz": 214.00466433619607,
+            "confidence": 0.8349151909351349,
+            "note": "A3",
+            "cents": -47.8,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.684000000000001,
+            "end_s": 14.828,
+            "midi": 55.08889857323233,
+            "frequency_hz": 197.00675139834797,
+            "confidence": 0.6375299096107483,
+            "note": "G3",
+            "cents": 8.9,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.916000000000002,
+            "end_s": 14.996,
+            "midi": 53.98261354643659,
+            "frequency_hz": 184.81151544373333,
+            "confidence": 0.7773908972740173,
+            "note": "F#3",
+            "cents": -1.7,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.996,
+            "end_s": 15.076000000000002,
+            "midi": 55.08506780968273,
+            "frequency_hz": 196.96316383184998,
+            "confidence": 0.7164201736450195,
+            "note": "G3",
+            "cents": 8.5,
+            "word_indices": [
+              5
+            ]
+          },
+          {
+            "start_s": 15.076000000000002,
+            "end_s": 15.172,
+            "midi": 54.504403117087705,
+            "frequency_hz": 190.4664793662947,
+            "confidence": 0.6832639276981354,
+            "note": "G3",
+            "cents": -49.6,
+            "word_indices": [
+              5
+            ]
+          }
+        ]
+      },
+      {
+        "label": "lead",
+        "notes": [
+          {
+            "start_s": 10.716,
+            "end_s": 10.788,
+            "midi": 65.49296140222867,
+            "frequency_hz": 359.3152848678767,
+            "confidence": 0.525844395160675,
+            "note": "F4",
+            "cents": 49.3,
+            "word_indices": [
+              0
+            ]
+          },
+          {
+            "start_s": 10.852,
+            "end_s": 10.924,
+            "midi": 70.86043335524387,
+            "frequency_hz": 489.91777528334563,
+            "confidence": 0.7424004077911377,
+            "note": "B4",
+            "cents": -14.0,
+            "word_indices": [
+              0
+            ]
+          },
+          {
+            "start_s": 10.924,
+            "end_s": 10.988,
+            "midi": 49.11290220619992,
+            "frequency_hz": 139.49809051984275,
+            "confidence": 0.8677908182144165,
+            "note": "C#3",
+            "cents": 11.3,
+            "word_indices": [
+              0
+            ]
+          },
+          {
+            "start_s": 11.044,
+            "end_s": 11.236,
+            "midi": 49.12241020094821,
+            "frequency_hz": 139.57472437513076,
+            "confidence": 0.8093815743923187,
+            "note": "C#3",
+            "cents": 12.2,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.292,
+            "end_s": 11.443999999999999,
+            "midi": 52.15640694410825,
+            "frequency_hz": 166.309521659487,
+            "confidence": 0.883906364440918,
+            "note": "E3",
+            "cents": 15.6,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.443999999999999,
+            "end_s": 11.572,
+            "midi": 53.208074515986766,
+            "frequency_hz": 176.72543994870117,
+            "confidence": 0.8561392426490784,
+            "note": "F3",
+            "cents": 20.8,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.572,
+            "end_s": 11.644,
+            "midi": 54.875796109577735,
+            "frequency_hz": 194.596603961649,
+            "confidence": 0.8992458581924438,
+            "note": "G3",
+            "cents": -12.4,
+            "word_indices": [
+              1
+            ]
+          },
+          {
+            "start_s": 11.644,
+            "end_s": 11.716,
+            "midi": 53.09194752841268,
+            "frequency_hz": 175.54397541308148,
+            "confidence": 0.844541609287262,
+            "note": "F3",
+            "cents": 9.2,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.716,
+            "end_s": 11.78,
+            "midi": 54.303831695212196,
+            "frequency_hz": 188.27257091673263,
+            "confidence": 0.9169749021530151,
+            "note": "F#3",
+            "cents": 30.4,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.78,
+            "end_s": 11.844,
+            "midi": 53.203393148457906,
+            "frequency_hz": 176.67765872057896,
+            "confidence": 0.8722186088562012,
+            "note": "F3",
+            "cents": 20.3,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.9,
+            "end_s": 11.964,
+            "midi": 53.30538930889754,
+            "frequency_hz": 177.72163259690572,
+            "confidence": 0.8203203082084656,
+            "note": "F3",
+            "cents": 30.5,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 11.964,
+            "end_s": 12.028,
+            "midi": 54.50042326249921,
+            "frequency_hz": 190.4226989329644,
+            "confidence": 0.8958143293857574,
+            "note": "G3",
+            "cents": -50.0,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.028,
+            "end_s": 12.092,
+            "midi": 53.11012983570367,
+            "frequency_hz": 175.7284375420339,
+            "confidence": 0.7946497797966003,
+            "note": "F3",
+            "cents": 11.0,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.139999999999999,
+            "end_s": 12.203999999999999,
+            "midi": 53.105031209835396,
+            "frequency_hz": 175.67669170009492,
+            "confidence": 0.8549644649028778,
+            "note": "F3",
+            "cents": 10.5,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.203999999999999,
+            "end_s": 12.267999999999999,
+            "midi": 54.502400758887035,
+            "frequency_hz": 190.44445114529836,
+            "confidence": 0.8853637278079987,
+            "note": "G3",
+            "cents": -49.8,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.324,
+            "end_s": 12.42,
+            "midi": 54.09192426505582,
+            "frequency_hz": 185.982113474724,
+            "confidence": 0.5658396780490875,
+            "note": "F#3",
+            "cents": 9.2,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.644,
+            "end_s": 12.724,
+            "midi": 54.29535084167112,
+            "frequency_hz": 188.18036379597157,
+            "confidence": 0.341455802321434,
+            "note": "F#3",
+            "cents": 29.5,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.884,
+            "end_s": 12.948000000000002,
+            "midi": 54.296790906192214,
+            "frequency_hz": 188.1960175509718,
+            "confidence": 0.5249680131673813,
+            "note": "F#3",
+            "cents": 29.7,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 12.996,
+            "end_s": 13.108,
+            "midi": 53.51347091297547,
+            "frequency_hz": 179.87060461511226,
+            "confidence": 0.8629255890846252,
+            "note": "F#3",
+            "cents": -48.7,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 13.108,
+            "end_s": 13.244,
+            "midi": 54.66627717909197,
+            "frequency_hz": 192.25573333420476,
+            "confidence": 0.8041783571243286,
+            "note": "G3",
+            "cents": -33.4,
+            "word_indices": [
+              2
+            ]
+          },
+          {
+            "start_s": 13.34,
+            "end_s": 13.404000000000002,
+            "midi": 55.615415992855766,
+            "frequency_hz": 203.09032644861267,
+            "confidence": 0.7916223406791687,
+            "note": "G#3",
+            "cents": -38.5,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.476000000000003,
+            "end_s": 13.540000000000001,
+            "midi": 56.63415003223528,
+            "frequency_hz": 215.39966803110372,
+            "confidence": 0.7417017817497253,
+            "note": "A3",
+            "cents": -36.6,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.596,
+            "end_s": 13.724,
+            "midi": 57.218289361176716,
+            "frequency_hz": 222.79151732695203,
+            "confidence": 0.8101431727409363,
+            "note": "A3",
+            "cents": 21.8,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.724,
+            "end_s": 13.804000000000002,
+            "midi": 55.297435821030284,
+            "frequency_hz": 199.39416274217035,
+            "confidence": 0.7614158093929291,
+            "note": "G3",
+            "cents": 29.7,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.804000000000002,
+            "end_s": 13.868,
+            "midi": 56.425941902443356,
+            "frequency_hz": 212.82466343859645,
+            "confidence": 0.4578830599784851,
+            "note": "G#3",
+            "cents": 42.6,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.868,
+            "end_s": 13.956,
+            "midi": 55.07068277808623,
+            "frequency_hz": 196.7995727482415,
+            "confidence": 0.7361672520637512,
+            "note": "G3",
+            "cents": 7.1,
+            "word_indices": [
+              3
+            ]
+          },
+          {
+            "start_s": 13.996,
+            "end_s": 14.092000000000002,
+            "midi": 55.18107008788965,
+            "frequency_hz": 198.05841940324925,
+            "confidence": 0.8179999589920044,
+            "note": "G3",
+            "cents": 18.1,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.092000000000002,
+            "end_s": 14.276000000000002,
+            "midi": 56.12440456318041,
+            "frequency_hz": 209.14988972965145,
+            "confidence": 0.8257941603660583,
+            "note": "G#3",
+            "cents": 12.4,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.276000000000002,
+            "end_s": 14.356,
+            "midi": 54.96596077821701,
+            "frequency_hz": 195.6127293008501,
+            "confidence": 0.8360676169395447,
+            "note": "G3",
+            "cents": -3.4,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.356,
+            "end_s": 14.420000000000002,
+            "midi": 56.1270638421791,
+            "frequency_hz": 209.18201887063714,
+            "confidence": 0.8919191956520081,
+            "note": "G#3",
+            "cents": 12.7,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.420000000000002,
+            "end_s": 14.620000000000001,
+            "midi": 55.089388793386675,
+            "frequency_hz": 197.01232996512155,
+            "confidence": 0.8791636824607849,
+            "note": "G3",
+            "cents": 8.9,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.620000000000001,
+            "end_s": 14.684000000000001,
+            "midi": 56.521682521496096,
+            "frequency_hz": 214.00488575296487,
+            "confidence": 0.8352023661136627,
+            "note": "A3",
+            "cents": -47.8,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.684000000000001,
+            "end_s": 14.828,
+            "midi": 55.08881568632799,
+            "frequency_hz": 197.00580818442057,
+            "confidence": 0.6371673345565796,
+            "note": "G3",
+            "cents": 8.9,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.916000000000002,
+            "end_s": 14.996,
+            "midi": 53.982567453753475,
+            "frequency_hz": 184.81102339892394,
+            "confidence": 0.7775044441223145,
+            "note": "F#3",
+            "cents": -1.7,
+            "word_indices": [
+              4
+            ]
+          },
+          {
+            "start_s": 14.996,
+            "end_s": 15.076000000000002,
+            "midi": 55.08507141543336,
+            "frequency_hz": 196.96320485461797,
+            "confidence": 0.7160768508911133,
+            "note": "G3",
+            "cents": 8.5,
+            "word_indices": [
+              5
+            ]
+          },
+          {
+            "start_s": 15.076000000000002,
+            "end_s": 15.172,
+            "midi": 54.50433155851218,
+            "frequency_hz": 190.4656920965556,
+            "confidence": 0.6830889880657196,
+            "note": "G3",
+            "cents": -49.6,
+            "word_indices": [
+              5
+            ]
+          }
+        ]
+      },
+      {
+        "label": "backing",
+        "notes": []
+      }
+    ],
+    "words": [
+      {
+        "start_s": 9.888,
+        "end_s": 11.008,
+        "text": "Should",
+        "probability": 0.6162109375
+      },
+      {
+        "start_s": 11.008,
+        "end_s": 11.632,
+        "text": "old",
+        "probability": 0.96044921875
+      },
+      {
+        "start_s": 11.632,
+        "end_s": 13.344,
+        "text": "acquaintance",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 13.344,
+        "end_s": 13.968,
+        "text": "be",
+        "probability": 0.9990234375
+      },
+      {
+        "start_s": 13.968,
+        "end_s": 14.991999999999999,
+        "text": "forgot",
+        "probability": 0.92919921875
+      },
+      {
+        "start_s": 14.991999999999999,
+        "end_s": 15.84,
+        "text": "and",
+        "probability": 0.884765625
+      },
+      {
+        "start_s": 15.84,
+        "end_s": 16.56,
+        "text": "never",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 16.56,
+        "end_s": 17.824,
+        "text": "brought",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 17.824,
+        "end_s": 18.336000000000002,
+        "text": "to",
+        "probability": 1.0
+      },
+      {
+        "start_s": 18.336000000000002,
+        "end_s": 19.264,
+        "text": "mind?",
+        "probability": 1.0
+      },
+      {
+        "start_s": 19.264,
+        "end_s": 20.72,
+        "text": "Should",
+        "probability": 0.402587890625
+      },
+      {
+        "start_s": 20.72,
+        "end_s": 21.791999999999998,
+        "text": "old",
+        "probability": 0.888671875
+      },
+      {
+        "start_s": 21.791999999999998,
+        "end_s": 23.344,
+        "text": "acquaintance",
+        "probability": 0.999755859375
+      },
+      {
+        "start_s": 23.344,
+        "end_s": 23.984,
+        "text": "be",
+        "probability": 0.98583984375
+      },
+      {
+        "start_s": 23.984,
+        "end_s": 25.056,
+        "text": "forgot",
+        "probability": 0.98388671875
+      },
+      {
+        "start_s": 25.344,
+        "end_s": 25.904000000000003,
+        "text": "On",
+        "probability": 0.52197265625
+      },
+      {
+        "start_s": 25.904000000000003,
+        "end_s": 26.592000000000002,
+        "text": "days",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 26.592000000000002,
+        "end_s": 27.663999999999998,
+        "text": "of",
+        "probability": 1.0
+      },
+      {
+        "start_s": 27.663999999999998,
+        "end_s": 28.224,
+        "text": "auld",
+        "probability": 0.965087890625
+      },
+      {
+        "start_s": 28.224,
+        "end_s": 28.832,
+        "text": "lang",
+        "probability": 0.99853515625
+      },
+      {
+        "start_s": 28.832,
+        "end_s": 30.112000000000002,
+        "text": "syne",
+        "probability": 0.997802734375
+      },
+      {
+        "start_s": 30.112000000000002,
+        "end_s": 30.832,
+        "text": "For",
+        "probability": 0.69921875
+      },
+      {
+        "start_s": 30.832,
+        "end_s": 32.416000000000004,
+        "text": "auld",
+        "probability": 0.999755859375
+      },
+      {
+        "start_s": 32.416000000000004,
+        "end_s": 32.992000000000004,
+        "text": "lang",
+        "probability": 1.0
+      },
+      {
+        "start_s": 32.992000000000004,
+        "end_s": 34.544,
+        "text": "syne,",
+        "probability": 0.999755859375
+      },
+      {
+        "start_s": 34.832,
+        "end_s": 35.007999999999996,
+        "text": "my",
+        "probability": 0.9990234375
+      },
+      {
+        "start_s": 35.007999999999996,
+        "end_s": 35.376,
+        "text": "dear",
+        "probability": 1.0
+      },
+      {
+        "start_s": 35.376,
+        "end_s": 36.0,
+        "text": "For",
+        "probability": 0.9609375
+      },
+      {
+        "start_s": 36.0,
+        "end_s": 37.456,
+        "text": "auld",
+        "probability": 1.0
+      },
+      {
+        "start_s": 37.456,
+        "end_s": 38.0,
+        "text": "lang",
+        "probability": 1.0
+      },
+      {
+        "start_s": 38.0,
+        "end_s": 40.064,
+        "text": "syne",
+        "probability": 1.0
+      },
+      {
+        "start_s": 40.064,
+        "end_s": 41.376,
+        "text": "We'll",
+        "probability": 0.8203125
+      },
+      {
+        "start_s": 41.376,
+        "end_s": 41.92,
+        "text": "take",
+        "probability": 0.998046875
+      },
+      {
+        "start_s": 41.92,
+        "end_s": 42.624,
+        "text": "a",
+        "probability": 0.9853515625
+      },
+      {
+        "start_s": 42.624,
+        "end_s": 43.327999999999996,
+        "text": "cup",
+        "probability": 0.9990234375
+      },
+      {
+        "start_s": 43.327999999999996,
+        "end_s": 43.44,
+        "text": "of",
+        "probability": 0.8583984375
+      },
+      {
+        "start_s": 43.44,
+        "end_s": 45.024,
+        "text": "kindness",
+        "probability": 0.998046875
+      },
+      {
+        "start_s": 45.024,
+        "end_s": 45.616,
+        "text": "yet",
+        "probability": 0.9912109375
+      },
+      {
+        "start_s": 45.616,
+        "end_s": 46.336,
+        "text": "for",
+        "probability": 0.60888671875
+      },
+      {
+        "start_s": 46.336,
+        "end_s": 47.872,
+        "text": "auld",
+        "probability": 0.6407470703125
+      },
+      {
+        "start_s": 47.872,
+        "end_s": 48.480000000000004,
+        "text": "lang",
+        "probability": 0.99462890625
+      },
+      {
+        "start_s": 48.480000000000004,
+        "end_s": 50.08,
+        "text": "syne.",
+        "probability": 0.99853515625
+      },
+      {
+        "start_s": 98.08,
+        "end_s": 98.976,
+        "text": "Gold",
+        "probability": 0.07525634765625
+      },
+      {
+        "start_s": 98.976,
+        "end_s": 99.45599999999999,
+        "text": "line",
+        "probability": 0.388427734375
+      },
+      {
+        "start_s": 99.45599999999999,
+        "end_s": 100.608,
+        "text": "sign.",
+        "probability": 0.9287109375
+      }
+    ],
+    "pitch_shift_semitones": 1.25,
+    "tempo_percent": 125,
+    "timestamp_reference": "output",
+    "pitch_reference": "output",
+    "model": "torchcrepe/full",
+    "word_alignment": "whisper-approximate",
+    "version": 1
+  },
+  "transcript": {
+    "segments": [
+      {
+        "start_s": 12.36,
+        "end_s": 24.08,
+        "text": "Should old acquaintance be forgot and never brought to mind?"
+      },
+      {
+        "start_s": 24.08,
+        "end_s": 31.32,
+        "text": "Should old acquaintance be forgot"
+      },
+      {
+        "start_s": 31.840000000000003,
+        "end_s": 37.64,
+        "text": "On days of auld lang syne"
+      },
+      {
+        "start_s": 37.64,
+        "end_s": 44.22,
+        "text": "For auld lang syne, my dear"
+      },
+      {
+        "start_s": 44.22,
+        "end_s": 50.08,
+        "text": "For auld lang syne"
+      },
+      {
+        "start_s": 50.08,
+        "end_s": 62.6,
+        "text": "We'll take a cup of kindness yet for auld lang syne."
+      },
+      {
+        "start_s": 122.6,
+        "end_s": 125.76,
+        "text": "Gold line sign."
+      }
+    ],
+    "language": "en",
+    "timestamp_reference": "original",
+    "sections": [
+      {
+        "start_s": 0.0,
+        "end_s": 13.320532821312852,
+        "label": "intro"
+      },
+      {
+        "start_s": 13.320532821312852,
+        "end_s": 38.40153606144246,
+        "label": "verse"
+      },
+      {
+        "start_s": 38.40153606144246,
+        "end_s": 51.482059282371296,
+        "label": "chorus"
+      },
+      {
+        "start_s": 51.482059282371296,
+        "end_s": 64.32257290291612,
+        "label": "chorus"
+      },
+      {
+        "start_s": 64.32257290291612,
+        "end_s": 76.4430577223089,
+        "label": "inst"
+      },
+      {
+        "start_s": 76.4430577223089,
+        "end_s": 89.76359054362175,
+        "label": "verse"
+      },
+      {
+        "start_s": 89.76359054362175,
+        "end_s": 102.00408016320652,
+        "label": "verse"
+      },
+      {
+        "start_s": 102.00408016320652,
+        "end_s": 115.20460818432737,
+        "label": "chorus"
+      },
+      {
+        "start_s": 115.20460818432737,
+        "end_s": 128.1651266050642,
+        "label": "chorus"
+      },
+      {
+        "start_s": 128.1651266050642,
+        "end_s": 141.54570833333332,
+        "label": "outro"
+      }
+    ],
+    "structure_model": "ASLP-lab/SongFormer@a75880ed1b7375ac71860ec6c4fc9c899cf99515",
+    "words": [
+      {
+        "start_s": 12.36,
+        "end_s": 13.76,
+        "text": "Should",
+        "probability": 0.6162109375
+      },
+      {
+        "start_s": 13.76,
+        "end_s": 14.54,
+        "text": "old",
+        "probability": 0.96044921875
+      },
+      {
+        "start_s": 14.54,
+        "end_s": 16.68,
+        "text": "acquaintance",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 16.68,
+        "end_s": 17.46,
+        "text": "be",
+        "probability": 0.9990234375
+      },
+      {
+        "start_s": 17.46,
+        "end_s": 18.74,
+        "text": "forgot",
+        "probability": 0.92919921875
+      },
+      {
+        "start_s": 18.74,
+        "end_s": 19.8,
+        "text": "and",
+        "probability": 0.884765625
+      },
+      {
+        "start_s": 19.8,
+        "end_s": 20.7,
+        "text": "never",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 20.7,
+        "end_s": 22.28,
+        "text": "brought",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 22.28,
+        "end_s": 22.92,
+        "text": "to",
+        "probability": 1.0
+      },
+      {
+        "start_s": 22.92,
+        "end_s": 24.08,
+        "text": "mind?",
+        "probability": 1.0
+      },
+      {
+        "start_s": 24.08,
+        "end_s": 25.9,
+        "text": "Should",
+        "probability": 0.402587890625
+      },
+      {
+        "start_s": 25.9,
+        "end_s": 27.24,
+        "text": "old",
+        "probability": 0.888671875
+      },
+      {
+        "start_s": 27.24,
+        "end_s": 29.18,
+        "text": "acquaintance",
+        "probability": 0.999755859375
+      },
+      {
+        "start_s": 29.18,
+        "end_s": 29.98,
+        "text": "be",
+        "probability": 0.98583984375
+      },
+      {
+        "start_s": 29.98,
+        "end_s": 31.32,
+        "text": "forgot",
+        "probability": 0.98388671875
+      },
+      {
+        "start_s": 31.680000000000003,
+        "end_s": 32.38,
+        "text": "On",
+        "probability": 0.52197265625
+      },
+      {
+        "start_s": 32.38,
+        "end_s": 33.24,
+        "text": "days",
+        "probability": 0.99951171875
+      },
+      {
+        "start_s": 33.24,
+        "end_s": 34.58,
+        "text": "of",
+        "probability": 1.0
+      },
+      {
+        "start_s": 34.58,
+        "end_s": 35.28,
+        "text": "auld",
+        "probability": 0.965087890625
+      },
+      {
+        "start_s": 35.28,
+        "end_s": 36.04,
+        "text": "lang",
+        "probability": 0.99853515625
+      },
+      {
+        "start_s": 36.04,
+        "end_s": 37.64,
+        "text": "syne",
+        "probability": 0.997802734375
+      },
+      {
+        "start_s": 37.64,
+        "end_s": 38.54,
+        "text": "For",
+        "probability": 0.69921875
+      },
+      {
+        "start_s": 38.54,
+        "end_s": 40.52,
+        "text": "auld",
+        "probability": 0.999755859375
+      },
+      {
+        "start_s": 40.52,
+        "end_s": 41.24,
+        "text": "lang",
+        "probability": 1.0
+      },
+      {
+        "start_s": 41.24,
+        "end_s": 43.18,
+        "text": "syne,",
+        "probability": 0.999755859375
+      },
+      {
+        "start_s": 43.54,
+        "end_s": 43.76,
+        "text": "my",
+        "probability": 0.9990234375
+      },
+      {
+        "start_s": 43.76,
+        "end_s": 44.22,
+        "text": "dear",
+        "probability": 1.0
+      },
+      {
+        "start_s": 44.22,
+        "end_s": 45.0,
+        "text": "For",
+        "probability": 0.9609375
+      },
+      {
+        "start_s": 45.0,
+        "end_s": 46.82,
+        "text": "auld",
+        "probability": 1.0
+      },
+      {
+        "start_s": 46.82,
+        "end_s": 47.5,
+        "text": "lang",
+        "probability": 1.0
+      },
+      {
+        "start_s": 47.5,
+        "end_s": 50.08,
+        "text": "syne",
+        "probability": 1.0
+      },
+      {
+        "start_s": 50.08,
+        "end_s": 51.72,
+        "text": "We'll",
+        "probability": 0.8203125
+      },
+      {
+        "start_s": 51.72,
+        "end_s": 52.4,
+        "text": "take",
+        "probability": 0.998046875
+      },
+      {
+        "start_s": 52.4,
+        "end_s": 53.28,
+        "text": "a",
+        "probability": 0.9853515625
+      },
+      {
+        "start_s": 53.28,
+        "end_s": 54.16,
+        "text": "cup",
+        "probability": 0.9990234375
+      },
+      {
+        "start_s": 54.16,
+        "end_s": 54.3,
+        "text": "of",
+        "probability": 0.8583984375
+      },
+      {
+        "start_s": 54.3,
+        "end_s": 56.28,
+        "text": "kindness",
+        "probability": 0.998046875
+      },
+      {
+        "start_s": 56.28,
+        "end_s": 57.02,
+        "text": "yet",
+        "probability": 0.9912109375
+      },
+      {
+        "start_s": 57.02,
+        "end_s": 57.92,
+        "text": "for",
+        "probability": 0.60888671875
+      },
+      {
+        "start_s": 57.92,
+        "end_s": 59.84,
+        "text": "auld",
+        "probability": 0.6407470703125
+      },
+      {
+        "start_s": 59.84,
+        "end_s": 60.6,
+        "text": "lang",
+        "probability": 0.99462890625
+      },
+      {
+        "start_s": 60.6,
+        "end_s": 62.6,
+        "text": "syne.",
+        "probability": 0.99853515625
+      },
+      {
+        "start_s": 122.6,
+        "end_s": 123.72,
+        "text": "Gold",
+        "probability": 0.07525634765625
+      },
+      {
+        "start_s": 123.72,
+        "end_s": 124.32,
+        "text": "line",
+        "probability": 0.388427734375
+      },
+      {
+        "start_s": 124.32,
+        "end_s": 125.76,
+        "text": "sign.",
+        "probability": 0.9287109375
+      }
+    ],
+    "reference": {
+      "status": "skipped",
+      "reason": "Credible artist, track title, and source duration are required.",
+      "provider": "LRCLIB",
+      "source_url": null,
+      "record_id": null,
+      "artist": null,
+      "title": null,
+      "album": null,
+      "duration_s": null,
+      "agreement": null,
+      "corrections": [],
+      "original_segments": [
+        {
+          "start_s": 12.36,
+          "end_s": 24.08,
+          "text": "Should old acquaintance be forgot and never brought to mind?"
+        },
+        {
+          "start_s": 24.08,
+          "end_s": 31.32,
+          "text": "Should old acquaintance be forgot"
+        },
+        {
+          "start_s": 31.840000000000003,
+          "end_s": 37.64,
+          "text": "On days of auld lang syne"
+        },
+        {
+          "start_s": 37.64,
+          "end_s": 44.22,
+          "text": "For auld lang syne, my dear"
+        },
+        {
+          "start_s": 44.22,
+          "end_s": 50.08,
+          "text": "For auld lang syne"
+        },
+        {
+          "start_s": 50.08,
+          "end_s": 62.6,
+          "text": "We'll take a cup of kindness yet for auld lang syne."
+        },
+        {
+          "start_s": 122.6,
+          "end_s": 125.76,
+          "text": "Gold line sign."
+        }
+      ],
+      "original_words": [
+        {
+          "start_s": 12.36,
+          "end_s": 13.76,
+          "text": "Should",
+          "probability": 0.6162109375
+        },
+        {
+          "start_s": 13.76,
+          "end_s": 14.54,
+          "text": "old",
+          "probability": 0.96044921875
+        },
+        {
+          "start_s": 14.54,
+          "end_s": 16.68,
+          "text": "acquaintance",
+          "probability": 0.99951171875
+        },
+        {
+          "start_s": 16.68,
+          "end_s": 17.46,
+          "text": "be",
+          "probability": 0.9990234375
+        },
+        {
+          "start_s": 17.46,
+          "end_s": 18.74,
+          "text": "forgot",
+          "probability": 0.92919921875
+        },
+        {
+          "start_s": 18.74,
+          "end_s": 19.8,
+          "text": "and",
+          "probability": 0.884765625
+        },
+        {
+          "start_s": 19.8,
+          "end_s": 20.7,
+          "text": "never",
+          "probability": 0.99951171875
+        },
+        {
+          "start_s": 20.7,
+          "end_s": 22.28,
+          "text": "brought",
+          "probability": 0.99951171875
+        },
+        {
+          "start_s": 22.28,
+          "end_s": 22.92,
+          "text": "to",
+          "probability": 1.0
+        },
+        {
+          "start_s": 22.92,
+          "end_s": 24.08,
+          "text": "mind?",
+          "probability": 1.0
+        },
+        {
+          "start_s": 24.08,
+          "end_s": 25.9,
+          "text": "Should",
+          "probability": 0.402587890625
+        },
+        {
+          "start_s": 25.9,
+          "end_s": 27.24,
+          "text": "old",
+          "probability": 0.888671875
+        },
+        {
+          "start_s": 27.24,
+          "end_s": 29.18,
+          "text": "acquaintance",
+          "probability": 0.999755859375
+        },
+        {
+          "start_s": 29.18,
+          "end_s": 29.98,
+          "text": "be",
+          "probability": 0.98583984375
+        },
+        {
+          "start_s": 29.98,
+          "end_s": 31.32,
+          "text": "forgot",
+          "probability": 0.98388671875
+        },
+        {
+          "start_s": 31.680000000000003,
+          "end_s": 32.38,
+          "text": "On",
+          "probability": 0.52197265625
+        },
+        {
+          "start_s": 32.38,
+          "end_s": 33.24,
+          "text": "days",
+          "probability": 0.99951171875
+        },
+        {
+          "start_s": 33.24,
+          "end_s": 34.58,
+          "text": "of",
+          "probability": 1.0
+        },
+        {
+          "start_s": 34.58,
+          "end_s": 35.28,
+          "text": "auld",
+          "probability": 0.965087890625
+        },
+        {
+          "start_s": 35.28,
+          "end_s": 36.04,
+          "text": "lang",
+          "probability": 0.99853515625
+        },
+        {
+          "start_s": 36.04,
+          "end_s": 37.64,
+          "text": "syne",
+          "probability": 0.997802734375
+        },
+        {
+          "start_s": 37.64,
+          "end_s": 38.54,
+          "text": "For",
+          "probability": 0.69921875
+        },
+        {
+          "start_s": 38.54,
+          "end_s": 40.52,
+          "text": "auld",
+          "probability": 0.999755859375
+        },
+        {
+          "start_s": 40.52,
+          "end_s": 41.24,
+          "text": "lang",
+          "probability": 1.0
+        },
+        {
+          "start_s": 41.24,
+          "end_s": 43.18,
+          "text": "syne,",
+          "probability": 0.999755859375
+        },
+        {
+          "start_s": 43.54,
+          "end_s": 43.76,
+          "text": "my",
+          "probability": 0.9990234375
+        },
+        {
+          "start_s": 43.76,
+          "end_s": 44.22,
+          "text": "dear",
+          "probability": 1.0
+        },
+        {
+          "start_s": 44.22,
+          "end_s": 45.0,
+          "text": "For",
+          "probability": 0.9609375
+        },
+        {
+          "start_s": 45.0,
+          "end_s": 46.82,
+          "text": "auld",
+          "probability": 1.0
+        },
+        {
+          "start_s": 46.82,
+          "end_s": 47.5,
+          "text": "lang",
+          "probability": 1.0
+        },
+        {
+          "start_s": 47.5,
+          "end_s": 50.08,
+          "text": "syne",
+          "probability": 1.0
+        },
+        {
+          "start_s": 50.08,
+          "end_s": 51.72,
+          "text": "We'll",
+          "probability": 0.8203125
+        },
+        {
+          "start_s": 51.72,
+          "end_s": 52.4,
+          "text": "take",
+          "probability": 0.998046875
+        },
+        {
+          "start_s": 52.4,
+          "end_s": 53.28,
+          "text": "a",
+          "probability": 0.9853515625
+        },
+        {
+          "start_s": 53.28,
+          "end_s": 54.16,
+          "text": "cup",
+          "probability": 0.9990234375
+        },
+        {
+          "start_s": 54.16,
+          "end_s": 54.3,
+          "text": "of",
+          "probability": 0.8583984375
+        },
+        {
+          "start_s": 54.3,
+          "end_s": 56.28,
+          "text": "kindness",
+          "probability": 0.998046875
+        },
+        {
+          "start_s": 56.28,
+          "end_s": 57.02,
+          "text": "yet",
+          "probability": 0.9912109375
+        },
+        {
+          "start_s": 57.02,
+          "end_s": 57.92,
+          "text": "for",
+          "probability": 0.60888671875
+        },
+        {
+          "start_s": 57.92,
+          "end_s": 59.84,
+          "text": "auld",
+          "probability": 0.6407470703125
+        },
+        {
+          "start_s": 59.84,
+          "end_s": 60.6,
+          "text": "lang",
+          "probability": 0.99462890625
+        },
+        {
+          "start_s": 60.6,
+          "end_s": 62.6,
+          "text": "syne.",
+          "probability": 0.99853515625
+        },
+        {
+          "start_s": 122.6,
+          "end_s": 123.72,
+          "text": "Gold",
+          "probability": 0.07525634765625
+        },
+        {
+          "start_s": 123.72,
+          "end_s": 124.32,
+          "text": "line",
+          "probability": 0.388427734375
+        },
+        {
+          "start_s": 124.32,
+          "end_s": 125.76,
+          "text": "sign.",
+          "probability": 0.9287109375
+        }
+      ]
+    },
+    "status": "recognized"
+  }
+}

@@ -4,6 +4,7 @@ import modal
 from modal.exception import TimeoutError as ModalTimeoutError
 
 from backend import config
+from separator.lyrics_reference import ReferenceMetadata
 from separator.options import SeparationOptions
 from separator.processing import ProcessingResult
 from separator.stems import SeparationResult
@@ -25,9 +26,15 @@ def spawn(
 
 
 def spawn_with_lyrics(
-    audio_bytes: bytes, filename: str, options: SeparationOptions
+    audio_bytes: bytes,
+    filename: str,
+    options: SeparationOptions,
+    reference_metadata: ReferenceMetadata | None = None,
 ) -> modal.functions.FunctionCall[ProcessingResult]:
-    return _get_function(LYRICS_FUNCTION_NAME).spawn(audio_bytes, filename, options)
+    function = _get_function(LYRICS_FUNCTION_NAME)
+    if reference_metadata is None:
+        return function.spawn(audio_bytes, filename, options)
+    return function.spawn(audio_bytes, filename, options, reference_metadata)
 
 
 def poll[T](call: modal.functions.FunctionCall[T], timeout: float) -> T | None:

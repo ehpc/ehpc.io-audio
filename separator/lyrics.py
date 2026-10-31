@@ -3,7 +3,10 @@
 import json
 from dataclasses import asdict, dataclass, field
 from math import isfinite
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from separator.lyrics_reference import ReferenceReview
 
 SectionLabel = Literal[
     "intro", "verse", "chorus", "bridge", "inst", "outro", "silence", "pre-chorus"
@@ -37,6 +40,24 @@ class TranscriptSegment:
 
 
 @dataclass(frozen=True)
+class TranscriptWord:
+    start_s: float
+    end_s: float
+    text: str
+    probability: float
+
+    def __post_init__(self) -> None:
+        if (
+            not all(isfinite(v) for v in (self.start_s, self.end_s, self.probability))
+            or self.start_s < 0
+            or self.end_s <= self.start_s
+            or not 0 <= self.probability <= 1
+            or not self.text.strip()
+        ):
+            raise ValueError("Invalid transcript word")
+
+
+@dataclass(frozen=True)
 class TranscriptSection:
     start_s: float
     end_s: float
@@ -61,6 +82,8 @@ class Transcript:
     timestamp_reference: Literal["original"] = "original"
     sections: list[TranscriptSection] = field(default_factory=list)
     structure_model: str | None = None
+    words: list[TranscriptWord] = field(default_factory=list)
+    reference: "ReferenceReview | None" = None
 
     status: Literal["recognized", "empty"] = field(init=False, default="empty")
 
@@ -76,6 +99,11 @@ class Transcript:
             for left, right in zip(self.sections, self.sections[1:], strict=False)
         ):
             raise ValueError("Musical sections must be ordered and non-overlapping")
+        if any(
+            right.start_s < left.end_s
+            for left, right in zip(self.words, self.words[1:], strict=False)
+        ):
+            raise ValueError("Transcript words must be ordered and non-overlapping")
 
     def __reduce__(self):
         # The already-deployed web worker knows this canonical JSON decoder.
@@ -154,6 +182,10 @@ def transcript_text(
 
 def transcript_from_json(data: str) -> Transcript:
     value = json.loads(data)
+    # Runtime-local import breaks the reference module's dependency on this
+    # lightweight transcript contract; old decoders safely ignore new fields.
+    from separator.lyrics_reference import reference_review_from_dict  # noqa: PLC0415
+
     return Transcript(
         segments=[TranscriptSegment(**segment) for segment in value["segments"]],
         language=value["language"],
@@ -162,4 +194,10 @@ def transcript_from_json(data: str) -> Transcript:
             TranscriptSection(**section) for section in value.get("sections", [])
         ],
         structure_model=value.get("structure_model"),
+        words=[TranscriptWord(**word) for word in value.get("words", [])],
+        reference=(
+            reference_review_from_dict(value["reference"])
+            if value.get("reference") is not None
+            else None
+        ),
     )

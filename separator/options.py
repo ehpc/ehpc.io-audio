@@ -7,6 +7,7 @@ class SeparationOptions:
     extract_vocals: bool = False
     extract_instruments: bool = False
     extract_lyrics: bool = False
+    detect_pitch: bool = False
     mix_female_instruments: bool = False
     mix_male_instruments: bool = False
     mix_backing_instruments: bool = False
@@ -61,6 +62,24 @@ class SeparationOptions:
         if self.dereverb and not labels:
             labels.append("vocals-dry")
         return labels
+
+    @property
+    def pitch_labels(self) -> list[str]:
+        """Only selected vocal stems; never accompaniment or reconstructed mixes."""
+        vocal_labels = {
+            "vocals",
+            "vocals-decrowded",
+            "vocals-male",
+            "vocals-female",
+            "lead",
+            "backing",
+        }
+        selected = [
+            label
+            for label in self.output_labels
+            if label.removesuffix("-dry") in vocal_labels
+        ]
+        return selected or ["vocals"] if self.detect_pitch else []
 
     @property
     def result_labels(self) -> list[str]:

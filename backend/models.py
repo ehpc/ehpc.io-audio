@@ -1,9 +1,10 @@
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, JsonValue, computed_field, field_serializer
 
 from backend import config
 from separator.audio import modification_suffix, transposed_key
@@ -11,9 +12,12 @@ from separator.lyrics import (
     Transcript,
     TranscriptSection,
     TranscriptSegment,
+    TranscriptWord,
     transcript_text,
 )
+from separator.lyrics_reference import ReferenceReview
 from separator.options import SeparationOptions
+from separator.pitch import PitchAnalysis, pitch_from_json, pitch_to_json
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
 _UNSAFE_FILENAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
@@ -70,11 +74,20 @@ class TranscriptDTO(BaseModel):
     timestamp_reference: Literal["original"]
     sections: list[TranscriptSection]
     structure_model: str | None
+    words: list[TranscriptWord]
+    reference: ReferenceReview | None
 
     @computed_field
     @property
     def timestamped_text(self) -> str:
         return transcript_text(self.segments, self.sections)
+
+    @computed_field
+    @property
+    def original_timestamped_text(self) -> str | None:
+        if self.reference is None:
+            return None
+        return transcript_text(self.reference.original_segments, self.sections)
 
     @classmethod
     def from_transcript(cls, transcript: Transcript) -> "TranscriptDTO":
@@ -85,6 +98,8 @@ class TranscriptDTO(BaseModel):
             timestamp_reference=transcript.timestamp_reference,
             sections=transcript.sections,
             structure_model=transcript.structure_model,
+            words=transcript.words,
+            reference=transcript.reference,
         )
 
 
@@ -107,6 +122,7 @@ class JobRecord:
     finished_at: int | None
     original_key: str | None = None
     transcript: Transcript | None = None
+    pitch_json: str | None = None
 
 
 class JobDTO(BaseModel):
@@ -126,6 +142,13 @@ class JobDTO(BaseModel):
     original_key: str | None
     output_key: str | None
     transcript: TranscriptDTO | None = None
+    pitch: PitchAnalysis | None = None
+
+    @field_serializer("pitch")
+    def serialize_pitch(self, pitch: PitchAnalysis | None) -> JsonValue:
+        # Pydantic's dataclass path omits init=False derived note labels/cents.
+        # Keep the browser, history/SSE, and download on one canonical schema.
+        return json.loads(pitch_to_json(pitch)) if pitch is not None else None
 
 
 def _has_original(job_id: int) -> bool:
@@ -169,6 +192,7 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         transcript=(
             TranscriptDTO.from_transcript(job.transcript) if job.transcript else None
         ),
+        pitch=pitch_from_json(job.pitch_json) if job.pitch_json else None,
     )
 
 

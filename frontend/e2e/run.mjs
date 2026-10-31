@@ -67,7 +67,9 @@ const environment = {
   ...process.env,
   DATA_DIR: resolve(temporary, 'data'),
   MODAL_APP_NAME: app,
-  QUEUE_CONCURRENCY: '1',
+  // Visual cases can publish captured real inference through the normal DB/API
+  // without accidentally claiming their fixture jobs on a GPU worker.
+  QUEUE_CONCURRENCY: visual ? '0' : '1',
   QUEUE_POLL_INTERVAL_S: '0.1',
   DOWNLOAD_MAX_ATTEMPTS: '1',
   COOKIE_SECRET: `isolated-e2e-${temporary}`,

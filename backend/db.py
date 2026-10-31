@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     modal_call_id TEXT,
     result_manifest_json TEXT,
     transcript_json TEXT,
+    pitch_json TEXT,
     error_message TEXT,
     created_at INTEGER NOT NULL,
     started_at INTEGER,
@@ -56,6 +57,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN original_key TEXT")
     if "transcript_json" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN transcript_json TEXT")
+    if "pitch_json" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN pitch_json TEXT")
     # Prior to explicit extraction, every job always requested both base stems.
     # Persist that intent once so history and retries retain the old behavior.
     for row in conn.execute("SELECT id, options_json FROM jobs").fetchall():
@@ -121,6 +124,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
             if row["transcript_json"] is not None
             else None
         ),
+        pitch_json=row["pitch_json"],
     )
 
 
@@ -270,16 +274,18 @@ def mark_done(
     job_id: int,
     manifest: list[ResultManifestEntry],
     transcript: Transcript | None = None,
+    pitch_json: str | None = None,
 ) -> None:
     with _session() as conn:
         conn.execute(
             "UPDATE jobs SET status = 'done', result_manifest_json = ?, "
-            "transcript_json = ?, finished_at = ? WHERE id = ?",
+            "transcript_json = ?, pitch_json = ?, finished_at = ? WHERE id = ?",
             (
                 json.dumps([entry.model_dump() for entry in manifest]),
                 json.dumps(asdict(transcript), ensure_ascii=False)
                 if transcript
                 else None,
+                pitch_json,
                 int(time.time()),
                 job_id,
             ),

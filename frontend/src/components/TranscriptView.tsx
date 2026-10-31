@@ -1,6 +1,6 @@
-import { Show, type Component } from "solid-js";
+import { For, Show, type Component } from "solid-js";
 import type { JobDTO } from "~/api";
-import { lyricsDownloadUrl } from "~/api";
+import { lyricsDownloadUrl, lyricsJsonDownloadUrl } from "~/api";
 
 const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) => {
   const transcript = () => props.job.transcript;
@@ -17,8 +17,35 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
         <p class="text-sm text-muted-foreground">No speech was recognized.</p>
       </Show>
       <Show when={transcript()?.timestamped_text}>
-        {(text) => <pre class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm leading-relaxed">{text()}</pre>}
+        {(text) => <pre aria-label="Timestamped lyrics" class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm leading-relaxed">{text()}</pre>}
       </Show>
+      <Show when={transcript()?.reference}>{review => (
+        <div class="space-y-2 rounded-md border border-border p-3" aria-label="Lyrics reference comparison">
+          <p class="text-sm font-medium">Online lyrics comparison: {review().status}</p>
+          <p class="text-xs text-muted-foreground">{review().reason}</p>
+          <Show when={review().source_url}>{url => (
+            <a href={url()} target="_blank" rel="noopener noreferrer" class="text-sm text-primary underline">
+              {review().provider} source: {review().artist} — {review().title}
+            </a>
+          )}</Show>
+          <Show when={review().agreement !== null}>
+            <p class="text-xs text-muted-foreground">Ordered full-text agreement: {Math.round((review().agreement ?? 0) * 100)}%.</p>
+          </Show>
+          <Show when={review().corrections.length > 0}>
+            <p class="text-xs text-muted-foreground">Tentative spelling corrections, not verified lyrics. All ASR timings are retained; no reference timing or syllables are imported.</p>
+            <ul class="list-inside list-disc text-sm">
+              <For each={review().corrections}>{correction => (
+                <li>“{correction.original}” → “{correction.replacement}” ({correction.start_s.toFixed(2)}s on original audio)</li>
+              )}</For>
+            </ul>
+          </Show>
+          <details>
+            <summary class="flex min-h-11 cursor-pointer items-center text-sm font-medium text-primary">Original ASR (before reference comparison)</summary>
+            <pre aria-label="Original ASR text" class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm">{transcript()?.original_timestamped_text || "No words recognized."}</pre>
+          </details>
+          <a href={lyricsJsonDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download lyrics JSON + original ASR</a>
+        </div>
+      )}</Show>
     </>
   );
   return (

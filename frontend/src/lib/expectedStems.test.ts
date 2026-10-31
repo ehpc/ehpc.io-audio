@@ -5,6 +5,7 @@ import { displayOutputLabel, expectedStems } from "./expectedStems";
 const NONE: SeparationOptions = {
   extract_vocals: false, extract_instruments: false,
   extract_lyrics: false,
+  detect_pitch: false,
   mix_female_instruments: false, mix_male_instruments: false, mix_backing_instruments: false,
   mix_lead_instruments: false,
   decrowd: false, decrowd_vocals: false, dereverb: false, genders: false,
@@ -105,7 +106,7 @@ describe("expectedStems", () => {
 
   it("keeps the exact public-output contract for all 8192 boolean selections", () => {
     const flags = (Object.keys(NONE) as BooleanOptionKey[]).filter((key) =>
-      key !== "extract_lyrics" && typeof NONE[key] === "boolean",
+      key !== "extract_lyrics" && key !== "detect_pitch" && typeof NONE[key] === "boolean",
     );
     const outputs: [string, BooleanOptionKey, boolean][] = [
       ["vocals", "extract_vocals", true],

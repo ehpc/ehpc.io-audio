@@ -10,8 +10,8 @@ import { hash, inspectAudio, inspectMix, inspectTransformedSource, pcm } from '.
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
 const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'mix_lead_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
-const booleanKeys: BooleanOptionKey[] = [...audioBooleanKeys, 'extract_lyrics'];
-const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
+const booleanKeys: BooleanOptionKey[] = [...audioBooleanKeys, 'extract_lyrics', 'detect_pitch'];
+const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['detect_pitch', false], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
 const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'];
 const mixInputs = [
   { option: 'mix_female_instruments', label: 'female-instruments', vocal: 'vocals-female' },

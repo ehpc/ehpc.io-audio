@@ -176,3 +176,47 @@
   .action-summary button { min-height: 44px; min-width: 74px; color: hsl(var(--primary)); }
   .audio-workspace:has(input:not([type="checkbox"]):focus) .workspace-action { position: static; }
 }
+
+/* Pitch timelines keep real seconds wide; phones scroll rather than squash. */
+.pitch-view { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.pitch-heading, .pitch-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.pitch-controls label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.pitch-controls select { min-height: 44px; max-width: 100%; padding: 8px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--background)); }
+.pitch-zoom { display: flex; align-items: center; gap: 12px; }
+.pitch-zoom button { width: 44px; min-height: 44px; font-size: 22px; }
+.pitch-follow { min-height: 44px; }
+.pitch-follow input { width: 18px; height: 18px; accent-color: hsl(var(--primary)); }
+.pitch-controls .pitch-zoom-value { display: flex; flex-direction: column; gap: 0; font-size: 12px; }
+.pitch-zoom-value input { width: 110px; min-height: 44px; accent-color: hsl(var(--primary)); }
+.pitch-alignment-notice { padding: 10px 12px; background: hsl(var(--muted)); border-left: 3px solid hsl(var(--primary)); font-size: 13px; line-height: 1.5; }
+.pitch-viewport { max-width: 100%; max-height: 560px; overflow: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); }
+.pitch-viewport:focus-visible, .pitch-note:focus-visible rect { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.pitch-canvas { position: relative; min-width: 100%; }
+.pitch-ruler { position: sticky; top: 0; height: 32px; background: hsl(var(--muted)); z-index: 4; border-bottom: 1px solid hsl(var(--border)); font: 12px ui-monospace, monospace; }
+.pitch-ruler > span { position: absolute; top: 0; padding: 7px 3px; white-space: nowrap; }
+.pitch-ruler > .pitch-axis-corner { position: sticky; left: 0; display: block; width: 54px; height: 32px; background: hsl(var(--muted)); z-index: 5; }
+.pitch-notes { position: relative; }
+.pitch-axis { position: sticky; left: 0; width: 54px; z-index: 3; background: hsl(var(--card)); border-right: 1px solid hsl(var(--border)); font: 12px ui-monospace, monospace; }
+.pitch-axis > div { display: flex; align-items: center; justify-content: center; border-bottom: 1px solid hsl(var(--border)); }
+.pitch-black-key { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+.pitch-svg { position: absolute; top: 0; overflow: visible; }
+.pitch-grid { stroke: hsl(var(--border)); stroke-width: 1; }
+.pitch-note { cursor: pointer; }
+.pitch-note rect { fill: hsl(var(--primary)); fill-opacity: .66; stroke: hsl(var(--primary)); }
+.pitch-note text { fill: hsl(var(--background)); font-family: ui-monospace, monospace; font-weight: 700; pointer-events: none; }
+.pitch-note-selected rect { fill-opacity: 1; stroke: #fbbf24; stroke-width: 2; }
+.pitch-playhead { stroke: #f97316; stroke-width: 2; pointer-events: none; }
+.pitch-words { position: sticky; bottom: 0; height: 64px; z-index: 4; background: hsl(var(--card)); border-top: 1px solid hsl(var(--border)); }
+.pitch-word-label { position: sticky; left: 0; display: flex; flex-direction: column; justify-content: center; padding: 4px; width: 54px; height: 64px; background: hsl(var(--muted)); z-index: 5; font-size: 11px; }
+.pitch-word { position: absolute; top: 6px; min-height: 44px; padding: 4px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; border: 1px solid hsl(var(--border)); border-radius: 4px; font-size: 13px; }
+.pitch-word small { font-size: 10px; }
+.pitch-word-selected { background: hsl(var(--accent)); border-color: hsl(var(--primary)); }
+.pitch-word-unlinked { border-style: dashed; color: hsl(var(--muted-foreground)); }
+.pitch-selection { min-height: 44px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .pitch-controls { align-items: flex-start; }
+  .pitch-controls > label:first-child { width: 100%; }
+  .pitch-controls select { flex: 1; min-width: 0; }
+  .pitch-viewport { max-height: 440px; }
+  .pitch-heading a { min-height: 44px; display: inline-flex; align-items: center; }
+}

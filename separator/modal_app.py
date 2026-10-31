@@ -13,6 +13,7 @@ from pathlib import Path
 
 import modal
 
+from separator.lyrics_reference import ReferenceMetadata
 from separator.options import SeparationOptions
 from separator.processing import ProcessingResult, run_processing
 from separator.stems import SeparationResult, run_separation
@@ -77,6 +78,7 @@ image = (
         "librosa==0.11.0 muq==0.1.0 nnAudio==0.3.3 easydict==1.13 x-clip==0.14.4 "
         "omegaconf==2.3.0 ema-pytorch==0.7.7 x-transformers==2.4.14 "
         "msaf==0.1.80 loguru==0.7.3",
+        "/opt/lyrics-structure/bin/pip install torchcrepe==0.0.24",
     )
     # This module lives inside the `separator` package and imports its siblings
     # (separator.options / separator.stems). Modal only auto-includes the entrypoint
@@ -127,9 +129,12 @@ def separate(
     timeout=TIMEOUT,
 )
 def separate_with_lyrics(
-    audio_bytes: bytes, filename: str, options: SeparationOptions
+    audio_bytes: bytes,
+    filename: str,
+    options: SeparationOptions,
+    reference_metadata: ReferenceMetadata | None = None,
 ) -> ProcessingResult:
-    """Multimodal RPC for callers explicitly requesting a transcript."""
+    """Optional lyrics/pitch RPC; audio-only clients retain their dict RPC."""
     with _source_audio(audio_bytes, filename) as (tmp, input_path):
         results = run_processing(
             input_path,
@@ -140,6 +145,7 @@ def separate_with_lyrics(
             TIMEOUT,
             ASR_PYTHON,
             STRUCTURE_PYTHON,
+            reference_metadata,
         )
         model_volume.commit()
         return results
