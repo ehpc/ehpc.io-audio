@@ -147,9 +147,16 @@ for (const viewport of [mobile, desktop]) {
     const view = page.getByLabel('Vocal pitch analysis', { exact: true });
     await expect(view).toBeVisible();
     const player = view.locator('audio');
-    // Native buffered-range paint is transport-dependent. Load the actual
-    // complete file before comparison rather than masking it or allowing diffs.
-    await player.evaluate(element => { element.preload = 'auto'; element.load(); });
+    // `preload=auto` is only a browser hint and can stop before the full file.
+    // Use the complete real HTTP response for deterministic native buffer paint;
+    // no API interception, audio substitution, hidden controls, or pixel tolerance.
+    await player.evaluate(async element => {
+      const response = await fetch(element.currentSrc || element.src);
+      if (!response.ok) throw new Error(`Native audio download failed: ${response.status}`);
+      element.src = URL.createObjectURL(await response.blob());
+      element.preload = 'auto';
+      element.load();
+    });
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
       && element.buffered.length === 1 && element.buffered.start(0) <= 0.01
       && element.buffered.end(0) >= element.duration - 0.01)).toBe(true);
@@ -164,5 +171,66 @@ for (const viewport of [mobile, desktop]) {
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await compare(view, info, `vocal-melody-${viewport.width}-word-notes.png`);
+  });
+}
+
+// Synthetic canonical text exercises reference support/provenance presentation;
+// no hosted copyrighted lyrics or fabricated audio-recognition claim is stored.
+const publishReference = String.raw`
+import json,sys
+from backend import db
+from separator.lyrics import transcript_from_json
+value=json.load(sys.stdin)
+job=db.get_job(int(sys.argv[1]))
+assert job is not None
+db.mark_done(job.id,[],transcript_from_json(json.dumps(value)),None)
+`;
+
+for (const viewport of [mobile, desktop]) {
+  test(`reference-aligned provenance ${viewport.width} with untimed conflicting line`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
+    const response = await page.request.post('/api/jobs', { multipart: {
+      file: { name: 'synthetic-reference.wav', mimeType: 'audio/wav', buffer: source },
+    } });
+    expect(response.ok()).toBe(true);
+    const id = (await response.json()).id as number;
+    const original = [{ start_s: 1, end_s: 3, text: 'Amber lanterns shine' }];
+    const fixture = {
+      segments: [{ start_s: 1, end_s: 3, text: 'Amber lanterns softly shine' }],
+      language: 'English', timestamp_reference: 'original', sections: [], structure_model: null,
+      asr_model: 'Qwen/Qwen3-ASR-1.7B', word_alignment: 'torchaudio/MMS_FA',
+      words: [{ start_s: 1, end_s: 1.5, text: 'Amber', probability: null, alignment_score: 0.71 }],
+      recognition_chunks: [{ input_start_s: 0, input_end_s: 4, ownership_start_s: 0, ownership_end_s: 4,
+        text: 'Amber lanterns shine. Silver branches sleep.', language: 'English' }],
+      reference: {
+        status: 'partial', reason: 'One reference-aligned line; conflicting recognition retained.',
+        provider: 'Synthetic test fixture', source_url: null, record_id: null,
+        artist: 'Synthetic Artist', title: 'Synthetic Song', album: null, duration_s: 4,
+        agreement: 0.75, fetched_at: '2026-01-01T12:00:00+00:00', cached: true,
+        original_segments: original, original_words: [], corrections: [],
+        lines: [
+          { text: 'Amber lanterns softly shine', status: 'aligned', support: 0.75, start_s: 1, end_s: 3,
+            unconfirmed_words: ['softly'], recognized_variant: null,
+            reason: 'Reference-aligned phrase, not proof of every word.' },
+          { text: 'Silver branches sway', status: 'unconfirmed', support: 0.67, start_s: null, end_s: null,
+            unconfirmed_words: ['sway'], recognized_variant: 'silver branches sleep',
+            reason: 'Conflicting lyric retained; no timestamp invented.' },
+        ],
+      },
+    };
+    execFileSync('uv', ['run', 'python', '-c', publishReference, String(id)], {
+      cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(fixture),
+      env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+    });
+    await page.reload();
+    const view = page.getByLabel('Lyrics transcript', { exact: true }).first();
+    await expect(view).toBeVisible();
+    await view.getByText('Canonical reference order and audio support', { exact: true }).click();
+    await expect(view.getByText('Unconfirmed · NO TIMESTAMP', { exact: false })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await compare(view, info, `reference-provenance-${viewport.width}.png`);
   });
 }

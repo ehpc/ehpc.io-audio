@@ -4,11 +4,11 @@ import json
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from separator.lyrics import Transcript, TranscriptSection, transcript_from_json
-from separator.lyrics_reference import ReferenceMetadata, review_lyrics
+from separator.lyrics_reference import ReferenceMetadata, lookup_reference
 from separator.options import SeparationOptions
 from separator.pitch import pitch_from_json, pitch_to_json, transform_analysis
 from separator.stems import SeparationResult, run_separation
@@ -21,6 +21,47 @@ class ProcessingResult:
     # Primitives-only transport: old web workers can unpickle ProcessingResult
     # during GPU-first promotion without importing new nested analysis classes.
     pitch_json: str | None = None
+
+
+ANALYSIS_SCHEMA_VERSION = 2
+
+
+def analysis_transport(
+    result: ProcessingResult, schema_version: int
+) -> ProcessingResult:
+    """One rollout boundary: old web decoders cannot read nullable word scores.
+
+    New clients explicitly request the canonical schema. During GPU-first
+    promotion, pre-versioned callers get truthful readable text, without new
+    provenance/status enums or unsupported word links. No lyric algorithm differs.
+    """
+    if schema_version == ANALYSIS_SCHEMA_VERSION:
+        return result
+    if schema_version != 1:
+        raise ValueError("Unsupported analysis RPC schema version")
+    transcript = (
+        replace(result.transcript, words=[], reference=None)
+        if result.transcript is not None
+        else None
+    )
+    pitch_json = result.pitch_json
+    if pitch_json is not None:
+        pitch = pitch_from_json(pitch_json)
+        pitch_json = pitch_to_json(
+            replace(
+                pitch,
+                words=[],
+                word_alignment=None,
+                tracks=[
+                    replace(
+                        track,
+                        notes=[replace(note, word_indices=[]) for note in track.notes],
+                    )
+                    for track in pitch.tracks
+                ],
+            )
+        )
+    return replace(result, transcript=transcript, pitch_json=pitch_json)
 
 
 def run_processing(
@@ -42,6 +83,15 @@ def run_processing(
     if options.extract_lyrics:
         source = tmp / "lyrics-vocals.mp3"
         source.write_bytes(stems["vocals"].data)
+        # Resolve an exact-version reference before unprompted recognition.
+        # Only public provider records are cached; never source audio or ASR.
+        reference = lookup_reference(
+            reference_metadata, Path(model_cache) / "lyrics-references"
+        )
+        reference_path = tmp / "lyrics-reference.json"
+        reference_path.write_text(
+            json.dumps(asdict(reference.review), ensure_ascii=False), "utf-8"
+        )
         output = tmp / "transcript.json"
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -55,8 +105,9 @@ def run_processing(
                     "-m",
                     "separator.transcribe",
                     str(source),
-                    str(Path(model_cache) / "whisper"),
+                    str(Path(model_cache) / "qwen-asr"),
                     str(output),
+                    str(reference_path),
                 ],
                 check=True,
                 capture_output=True,
@@ -72,13 +123,6 @@ def run_processing(
                 "Lyrics extraction exceeded the processing time limit"
             ) from exc
         transcript = transcript_from_json(output.read_text("utf-8"))
-        reviewed = review_lyrics(transcript, reference_metadata)
-        transcript = replace(
-            transcript,
-            segments=reviewed.segments,
-            words=reviewed.words,
-            reference=reviewed.review,
-        )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("Lyrics extraction exceeded the processing time limit")
@@ -155,6 +199,7 @@ def run_processing(
                 options.pitch_semitones,
                 options.tempo_percent,
                 transcript.words if transcript is not None else None,
+                transcript.word_alignment if transcript is not None else None,
             )
         )
     return ProcessingResult(

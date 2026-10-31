@@ -15,7 +15,7 @@ import modal
 
 from separator.lyrics_reference import ReferenceMetadata
 from separator.options import SeparationOptions
-from separator.processing import ProcessingResult, run_processing
+from separator.processing import ProcessingResult, analysis_transport, run_processing
 from separator.stems import SeparationResult, run_separation
 
 app = modal.App("audio-separator")
@@ -36,7 +36,7 @@ TIMEOUT = 1200  # 20 minutes — up to nine sequential separator passes on L40S
 # H100    75s   $0.082  x2.2      x3.1       $0.017
 # B200    69s   $0.119  x3.1      x3.4       $0.030
 GPU = "L40S"
-ASR_PYTHON = "/opt/lyrics-asr/bin/python"
+ASR_PYTHON = "/opt/lyrics-reference/bin/python"
 STRUCTURE_PYTHON = "/opt/lyrics-structure/bin/python"
 
 image = (
@@ -56,16 +56,9 @@ image = (
         "librosa==0.11.0",
         extra_index_url="https://download.pytorch.org/whl/cu124",
     )
-    # Silero VAD uses CPU onnxruntime, sharing a namespace with the separator's
-    # onnxruntime-gpu. Keep their complete dependency environments isolated.
-    .run_commands(
-        "python -m venv /opt/lyrics-asr",
-        # PyAV 19 removed metadata_errors, used by faster-whisper's decoder.
-        "/opt/lyrics-asr/bin/pip install faster-whisper==1.2.1 av==16.1.0",
-    )
     # SongFormer incorporates CC-BY-NC-4.0 MuQ weights. Noncommercial use only;
     # commercial deployment needs separate rights clearance. Never install this
-    # dependency tree over the separator's ONNX GPU or Whisper environments.
+    # dependency tree over the separator's ONNX GPU or singing-ASR environments.
     .run_commands(
         "python3.12 -m venv /opt/lyrics-structure",
         "/opt/lyrics-structure/bin/pip install "
@@ -79,6 +72,16 @@ image = (
         "omegaconf==2.3.0 ema-pytorch==0.7.7 x-transformers==2.4.14 "
         "msaf==0.1.80 loguru==0.7.3",
         "/opt/lyrics-structure/bin/pip install torchcrepe==0.0.24",
+    )
+    # Qwen ASR (Apache-2.0) requires transformers 4.57.6. MMS_FA alignment
+    # weights are CC-BY-NC-4.0, like MuQ above: noncommercial use only.
+    # Keep these dependencies isolated from SongFormer and ONNX.
+    .run_commands(
+        "python3.12 -m venv /opt/lyrics-reference",
+        "/opt/lyrics-reference/bin/pip install "
+        "torch==2.8.0 torchaudio==2.8.0 "
+        "--index-url https://download.pytorch.org/whl/cu128",
+        "/opt/lyrics-reference/bin/pip install qwen-asr==0.0.6 uroman==1.3.1.1",
     )
     # This module lives inside the `separator` package and imports its siblings
     # (separator.options / separator.stems). Modal only auto-includes the entrypoint
@@ -133,6 +136,8 @@ def separate_with_lyrics(
     filename: str,
     options: SeparationOptions,
     reference_metadata: ReferenceMetadata | None = None,
+    *,
+    analysis_schema: int = 1,
 ) -> ProcessingResult:
     """Optional lyrics/pitch RPC; audio-only clients retain their dict RPC."""
     with _source_audio(audio_bytes, filename) as (tmp, input_path):
@@ -148,4 +153,4 @@ def separate_with_lyrics(
             reference_metadata,
         )
         model_volume.commit()
-        return results
+        return analysis_transport(results, analysis_schema)

@@ -58,6 +58,11 @@ export interface TranscriptDTO {
   structure_model: string | null;
   words?: AlignedWordDTO[];
   reference?: ReferenceReviewDTO | null;
+  asr_model?: string;
+  word_alignment?: string | null;
+  recognition_chunks?: RecognitionChunkDTO[];
+  untimed?: UntimedRecognitionDTO[];
+  asr_extras?: TranscriptSegmentDTO[];
   original_timestamped_text?: string | null;
   timestamped_text: string;
 }
@@ -66,7 +71,9 @@ export interface AlignedWordDTO {
   start_s: number;
   end_s: number;
   text: string;
-  probability: number;
+  probability: number | null;
+  alignment_score?: number | null;
+  origin?: "asr" | "reference-aligned" | "asr-extra";
 }
 
 export interface PitchNoteDTO {
@@ -94,7 +101,7 @@ export interface PitchAnalysisDTO {
   tempo_percent: number;
   timestamp_reference: "output";
   pitch_reference: "output";
-  word_alignment: "whisper-approximate" | null;
+  word_alignment: string | null;
   tracks: PitchTrackDTO[];
   words: AlignedWordDTO[];
 }
@@ -107,8 +114,43 @@ export interface ReferenceCorrectionDTO {
   end_s: number;
 }
 
+export interface RecognitionChunkDTO {
+  input_start_s: number;
+  input_end_s: number;
+  ownership_start_s: number;
+  ownership_end_s: number;
+  text: string;
+  language: string;
+}
+
+export interface UntimedRecognitionDTO {
+  text: string;
+  reason: string;
+}
+
+export interface ReferenceLineDTO {
+  text: string;
+  status: "aligned" | "unconfirmed";
+  support: number;
+  start_s: number | null;
+  end_s: number | null;
+  reason: string;
+  unconfirmed_words: string[];
+  recognized_variant: string | null;
+  group?: number;
+  canonical_log_score?: number | null;
+  alternative_log_score?: number | null;
+  acoustic_margin?: number | null;
+  acoustic_log_odds?: number | null;
+  acoustic_alternative?: string | null;
+  context_start_s?: number | null;
+  context_end_s?: number | null;
+  provider_start_s?: number | null;
+  provider_end_s?: number | null;
+}
+
 export interface ReferenceReviewDTO {
-  status: "skipped" | "unavailable" | "not_found" | "rejected" | "compared" | "corrected";
+  status: "skipped" | "unavailable" | "not_found" | "rejected" | "matched" | "aligned" | "partial" | "unconfirmed" | "compared" | "corrected";
   reason: string;
   provider: string;
   source_url: string | null;
@@ -121,6 +163,14 @@ export interface ReferenceReviewDTO {
   corrections: ReferenceCorrectionDTO[];
   original_segments: TranscriptSegmentDTO[];
   original_words: AlignedWordDTO[];
+  fetched_at?: string | null;
+  cached?: boolean;
+  alignment_model?: string | null;
+  lines?: ReferenceLineDTO[];
+  original_untimed?: UntimedRecognitionDTO[];
+  provider_timing_status?: "absent" | "candidate" | "validated" | "rejected";
+  provider_timing_reason?: string | null;
+  synced_lyrics_sha256?: string | null;
 }
 
 export interface JobDTO {

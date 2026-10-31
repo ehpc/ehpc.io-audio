@@ -106,3 +106,42 @@ it("keeps corrected text separate from original ASR provenance and its downloada
   expect(screen.getByRole("link", { name: "Download lyrics JSON + original ASR" })).toHaveAttribute("href", "/api/jobs/7/lyrics/download.json");
   expect(screen.getByText(/“morninx” → “morning”/)).toHaveTextContent("1.50s on original audio");
 });
+
+it("shows ordered reference support, unsupported words, conflicting variants and raw untimed recognition without implying verification", () => {
+  const source = job();
+  source.transcript = {
+    status: "recognized", language: "English", timestamp_reference: "original", sections: [], structure_model: null,
+    asr_model: "Qwen/Qwen3-ASR-1.7B", word_alignment: "torchaudio/MMS_FA",
+    segments: [{ start_s: 31, end_s: 34, text: "Amber lanterns softly shine" }],
+    words: [{ start_s: 31, end_s: 32, text: "Amber", probability: null, alignment_score: 0.7 }],
+    timestamped_text: "[00:31] Amber lanterns softly shine\n[Reference line 2; UNCONFIRMED, NO TIMESTAMP] Silver branches sway\n",
+    original_timestamped_text: "[00:31] Amber lanterns shine\n",
+    recognition_chunks: [{ input_start_s: 20, input_end_s: 47, ownership_start_s: 21, ownership_end_s: 46,
+      text: "Amber lanterns shine! <img src=x onerror=alert(1)>", language: "English" }],
+    reference: {
+      status: "partial", reason: "One line reference-aligned; another conflicts.", provider: "LRCLIB",
+      source_url: "https://lrclib.net/api/get/123", record_id: 123, artist: "Artist", title: "Track", album: null,
+      duration_s: 90, agreement: 0.7, fetched_at: "2026-10-31T12:00:00+00:00", cached: true,
+      corrections: [], original_segments: [{ start_s: 31, end_s: 34, text: "Amber lanterns shine" }], original_words: [],
+      lines: [
+        { text: "Amber lanterns softly shine", status: "aligned", support: 0.75, start_s: 31, end_s: 34,
+          unconfirmed_words: ["softly"], recognized_variant: null, reason: "Reference-aligned, not verified." },
+        { text: "Silver branches sway", status: "unconfirmed", support: 0.67, start_s: null, end_s: null,
+          unconfirmed_words: ["sway"], recognized_variant: "silver branches sleep", reason: "Conflicting variant retained." },
+      ],
+    },
+  };
+  render(() => <TranscriptView job={source} />);
+  fireEvent.click(screen.getByText("Canonical reference order and audio support"));
+  const lines = document.querySelectorAll("ol > li");
+  expect(lines[0]).toHaveTextContent("Amber lanterns softly shine");
+  expect(lines[1]).toHaveTextContent("Silver branches sway");
+  expect(lines[1]).toHaveTextContent("Unconfirmed · NO TIMESTAMP");
+  expect(lines[1]).not.toHaveTextContent("nulls");
+  expect(lines[0]).toHaveTextContent("Not independently corroborated; no word timestamps: softly");
+  expect(lines[1]).toHaveTextContent("Independent recognition variant (preserved): silver branches sleep");
+  expect(screen.getByText(/Cached successful provider record/)).toBeVisible();
+  fireEvent.click(screen.getByText("Raw independent recognition (input windows, not lyric timestamps)"));
+  expect(screen.getByText("Amber lanterns shine! <img src=x onerror=alert(1)>")).toBeVisible();
+  expect(document.querySelector("img")).toBeNull();
+});

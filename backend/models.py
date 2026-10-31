@@ -9,11 +9,13 @@ from pydantic import BaseModel, JsonValue, computed_field, field_serializer
 from backend import config
 from separator.audio import modification_suffix, transposed_key
 from separator.lyrics import (
+    RecognitionChunk,
     Transcript,
     TranscriptSection,
     TranscriptSegment,
     TranscriptWord,
-    transcript_text,
+    UntimedRecognition,
+    transcript_export_text,
 )
 from separator.lyrics_reference import ReferenceReview
 from separator.options import SeparationOptions
@@ -76,18 +78,37 @@ class TranscriptDTO(BaseModel):
     structure_model: str | None
     words: list[TranscriptWord]
     reference: ReferenceReview | None
+    asr_model: str
+    word_alignment: str | None
+    recognition_chunks: list[RecognitionChunk]
+    untimed: list[UntimedRecognition]
+    asr_extras: list[TranscriptSegment]
 
     @computed_field
     @property
     def timestamped_text(self) -> str:
-        return transcript_text(self.segments, self.sections)
+        return transcript_export_text(
+            Transcript(
+                segments=self.segments,
+                sections=self.sections,
+                reference=self.reference,
+                untimed=self.untimed,
+                asr_extras=self.asr_extras,
+            )
+        )
 
     @computed_field
     @property
     def original_timestamped_text(self) -> str | None:
         if self.reference is None:
             return None
-        return transcript_text(self.reference.original_segments, self.sections)
+        return transcript_export_text(
+            Transcript(
+                segments=self.reference.original_segments,
+                sections=self.sections,
+                untimed=self.reference.original_untimed,
+            )
+        )
 
     @classmethod
     def from_transcript(cls, transcript: Transcript) -> "TranscriptDTO":
@@ -100,6 +121,11 @@ class TranscriptDTO(BaseModel):
             structure_model=transcript.structure_model,
             words=transcript.words,
             reference=transcript.reference,
+            asr_model=transcript.asr_model,
+            word_alignment=transcript.word_alignment,
+            recognition_chunks=transcript.recognition_chunks,
+            untimed=transcript.untimed,
+            asr_extras=transcript.asr_extras,
         )
 
 

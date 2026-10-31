@@ -139,7 +139,7 @@ const PitchView: Component<{ job: JobDTO }> = (props) => {
       <audio ref={audio} aria-label={`Pitch reference: ${referenceLabel()}`} controls preload="none" class="w-full" src={referenceUrl()} onTimeUpdate={updatePosition} onSeeked={updatePosition} />
       <p class="text-xs text-muted-foreground">Swipe or scroll horizontally; zoom for short notes. Tap a note to seek and inspect it. Playback position: {timeLabel(position())} (output time).</p>
       <Show when={analysis().word_alignment}>
-        <p class="pitch-alignment-notice">Approximate Whisper word alignment from full vocals, not exact syllable timing or independent recognition of split voices. Words below the notes may be wrong or misaligned. Select a word to highlight its linked notes; one word can span several notes (melisma).</p>
+        <p class="pitch-alignment-notice">{`${analysis().word_alignment === "torchaudio/MMS_FA" ? "Approximate MMS acoustic word alignment from full vocals, not exact syllable timing; reference-aligned words are not verified lyrics. Uncorroborated provider words have no word links. Acoustic alignment scores are not calibrated correctness probabilities." : "Approximate Whisper word alignment from full vocals, not exact syllable timing or independent recognition of split voices."} Words below the notes may be wrong or misaligned. Select a word to highlight its linked notes; one word can span several notes (melisma).`}</p>
       </Show>
       <Show when={analysis().word_alignment && analysis().words.length === 0}>
         <p class="text-sm text-muted-foreground">No sung words were recognized; pitch notes remain available.</p>
@@ -184,8 +184,8 @@ const PitchView: Component<{ job: JobDTO }> = (props) => {
                   const linked = createMemo(() => notes().filter(note => note.word_indices.includes(index())));
                   return <button type="button" class="pitch-word" classList={{ "pitch-word-selected": selectedWord() === index() || (selectedNote()?.word_indices.includes(index()) ?? false), "pitch-word-unlinked": linked().length === 0 }}
                     style={{ left: `${AXIS_WIDTH + word.start_s * zoom()}px`, width: `${Math.max(4, (word.end_s - word.start_s) * zoom())}px` }}
-                    aria-label={`${word.text}, approximate word timing; ${linked().length} linked notes`}
-                    title={`${word.text} · ${timeLabel(word.start_s)}–${timeLabel(word.end_s)} · ${linked().length} linked notes`}
+                    aria-label={`${word.origin === "asr-extra" ? "ASR-only extra: " : ""}${word.text}, approximate word timing; ${linked().length} linked notes`}
+                    title={`${word.origin === "asr-extra" ? "ASR-only extra · " : ""}${word.text} · ${timeLabel(word.start_s)}–${timeLabel(word.end_s)} · ${linked().length} linked notes`}
                     onClick={() => { setSelectedWord(index()); setSelectedNote(null); seek(linked()[0]?.start_s ?? word.start_s); }}>
                     {word.text}<Show when={linked().length > 1}><small> · {linked().length} notes</small></Show>
                   </button>;

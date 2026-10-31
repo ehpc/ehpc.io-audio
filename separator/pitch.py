@@ -79,7 +79,7 @@ class PitchAnalysis:
     timestamp_reference: Literal["output"] = "output"
     pitch_reference: Literal["output"] = "output"
     model: str = "torchcrepe/full"
-    word_alignment: Literal["whisper-approximate"] | None = None
+    word_alignment: str | None = None
     version: int = 1
 
     def __post_init__(self) -> None:
@@ -203,10 +203,11 @@ def transform_analysis(
     pitch_semitones: float,
     tempo_percent: float,
     words: list[TranscriptWord] | None = None,
+    word_alignment: str | None = "whisper-approximate",
 ) -> PitchAnalysis:
     """Project source detections onto the same pitch/tempo as generated audio.
 
-    Word intervals come from full-vocal Whisper cross-attention, not segment
+    Word intervals come from full-vocal acoustic alignment, not segment
     interpolation. A word may overlap multiple notes (melisma); no syllable
     boundaries or split-voice recognition are inferred.
     """
@@ -248,5 +249,5 @@ def transform_analysis(
         words=aligned,
         pitch_shift_semitones=pitch_semitones,
         tempo_percent=tempo_percent,
-        word_alignment="whisper-approximate" if words is not None else None,
+        word_alignment=word_alignment if words is not None else None,
     )

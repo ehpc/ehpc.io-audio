@@ -16,7 +16,7 @@ from backend.models import (
     original_filename,
 )
 from backend.session import get_session_id
-from separator.lyrics import transcript_text
+from separator.lyrics import transcript_export_text
 from separator.pitch import pitch_from_json, pitch_to_json
 
 router = APIRouter(tags=["results"])
@@ -103,7 +103,7 @@ async def download_lyrics(
     assert job.transcript is not None
     name = quote(lyrics_filename(job.title, job_id))
     return Response(
-        transcript_text(job.transcript.segments, job.transcript.sections),
+        transcript_export_text(job.transcript),
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )

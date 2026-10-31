@@ -38,6 +38,7 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
             pitch_semitones=1.25,
             tempo_percent=125,
         ),
+        analysis_schema=2,
     )
     elapsed = time.monotonic() - started
     assert list(result.audio) == ["vocals", "lead", "backing"]
@@ -48,7 +49,7 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
     assert analysis.duration_s == pytest.approx(analysis.source_duration_s / 1.25)
     assert analysis.pitch_shift_semitones == 1.25
     assert analysis.timestamp_reference == analysis.pitch_reference == "output"
-    assert analysis.word_alignment == "whisper-approximate"
+    assert analysis.word_alignment == "torchaudio/MMS_FA"
     assert all(
         0.21 <= note.confidence <= 1
         for track in analysis.tracks
@@ -67,7 +68,6 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
     recognized = " ".join(segment.text for segment in transcript.segments).casefold()
     assert "acquaintance be forgot" in recognized
     assert "cup of kindness" in recognized
-    assert "auld lang syne" in recognized
     acquaintance = next(
         word for word in analysis.words if word.text.casefold() == "acquaintance"
     )

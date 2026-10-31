@@ -1,4 +1,4 @@
-"""Opt-in real separation + large-v3 ASR against the isolated Modal app."""
+"""Opt-in real separation + singing ASR against the isolated Modal app."""
 
 import json
 import re
@@ -51,12 +51,13 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
         source,
         "jfk-reference.flac",
         SeparationOptions(extract_lyrics=True, no_cache=True),
+        analysis_schema=2,
     )
     assert result.audio == {}, "the prerequisite vocal stem must remain internal"
     transcript = result.transcript
     assert transcript is not None
     assert transcript.status == "recognized"
-    assert transcript.language == "en"
+    assert transcript.language == "English"
     assert transcript.timestamp_reference == "original"
     words = " ".join(segment.text for segment in transcript.segments).lower()
     for phrase in ("my fellow americans", "your country", "do for you"):
@@ -72,7 +73,7 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
         "SMOKE_LYRICS "
         + json.dumps(
             {
-                "model": "large-v3",
+                "model": transcript.asr_model,
                 "language": transcript.language,
                 "duration_s": duration,
                 "timestamped_text": text,
@@ -88,6 +89,7 @@ def test_deployed_lyrics_retains_later_sung_verse() -> None:
         sung_excerpt(),
         "public-domain-singing.flac",
         SeparationOptions(extract_lyrics=True, no_cache=True),
+        analysis_schema=2,
     )
     assert result.audio == {}
     transcript = result.transcript
@@ -123,17 +125,17 @@ for duration in (4, 30):
         audio.writeframes(bytes(16000 * duration * 2))
     subprocess.run(
         [{ASR_PYTHON!r}, '-m', 'separator.transcribe', '/tmp/silence.wav',
-         {MODEL_CACHE + "/whisper"!r}, '/tmp/transcript.json'],
+         {MODEL_CACHE + "/qwen-asr"!r}, '/tmp/transcript.json'],
         check=True, cwd='/root',
     )
     transcripts.append(dict(duration_s=duration,
         transcript=json.loads(Path('/tmp/transcript.json').read_text())))
 asr = subprocess.run(
     [{ASR_PYTHON!r}, '-c',
-     'import json, onnxruntime, importlib.metadata as m; '
-     'print(json.dumps(dict(providers=onnxruntime.get_available_providers(), '
-     'runtime=m.version("onnxruntime"), whisper=m.version("faster-whisper"), '
-     'av=m.version("av"), ctranslate2=m.version("ctranslate2"))))'],
+     'import json, torch, transformers, importlib.metadata as m; '
+     'print(json.dumps(dict(cuda=torch.cuda.is_available(), '
+     'transformers=transformers.__version__, qwen=m.version("qwen-asr"), '
+     'torch=torch.__version__)))'],
     capture_output=True, text=True, check=True,
 )
 print(json.dumps(dict(
@@ -161,7 +163,8 @@ print(json.dumps(dict(
         assert sandbox.returncode == 0, stderr
         result = json.loads(stdout.splitlines()[-1])
         assert "CUDAExecutionProvider" in result["separator_providers"]
-        assert "CUDAExecutionProvider" not in result["asr"]["providers"]
+        assert result["asr"]["cuda"] is True
+        assert result["asr"]["transformers"] == "4.57.6"
         for case in result["transcripts"]:
             assert case["transcript"]["status"] == "empty", case
             assert case["transcript"]["segments"] == [], case
@@ -208,7 +211,7 @@ def test_gpu_asr_preserves_language_and_clock_after_long_silent_intro() -> None:
             "-m",
             "separator.transcribe",
             "/tmp/intro.wav",
-            MODEL_CACHE + "/whisper",
+            MODEL_CACHE + "/qwen-asr",
             "/tmp/transcript.json",
         )
         process.wait()
@@ -217,7 +220,7 @@ def test_gpu_asr_preserves_language_and_clock_after_long_silent_intro() -> None:
             sandbox.filesystem.read_text("/tmp/transcript.json")
         )
         assert transcript.status == "recognized"
-        assert transcript.language == "en"
+        assert transcript.language == "English"
         assert transcript.timestamp_reference == "original"
         words = " ".join(segment.text for segment in transcript.segments).lower()
         for phrase in ("my fellow americans", "your country", "do for you"):

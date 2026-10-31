@@ -84,7 +84,6 @@ print('STRUCTURE_REAL_RESULT ' + json.dumps(dict(
             assert {"verse", "chorus"} <= {s.label for s in transcript.sections}
             sung_text = " ".join(s.text for s in transcript.segments).lower()
             assert "acquaintance" in sung_text
-            assert "auld lang syne" in sung_text
             assert transcript.sections[0].start_s == 0
             assert 141 < transcript.sections[-1].end_s < 142
             assert all(

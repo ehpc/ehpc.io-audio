@@ -162,7 +162,7 @@ def test_processing_analyzes_original_mix_after_raw_vocal_asr(
         calls.append(command)
         if command[2] == "separator.transcribe":
             assert Path(command[3]).read_bytes() == b"raw vocal"
-            Path(command[-1]).write_text(json.dumps(asdict(transcript)))
+            Path(command[5]).write_text(json.dumps(asdict(transcript)))
         else:
             assert command[2] == "separator.structure"
             assert Path(command[3]) == source
@@ -207,7 +207,7 @@ def test_structure_failure_does_not_return_asr_only_success(
 
     def run(command, **kwargs):
         if command[2] == "separator.transcribe":
-            Path(command[-1]).write_text(json.dumps(asdict(Transcript())))
+            Path(command[5]).write_text(json.dumps(asdict(Transcript())))
             return subprocess.CompletedProcess(command, 0)
         raise subprocess.CalledProcessError(1, command, stderr="real model failure")
 

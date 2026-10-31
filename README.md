@@ -66,20 +66,26 @@ any source-key, pitch, and tempo descriptors present in the filename. If the
 source key is unknown, no source-key descriptor or placeholder is added. The
 original download is never retagged; its bytes remain unchanged.
 
-When **Extract lyrics** is selected, Modal's faster-whisper large-v3 transcribes
-the source vocals before pitch/tempo changes. If the vocal stem was not selected,
-those vocals remain an internal prerequisite and aren't added to the audio
-manifest; a lyrics-only job uses Modal GPU ASR while ordinary download-only
-remains the no-GPU default. The transcript includes estimated musical-section
-headers (Intro, Verse, Pre-chorus, Chorus, Bridge, Instrumental, Outro, Silence)
-alongside recognized lyrics in Results and History, with a timestamped UTF-8 TXT
-download. TXT timestamps are approximate segment onsets floored to whole seconds
-on the original audio clock. The JSON additionally retains Whisper's approximate
-word timestamps; these are not exact sung syllable or karaoke alignment.
-Transcription preserves the source language without translation and processes
-the full vocal input rather than speech-cropped chunks. No accuracy is
-guaranteed: singing may be missed, misrecognized, or hallucinated. Empty speech
-recognition still displays estimated section headers, without inventing lyrics.
+When **Extract lyrics** is selected, the worker looks up an exact-version lyric
+reference from credible music metadata, independently recognizes the full source
+vocals with [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), and
+aligns supported reference phrases to the actual audio with MMS CTC. Missing
+metadata or a provider outage uses the new unprompted recognizer without a
+reference. This is **reference-aligned candidate text, not verified lyrics**:
+conflicting variants, unconfirmed lines and unsupported word timings remain
+explicit. See [reference-first lyrics](#reference-first-lyrics-and-audio-alignment).
+Internal vocal prerequisites do not become selected audio outputs, and ordinary
+download-only remains the no-GPU default.
+
+Results and History share a timestamped UTF-8 TXT and canonical provenance JSON.
+TXT onsets are floored to whole seconds on the original audio clock; JSON retains
+approximate measured word intervals, not exact syllable/karaoke boundaries.
+Failed alignment preserves raw recognition and explicitly untimed text instead
+of inventing a word onset at the beginning of a decoding window. The source
+language is not translated. Qwen documents 30 recognition languages, narrower
+than the previous Whisper language coverage; this is not a 99-language promise.
+Empty recognition still displays estimated musical-section headers without
+inventing lyrics.
 Musical structure estimation is experimental and may be inaccurate. It uses
 [SongFormer](https://github.com/ASLP-lab/SongFormer/tree/a75880ed1b7375ac71860ec6c4fc9c899cf99515)
 ([CC-BY-4.0 license](https://github.com/ASLP-lab/SongFormer/blob/a75880ed1b7375ac71860ec6c4fc9c899cf99515/LICENSE))
@@ -198,8 +204,9 @@ identifies its bundled full/tiny weights as conversions of those original CREPE
 models. No additional pitch-model license restriction was found in those
 upstream sources. Pitch inference runs in a subprocess in the isolated
 Python 3.12/Torch environment; it does not replace the separator's global ONNX
-runtime, load Whisper/SongFormer for pitch-only jobs, or change the no-GPU default.
-SongFormer's separate noncommercial restrictions still apply when lyrics are selected.
+runtime, load Qwen/SongFormer for pitch-only jobs, or change the no-GPU default.
+SongFormer/MuQ and MMS alignment have separate noncommercial restrictions when
+lyrics are selected.
 
 Results show time horizontally and chromatic note/octave vertically, with
 detected note rectangles labeled `C#4`, `F3`, etc. Selecting a rectangle seeks
@@ -221,15 +228,15 @@ audio is the available reference, its original playback clock is mapped to
 the output timeline and the UI says so. Original audio bytes and the separate
 lyrics transcript's original-clock timestamps are never transformed.
 
-Selecting **Extract lyrics** too adds genuine faster-whisper word timestamps
-from full source vocals, not interpolated segment times. Word intervals below
-the notes are visibly labeled **approximate**; selecting a word highlights its
+Selecting **Extract lyrics** too adds audio-derived MMS CTC word intervals from
+full source vocals, not interpolated segment times. Word intervals below the
+notes are visibly labeled **approximate**; selecting a word highlights its
 overlapping notes. A word may span several notes (melisma), without inventing
 syllable boundaries. Split-voice tracks share that full-vocal word reference;
 the UI does not pretend to have independently recognized/aligned every singer.
-Tentative reference-assisted spelling corrections happen before these word links
-are made and retain the original ASR in the lyrics provenance view/download.
-Missed words and empty voiced tracks stay honestly empty.
+Reference reconciliation happens before these links are made. Provider-only,
+uncorroborated words do not acquire word links, and the complete unprompted
+recognition remains in provenance. Empty voiced tracks stay honestly empty.
 
 **Download pitch JSON** is available from Results and History through the
 session-protected `/api/jobs/{id}/pitch` endpoint. The same canonical payload
@@ -237,10 +244,12 @@ appears as `pitch` in job detail/history/SSE. Version 1 includes model,
 source/output durations, requested pitch/tempo, explicit output timestamp/pitch
 references, and per-stem `tracks`. Each note has `start_s`, `end_s`, fractional
 `midi`, `frequency_hz`, `note`, residual `cents`, `confidence`, and `word_indices`
-into the shared timed `words` list. `word_alignment` is `whisper-approximate`
-when lyrics were requested, or `null` otherwise. Existing jobs remain compatible;
-the additive stored analysis defaults to absent, and GPU-first promotion
-transports new nested analysis/provenance as canonical JSON primitives.
+into the shared timed `words` list. New lyric jobs identify `word_alignment` as
+`torchaudio/MMS_FA`, or `null` when word alignment is unavailable. Historical
+`whisper-approximate` data remains readable. New clients explicitly request
+analysis RPC schema 2; during GPU-first promotion pre-versioned web clients get
+readable text without unsupported new word/provenance fields or fake confidence.
+The ordinary audio-only `separate` dictionary RPC is unchanged.
 
 ## Pitch, tempo, and musical key
 
@@ -471,7 +480,7 @@ and mobile readability. It attaches actual desktop/mobile transcript screenshots
 as test artifacts, not nondeterministic live-ASR screenshot baselines.
 
 The pitch cases process the uncut, checksum-verified 141.5-second public-domain
-*Auld Lang Syne* fixture through actual separation, CREPE, Whisper and native
+*Auld Lang Syne* fixture through actual separation, CREPE, Qwen/MMS and native
 audio rendering, plus a pitch-only sung excerpt with a hidden vocal prerequisite.
 They verify selected per-stem note/word consumers, known sung phrases, real
 word-to-many-note links, fractional pitch/tempo clocks, native seek/playhead and
@@ -619,13 +628,13 @@ boolean controls** for output/dependency contracts, including raw-cache policy.
 This is local combinatorial verification, **not** 8192 GPU runs or mathematical
 proof over arbitrary numeric pitch/tempo values.
 
-CI runs native/backend/frontend checks, direct deployed GPU smoke, the
-59-case browser matrix against a unique test app, and the 15-case visual suite
-below (**74 required browser cases total**) for every push/PR. Only a passing
+CI runs native/backend/frontend checks, 11 direct deployed GPU smoke cases, the
+59-case browser matrix against a unique test app, and the 17-case visual suite
+below (**76 required browser cases total**) for every push/PR. Only a passing
 main run promotes the production Modal deployment and publishes the image.
 Both promotion jobs retain the deterministic/native, full-stack, and visual
 release gates. The separate manual YouTube workflow adds one optional browser
-case (**75 total if run**) and is not a release dependency.
+case (**77 total if run**) and is not a release dependency.
 
 ### Real external YouTube key analysis
 
@@ -678,12 +687,14 @@ using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
 Updating Playwright requires updating the Docker image version/digest and reviewing
 all regenerated baselines together.
 
-The **15 visual cases** compare committed PNGs in
+The **17 visual cases** compare committed PNGs in
 `frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
 screens, two 1440px/2560px desktop workspaces, eight tightly cropped focused
 pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
-undetermined key, and long fractional cents), and two detected-vocal timelines
-with linked sung words (390px/1440px). These complement, not replace, the
+undetermined key, and long fractional cents), two detected-vocal timelines
+with linked sung words (390px/1440px), and two reference-aligned provenance
+views with inline uncertainty and raw recognition (390px/1440px).
+These complement, not replace, the
 **59 functional cases**. The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
 
@@ -855,55 +866,154 @@ MIME restriction; changing the picker or backend alone cannot remove it.
 - No automatic cleanup of old uploads/results — `/data` grows unbounded.
 - Single-pod only, as noted above.
 
-## Reference-assisted lyrics comparison
+## Reference-first lyrics and audio alignment
 
-Lyrics extraction can compare ASR with the public
-[LRCLIB API](https://lrclib.net/docs), without an API key, web scraping, or an
-external LLM. Only credible structured artist/title metadata and the original
-audio duration qualify for lookup; filenames and uploader names are not song
-identity. Missing metadata, missing word alignment, no matching record, or a
-provider outage leaves the transcription unchanged and reports why.
+### Identity, availability and rights
 
-Automatic changes are deliberately narrow and **tentative**, not verified
-lyrics: exact normalized artist/title (and album when available), a duration
-difference of at most two seconds, and at least 90% ordered agreement across
-at least 20 words are required. Known live, cover, remix, translated, and other
-alternate-version titles/albums are skipped. Only an isolated low-confidence
-ASR word with a one-character spelling difference, three exact matching words
-on each side, and an unambiguous reference context may change. High-confidence
-words, repeated ambiguous phrases, missing lines, and word splits are not
-rewritten. Even these safeguards cannot establish what was actually sung;
-listen to the audio when accuracy matters.
+Lyrics extraction resolves a reference **before recognition**, using the public
+[LRCLIB metadata API](https://lrclib.net/docs). Identity comes only from actual
+artist/title tags on uploads, or yt-dlp's structured artist/track/album/duration
+fields for URLs. Filenames, uploader names and inferred video titles are not
+credible identity. Full normalized artist/title, album when available, and a
+duration difference of at most two seconds must match. Version qualifiers are
+never stripped to substitute an album recording for a live/remixed recording.
+Metadata matching is necessary, not proof that every published word is sung.
 
-Corrections retain the original ASR segments/words and word confidence, identify
-the LRCLIB record and individual changes, and keep every ASR timestamp. Provider
-timestamps, section labels, and unrecognized lyrics are never imported.
-SongFormer remains the source of musical-section estimates. Reference status
-and provenance accompany the same saved transcript used by Results and History;
-the timestamped TXT renders its existing segment text on the original clock.
-Results/History show the comparison status/reason, source, tentative word changes,
-and an expandable **Original ASR** view. **Download lyrics JSON + original ASR**
-uses `/api/jobs/{id}/lyrics/download.json`, retaining recognized words,
-unchanged original times, correction provenance and original ASR text alongside
-the canonical TXT. Uploaded identity comes only from actual artist/title tags;
-URL identity comes only from yt-dlp's structured artist/track/duration fields.
-The narrow download metadata sidecar is stored outside original-audio folders,
-so it cannot become an original download.
+The client makes one bounded request with an identifying User-Agent, no API key,
+scraping, lyrics-prompted LLM, or immediate retry of HTTP errors/throttling.
+Successful public records, including their original line-synced LRC, are cached
+with provider identity and fetch time. The cache normalizes metadata and encoder
+duration precision, then revalidates the complete record on every read; it is not
+a title-only cache. It contains reference records, not source audio or user ASR.
+Unavailable, invalid, mismatched or absent references leave an explicit reason
+and use Qwen's independent recognition rather than the retired sparse-ASR path.
+
+LRCLIB's [server code is MIT-licensed](https://github.com/tranxuanthang/lrclib);
+that does **not** grant blanket redistribution rights to hosted lyrics. Lyrics
+remain subject to their own rights. Permanent reference tests use synthetic or
+public-domain words, not copyrighted Muse audio/lyric fixtures.
+
+### Independent recognition, then actual acoustic alignment
+
+The isolated Python 3.12 environment uses `qwen-asr==0.0.6` /
+`transformers==4.57.6`, with Torch/TorchAudio 2.8. It is separate from the
+separator's global ONNX GPU and SongFormer's pinned Torch/Transformers trees.
+[Qwen3-ASR code and weights](https://github.com/QwenLM/Qwen3-ASR) are Apache-2.0;
+the model explicitly supports singing and songs with background music, but
+does not guarantee lyric accuracy. Recognition covers the complete original
+vocal clock in unprompted 25-second contexts, without speech VAD or song/lyric
+text in the recognition prompt.
+
+[MMS_FA](https://docs.pytorch.org/audio/stable/generated/torchaudio.pipelines.MMS_FA.html)
+provides multilingual CTC frame emissions and forced alignment.
+Its weights are **CC-BY-NC-4.0**, requiring separate rights for commercial use.
+The personal noncommercial authorization described above applies; it does not
+grant additional model rights. MMS was trained/evaluated for speech, not a
+universal singing-accuracy guarantee. TorchAudio is pinned before removal of
+its forced-alignment API. Qwen's timestamp-only forced aligner is not used:
+actual singing evaluation produced collapsed zero-duration words.
+
+Reference text is matched monotonically to raw independent recognition, keeping
+repeated occurrences distinct. Acoustic inputs for reference phrases retain
+20–30-second context rather than tiny speech-VAD/line crops. With plain lyrics
+alone, recognition anchors locate candidate phrases. With LRC, ordered text and
+bounds must match the canonical lines, and multiple distributed independent
+audio anchors must support the provider's clock before it supplies search
+priors. Empty LRC rows delimit gaps; they never become lyrics.
+
+**Provider line onsets are candidate search bounds, not measured word times.**
+The full-context acoustic model produces phone-frame positions inside a
+constrained alignment search. Actual frame positions determine word intervals;
+the worker does not copy provider onsets, evenly divide a line into words, or
+repair invalid spans into invented timestamps. Both candidate and independently
+recognized variants are compared on the same acoustic frames. CTC log likelihood
+is normalized by source frames, not target word/character length; scoring
+counterfactuals do not reward the recognizer for omitting canonical words.
+Contradictory verses/chorus variants require positive acoustic evidence, not a
+global text-agreement percentage. The complete canonical reference remains the
+primary view in its original order: accepted lines have measured onsets, while
+disputed lines have an inline **UNCONFIRMED, NO TIMESTAMP** marker. Recording-derived
+variants remain separately available in comparison/original provenance, not
+silently substituted into the primary reference text.
+
+`probability` is `null` when Qwen supplies no word confidence. `alignment_score`
+is observed CTC emission evidence, **not a calibrated probability of lyric
+correctness**. Phrase acceptance does not establish every word: per-line
+`unconfirmed_words` stay visible and do not receive published word timestamps or
+pitch-note links. Unsupported scripts/units and failed alignment retain their
+recognized text as untimed rather than claiming a decoding-window start as an
+onset. Automatic recognition, metadata and forced alignment cannot establish
+100% accuracy for arbitrary recordings.
+
+### One canonical result and original provenance
+
+Results, History, SSE, TXT, JSON and pitch-word links consume the same saved
+transcript. SongFormer still analyzes the unchanged original mix for musical
+sections. Its estimated `[Verse]`, `[Chorus]` and other headings remain inline
+where actual aligned reference anchors locate them, with blank lines between
+sections. Genuinely unanchored/ambiguous groups get an unknown-section marker or
+a separate beginning-only estimated timeline, not an invented lyric onset.
+Lyrics remain on the source clock; pitch/tempo projections transform only pitch
+output and its supported word links. Original audio bytes are never retagged
+or transformed.
+
+The canonical JSON includes model/alignment identity, provider source/fetch
+time/cache status, ordered reference-line outcomes, local lexical agreement,
+acoustic comparisons, and clearly separated provider priors versus measured
+intervals. `recognition_chunks` preserve the complete raw unprompted text,
+language and input/ownership window bounds, even when alignment drops a word.
+Those bounds are not lyric timestamps. Original segments, words and untimed
+recognition remain under reference provenance; archived low-evidence fragments
+are not interleaved with canonical primary lyrics. Genuine ASR-only candidate
+extras outside reference comparison regions are explicitly separate in
+`asr_extras` and TXT; their word origin is `asr-extra`. Supported canonical words
+are `reference-aligned`. Disputed ASR substitutions do not become canonical
+word/pitch links. No canonical line is duplicated in an appended uncertainty
+block: the primary reference text includes every line exactly once.
+
+The browser exposes ordered canonical support, explicit unconfirmed text and
+word uncertainty, raw input-window recognition, and original ASR. TXT labels
+reference-aligned candidates and untimed/uncorroborated text explicitly.
+`/api/jobs/{id}/lyrics/download.json` retains full provenance, while the canonical
+TXT is `/api/jobs/{id}/lyrics/download`; both are session-protected, as are
+History and pitch downloads. The metadata sidecar stays outside original-audio
+folders and cannot become an original download.
+
+The previous one-character spelling policy and global 90% gate are retired.
+Historical stored `compared`/`corrected` records and their individual original
+correction evidence remain readable without rewriting database rows. Wire
+compatibility is a single analysis-schema boundary, not an alternate lyric
+algorithm: schema 2 carries canonical nullable confidence/provenance; old callers
+during GPU-first promotion receive truthful readable text with unsupported word
+links omitted.
 
 
-LRCLIB explicitly documents anonymous access, identified clients, and rate
-limits. The client makes one bounded request with an application User-Agent;
-HTTP errors, including throttling, do not trigger immediate retries. Its
-[server code is MIT-licensed](https://github.com/tranxuanthang/lrclib), which does
-**not** grant rights to every lyric hosted by the service. Lyrics remain subject
-to their own rights; this integration does not claim blanket redistribution
-permission.
+### Measured evaluation and test contracts
 
-Runtime evidence (2026-10-31): the documented search endpoint returned HTTP 200
-for a public-domain *Auld Lang Syne* record. Its actual returned text exercised
-unchanged comparison and a single spelling correction while preserving timing
-and original text. The metadata lookup endpoint also returned HTTP 503 during
-verification, exercising the honest unavailable path; a successful production
-metadata lookup was not established in that run. Permanent reference-comparison
-test fixtures contain synthetic lyrics only; the separate pitch/visual singing
-fixture is the public-domain recording documented above.
+An actual full-pipeline staging run of the approximately 227-second Muse
+“Hysteria”/“Absolution” recording matched LRCLIB record 66510 and its validated
+line-synced candidate. The primary browser/TXT/JSON retained all 30 ordered
+canonical lines (118 normalized words). That observed run accepted 29 phrase
+alignments (113 canonical words), left one five-word disputed line explicitly
+untimed, and published 91 supported word intervals. It recovered 25 word
+intervals overlapping 55–80 seconds, where the archived recognizer result had
+none, and published no words in the 140–165-second instrumental interval.
+Native browser TXT and JSON downloads matched the stored transcript, including
+the complete original recognition and the inline disputed line.
+
+These are coverage and provenance observations, **not measured lyric accuracy**.
+Copying the candidate reference into the primary view cannot establish an
+acoustic word-error rate. Word intervals are acoustic estimates, not manually
+annotated boundaries, and a different inference can retain different uncertainty.
+No copyrighted recording or lyric body is committed as a test fixture.
+
+The real GPU reference regression uses the public-domain recording and caption
+fixture to exercise positive alignment, a contradictory verse/chorus variant,
+an actually muted first verse, and the later repeated occurrence. Full-song
+pitch/structure tests retain independently known phrase/onset anchors, native
+word-to-many-note overlap, source and late-vocal coverage, estimated Verse/Chorus
+sections, and the 420.02-second short-tail termination regression. They do not
+pin incidental Scots title orthography to one speech model's spelling.
+Unreferenced recognition remains fallible; no song-specific spelling replacement
+or homophone alias is applied.
+
