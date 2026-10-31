@@ -10,15 +10,16 @@ side of that boundary against the deployed function.
 
 import asyncio
 import json
-import queue as sync_queue
 import shutil
 import subprocess
 import threading
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 from urllib.parse import quote
 
 import pytest
@@ -27,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from backend import config, db, events, modal_client, queue
 from backend.models import JobStatus
+from backend.routes import jobs as jobs_route
 from separator import audio, stems
 from separator.options import SeparationOptions
 from separator.stems import SeparationResult, Stem, StemResult
@@ -273,81 +275,76 @@ def test_event_stream_serves_the_finished_job(
     ]
 
 
-def test_event_stream_heartbeats_until_job_finishes(
+def test_event_stream_heartbeats_and_delivers_terminal_event(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _fake_modal(monkeypatch, tmp_path)
     job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
-    from backend.routes import jobs as jobs_route
-
     monkeypatch.setattr(jobs_route, "_SSE_HEARTBEAT_INTERVAL", 0.001)
-    terminal = threading.Event()
 
-    def finish_job() -> None:
-        time.sleep(0.02)
-        job = db.claim_oldest_queued()
+    async def consume_stream() -> tuple[dict, str, list[dict]]:
+        record = db.get_job(job_id)
+        assert record is not None
+        response = await jobs_route.job_events(job_id, record.session_id)
+        assert response.headers["cache-control"] == "no-cache"
+        assert response.headers["x-accel-buffering"] == "no"
+        stream = cast(AsyncIterator[str], aiter(response.body_iterator))
+        initial = json.loads((await anext(stream)).removeprefix("data: "))
+        heartbeat = await anext(stream)
+        job = await asyncio.to_thread(db.claim_oldest_queued)
         assert job is not None and job.id == job_id
-        asyncio.run(queue._run_job(job))
-        terminal.set()
-
-    worker = threading.Thread(target=finish_job)
-    worker.start()
-    heartbeats = 0
-    statuses: list[str] = []
-    try:
-        with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
-            assert response.status_code == 200
-            assert response.headers["cache-control"] == "no-cache"
-            assert response.headers["x-accel-buffering"] == "no"
-            for line in response.iter_lines():
-                if line == ": keep-alive":
-                    heartbeats += 1
-                elif line.startswith("data: "):
-                    statuses.append(json.loads(line.removeprefix("data: "))["status"])
-                    if statuses[-1] == JobStatus.DONE:
-                        break
-    finally:
-        worker.join(timeout=5)
-
-    assert not worker.is_alive()
-    assert terminal.is_set()
-    assert heartbeats >= 1
-    assert statuses[0] == JobStatus.QUEUED
-    assert statuses[-1] == JobStatus.DONE
-
-
-def test_event_stream_catches_completion_during_initial_snapshot(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _fake_modal(monkeypatch, tmp_path)
-    job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
-    original_get_job = db.get_job
-    calls = 0
-
-    def finish_before_snapshot(target_id: int):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            job = db.claim_oldest_queued()
-            assert job is not None and job.id == target_id
-            worker = threading.Thread(
-                target=lambda: asyncio.run(queue._run_job(job))
-            )
-            worker.start()
-            worker.join(timeout=5)
-            assert not worker.is_alive()
-        return original_get_job(target_id)
-
-    monkeypatch.setattr(db, "get_job", finish_before_snapshot)
-
-    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
-        frames = [
-            json.loads(line.removeprefix("data: "))
-            for line in response.iter_lines()
-            if line.startswith("data: ")
+        await queue._run_job(job)
+        payloads = [
+            json.loads(chunk.removeprefix("data: "))
+            async for chunk in stream
+            if chunk.startswith("data: ")
         ]
+        return initial, heartbeat, payloads
+
+    async def bounded_stream() -> tuple[dict, str, list[dict]]:
+        return await asyncio.wait_for(consume_stream(), timeout=1)
+
+    initial, heartbeat, payloads = asyncio.run(bounded_stream())
+
+    assert initial["status"] == JobStatus.QUEUED
+    assert heartbeat == ": keep-alive\n\n"
+    assert payloads[0]["status"] == JobStatus.RUNNING
+    assert payloads[-1]["status"] == JobStatus.DONE
+    assert payloads[-1]["original_key"] == "C major"
+    assert [entry["label"] for entry in payloads[-1]["manifest"]] == [
+        "vocals",
+        "instruments",
+    ]
+
+
+def test_event_stream_snapshot_catches_completion_after_subscription(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = _submit_upload(client)
+    original_subscribe = events.subscribe
+
+    def subscribe_then_complete(target_id: int) -> asyncio.Queue[dict]:
+        subscription = original_subscribe(target_id)
+        db.mark_done(target_id, [])
+        return subscription
+
+    monkeypatch.setattr(events, "subscribe", subscribe_then_complete)
+
+    async def consume_stream() -> list[dict]:
+        record = db.get_job(job_id)
+        assert record is not None
+        response = await jobs_route.job_events(job_id, record.session_id)
+        stream = cast(AsyncIterator[str], aiter(response.body_iterator))
+        return [json.loads(chunk.removeprefix("data: ")) async for chunk in stream]
+
+    async def bounded_stream() -> list[dict]:
+        return await asyncio.wait_for(consume_stream(), timeout=1)
+
+    frames = asyncio.run(bounded_stream())
 
     assert [frame["status"] for frame in frames] == [JobStatus.DONE]
+    assert frames[0]["id"] == job_id
+    assert frames[0]["manifest"] == []
 
 
 def test_worker_publishes_progress_to_stream_subscribers(

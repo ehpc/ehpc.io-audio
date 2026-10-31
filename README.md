@@ -46,10 +46,11 @@ visitor sees their live position.
 - Users are identified by an anonymous, signed HTTP-only cookie (no login).
   State survives a page reload because the frontend re-derives "what's my
   current job" from the backend on mount, rather than storing it client-side.
-- **SSE job updates** use periodic comment heartbeats and unbuffered responses so
-  quiet, long-running jobs keep their live status stream open through proxies.
-  The stream subscribes before its initial status snapshot to avoid missing a
-  terminal update that races with connection setup.
+- **SSE job updates** send comment heartbeats every 15 seconds, with
+  `Cache-Control: no-cache` and `X-Accel-Buffering: no`, so quiet, long-running
+  jobs keep their live status stream open through proxies. The stream subscribes
+  before reading its fresh initial status snapshot to avoid missing a terminal
+  update that races with connection setup, and unsubscribes when it closes.
 
 ## Choosing outputs
 

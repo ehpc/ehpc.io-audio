@@ -143,6 +143,7 @@ async def get_job(
 
 _SSE_HEARTBEAT_INTERVAL = 15
 
+
 @router.get("/jobs/{job_id}/events")
 async def job_events(
     job_id: int, session_id: Annotated[str, Depends(get_session_id)]
@@ -155,6 +156,8 @@ async def job_events(
         queue = events.subscribe(job_id)
         try:
             current = await asyncio.to_thread(db.get_job, job_id)
+            if current is None:
+                return
             initial = (await _to_dto(current)).model_dump(mode="json")
             yield f"data: {json.dumps(initial)}\n\n"
             if initial["status"] in (JobStatus.DONE, JobStatus.FAILED):
