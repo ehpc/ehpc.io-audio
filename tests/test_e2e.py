@@ -10,6 +10,7 @@ side of that boundary against the deployed function.
 
 import asyncio
 import json
+import queue as sync_queue
 import shutil
 import subprocess
 import threading
@@ -270,6 +271,83 @@ def test_event_stream_serves_the_finished_job(
         "vocals",
         "instruments",
     ]
+
+
+def test_event_stream_heartbeats_until_job_finishes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_modal(monkeypatch, tmp_path)
+    job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
+    from backend.routes import jobs as jobs_route
+
+    monkeypatch.setattr(jobs_route, "_SSE_HEARTBEAT_INTERVAL", 0.001)
+    terminal = threading.Event()
+
+    def finish_job() -> None:
+        time.sleep(0.02)
+        job = db.claim_oldest_queued()
+        assert job is not None and job.id == job_id
+        asyncio.run(queue._run_job(job))
+        terminal.set()
+
+    worker = threading.Thread(target=finish_job)
+    worker.start()
+    heartbeats = 0
+    statuses: list[str] = []
+    try:
+        with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers["x-accel-buffering"] == "no"
+            for line in response.iter_lines():
+                if line == ": keep-alive":
+                    heartbeats += 1
+                elif line.startswith("data: "):
+                    statuses.append(json.loads(line.removeprefix("data: "))["status"])
+                    if statuses[-1] == JobStatus.DONE:
+                        break
+    finally:
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert terminal.is_set()
+    assert heartbeats >= 1
+    assert statuses[0] == JobStatus.QUEUED
+    assert statuses[-1] == JobStatus.DONE
+
+
+def test_event_stream_catches_completion_during_initial_snapshot(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_modal(monkeypatch, tmp_path)
+    job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
+    original_get_job = db.get_job
+    calls = 0
+
+    def finish_before_snapshot(target_id: int):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            job = db.claim_oldest_queued()
+            assert job is not None and job.id == target_id
+            worker = threading.Thread(
+                target=lambda: asyncio.run(queue._run_job(job))
+            )
+            worker.start()
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+        return original_get_job(target_id)
+
+    monkeypatch.setattr(db, "get_job", finish_before_snapshot)
+
+    with client.stream("GET", f"/api/jobs/{job_id}/events") as response:
+        frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.iter_lines()
+            if line.startswith("data: ")
+        ]
+
+    assert [frame["status"] for frame in frames] == [JobStatus.DONE]
 
 
 def test_worker_publishes_progress_to_stream_subscribers(

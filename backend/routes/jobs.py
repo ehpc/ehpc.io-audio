@@ -141,6 +141,8 @@ async def get_job(
     return await _to_dto(job)
 
 
+_SSE_HEARTBEAT_INTERVAL = 15
+
 @router.get("/jobs/{job_id}/events")
 async def job_events(
     job_id: int, session_id: Annotated[str, Depends(get_session_id)]
@@ -150,19 +152,33 @@ async def job_events(
         raise HTTPException(404, "job not found")
 
     async def stream():
-        initial = (await _to_dto(job)).model_dump(mode="json")
-        yield f"data: {json.dumps(initial)}\n\n"
-        if initial["status"] in (JobStatus.DONE, JobStatus.FAILED):
-            return
-
         queue = events.subscribe(job_id)
         try:
+            current = await asyncio.to_thread(db.get_job, job_id)
+            initial = (await _to_dto(current)).model_dump(mode="json")
+            yield f"data: {json.dumps(initial)}\n\n"
+            if initial["status"] in (JobStatus.DONE, JobStatus.FAILED):
+                return
+
             while True:
-                payload = await queue.get()
+                try:
+                    payload = await asyncio.wait_for(
+                        queue.get(), timeout=_SSE_HEARTBEAT_INTERVAL
+                    )
+                except TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
                 yield f"data: {json.dumps(payload)}\n\n"
                 if payload["status"] in (JobStatus.DONE, JobStatus.FAILED):
                     return
         finally:
             events.unsubscribe(job_id, queue)
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

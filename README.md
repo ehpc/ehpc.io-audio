@@ -46,10 +46,10 @@ visitor sees their live position.
 - Users are identified by an anonymous, signed HTTP-only cookie (no login).
   State survives a page reload because the frontend re-derives "what's my
   current job" from the backend on mount, rather than storing it client-side.
-- **This app is single-pod by design (`replicas: 1`).** The SQLite file (one
-  writer), the in-process job-claim lock, and the SSE pub/sub used for live
-  updates all assume exactly one running process. Don't scale the Deployment
-  horizontally or pass `--workers` to uvicorn.
+- **SSE job updates** use periodic comment heartbeats and unbuffered responses so
+  quiet, long-running jobs keep their live status stream open through proxies.
+  The stream subscribes before its initial status snapshot to avoid missing a
+  terminal update that races with connection setup.
 
 ## Choosing outputs
 
