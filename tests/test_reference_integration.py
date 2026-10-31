@@ -330,6 +330,18 @@ def test_historical_review_survives_history_and_download_without_row_rewrite(
     assert payload["reference"]["corrections"] == legacy["reference"]["corrections"]
     assert payload["reference"]["original_words"][0]["text"] == "morninx"
     assert payload["original_timestamped_text"] == "[00:01] Good morninx\n"
+    assert payload["asr_model"] is None
+    assert payload["word_alignment"] is None
+    assert payload["words"] == [
+        {
+            "start_s": 1,
+            "end_s": 2,
+            "text": "morning",
+            "probability": 0.3,
+            "alignment_score": None,
+            "origin": "asr",
+        }
+    ]
     assert (
         client.get(f"/api/jobs/{job_id}/lyrics/download").text
         == "[00:01] Good morning\n"
@@ -429,3 +441,56 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
     assert (
         other_client.get(f"/api/jobs/{job_id}/lyrics/download.json").status_code == 404
     )
+
+
+def test_gpu_first_old_persistence_cannot_invent_model_identity_in_new_history(
+    client: TestClient,
+) -> None:
+    source = Transcript(
+        [TranscriptSegment(2, 3, "Amber lanterns")],
+        language="English",
+        asr_model="Qwen/Qwen3-ASR-1.7B",
+        word_alignment="torchaudio/MMS_FA",
+    )
+    transported = processing.analysis_transport(
+        processing.ProcessingResult({}, source), 1
+    ).transcript
+    assert transported is not None
+    # Exact pre-schema field set retained by the frozen 8e479ec reader/asdict.
+    # New model fields are not persisted by that old consumer.
+    old_fields = (
+        "segments",
+        "language",
+        "timestamp_reference",
+        "sections",
+        "structure_model",
+        "words",
+        "reference",
+        "status",
+    )
+    full = asdict(transported)
+    stored = json.dumps({key: full[key] for key in old_fields})
+    job_id = client.post(
+        "/api/jobs",
+        files={"file": ("transition.wav", b"immutable-source", "audio/wav")},
+    ).json()["id"]
+    with sqlite3.connect(config.DB_PATH) as connection:
+        connection.execute(
+            "UPDATE jobs SET status='done', transcript_json=?, "
+            "result_manifest_json='[]' WHERE id=?",
+            (stored, job_id),
+        )
+    history = client.get("/api/jobs").json()[0]["transcript"]
+    assert history["asr_model"] is None and history["word_alignment"] is None
+    assert history["timestamped_text"] == "[00:02] Amber lanterns\n"
+    assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == history
+    assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == (
+        "[00:02] Amber lanterns\n"
+    )
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert (
+            connection.execute(
+                "SELECT transcript_json FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()[0]
+            == stored
+        )

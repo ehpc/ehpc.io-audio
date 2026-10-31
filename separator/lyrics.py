@@ -115,8 +115,8 @@ class Transcript:
     structure_model: str | None = None
     words: list[TranscriptWord] = field(default_factory=list)
     reference: "ReferenceReview | None" = None
-    asr_model: str = "Systran/faster-whisper-large-v3"
-    word_alignment: str | None = "whisper-approximate"
+    asr_model: str | None = None
+    word_alignment: str | None = None
     recognition_chunks: list[RecognitionChunk] = field(default_factory=list)
     untimed: list[UntimedRecognition] = field(default_factory=list)
     asr_extras: list[TranscriptSegment] = field(default_factory=list)
@@ -424,8 +424,8 @@ def transcript_from_json(data: str) -> Transcript:
         ],
         structure_model=value.get("structure_model"),
         words=[TranscriptWord(**word) for word in value.get("words", [])],
-        asr_model=value.get("asr_model", "Systran/faster-whisper-large-v3"),
-        word_alignment=value.get("word_alignment", "whisper-approximate"),
+        asr_model=value.get("asr_model"),
+        word_alignment=value.get("word_alignment"),
         recognition_chunks=[
             RecognitionChunk(**chunk) for chunk in value.get("recognition_chunks", [])
         ],

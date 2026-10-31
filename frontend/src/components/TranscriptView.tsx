@@ -10,6 +10,9 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
       <Show when={transcript()?.asr_model === "Qwen/Qwen3-ASR-1.7B"}>
         <p class="text-xs text-muted-foreground">Reference-first lyrics · unprompted Qwen singing recognition + multilingual MMS acoustic alignment. Reference-aligned text is not verified lyrics. Unconfirmed text has no word timestamps; acoustic scores are not calibrated correctness probabilities.</p>
       </Show>
+      <Show when={!transcript()?.asr_model}>
+        <p class="text-xs text-muted-foreground">Recognition model unspecified in this stored result; model provenance cannot be recovered.</p>
+      </Show>
       <Show when={transcript()?.language}>
         {(language) => <p class="text-xs text-muted-foreground">Language: {language()}</p>}
       </Show>

@@ -93,7 +93,7 @@ const PitchView: Component<{ job: JobDTO }> = (props) => {
     if (!viewport || pitches.length === 0) return;
     const middle = pitches[Math.floor(pitches.length / 2)];
     const rowCenter = 32 + (rows()[0] - middle + 0.5) * ROW_HEIGHT;
-    const availableHeight = viewport.clientHeight - (analysis().word_alignment ? 64 : 0);
+    const availableHeight = viewport.clientHeight - (analysis().word_alignment || analysis().words.length > 0 ? 64 : 0);
     viewport.scrollTop = Math.max(0, rowCenter - availableHeight / 2);
   });
   const updatePosition = () => {
@@ -138,13 +138,13 @@ const PitchView: Component<{ job: JobDTO }> = (props) => {
       </Show>
       <audio ref={audio} aria-label={`Pitch reference: ${referenceLabel()}`} controls preload="none" class="w-full" src={referenceUrl()} onTimeUpdate={updatePosition} onSeeked={updatePosition} />
       <p class="text-xs text-muted-foreground">Swipe or scroll horizontally; zoom for short notes. Tap a note to seek and inspect it. Playback position: {timeLabel(position())} (output time).</p>
-      <Show when={analysis().word_alignment}>
-        <p class="pitch-alignment-notice">{`${analysis().word_alignment === "torchaudio/MMS_FA" ? "Approximate MMS acoustic word alignment from full vocals, not exact syllable timing; reference-aligned words are not verified lyrics. Uncorroborated provider words have no word links. Acoustic alignment scores are not calibrated correctness probabilities." : "Approximate Whisper word alignment from full vocals, not exact syllable timing or independent recognition of split voices."} Words below the notes may be wrong or misaligned. Select a word to highlight its linked notes; one word can span several notes (melisma).`}</p>
+      <Show when={analysis().word_alignment || analysis().words.length > 0}>
+        <p class="pitch-alignment-notice">{`${analysis().word_alignment === "torchaudio/MMS_FA" ? "Approximate MMS acoustic word alignment from full vocals, not exact syllable timing; reference-aligned words are not verified lyrics. Uncorroborated provider words have no word links. Acoustic alignment scores are not calibrated correctness probabilities." : analysis().word_alignment === "whisper-approximate" ? "Approximate Whisper word alignment from full vocals, not exact syllable timing or independent recognition of split voices." : "Stored approximate word timings; the alignment model is unspecified, not inferred from these values."} Words below the notes may be wrong or misaligned. Select a word to highlight its linked notes; one word can span several notes (melisma).`}</p>
       </Show>
       <Show when={analysis().word_alignment && analysis().words.length === 0}>
         <p class="text-sm text-muted-foreground">No sung words were recognized; pitch notes remain available.</p>
       </Show>
-      <Show when={!analysis().word_alignment}>
+      <Show when={!analysis().word_alignment && analysis().words.length === 0}>
         <p class="text-xs text-muted-foreground">Request lyrics together with pitch to add approximate sung-word associations.</p>
       </Show>
       <Show when={notes().length > 0} fallback={<p role="status" class="text-sm text-muted-foreground">No confident voiced notes detected in this stem.</p>}>
@@ -177,7 +177,7 @@ const PitchView: Component<{ job: JobDTO }> = (props) => {
                 <line x1={position() * zoom()} x2={position() * zoom()} y1="0" y2={pitchHeight()} class="pitch-playhead" />
               </svg>
             </div>
-            <Show when={analysis().word_alignment}>
+            <Show when={analysis().word_alignment || analysis().words.length > 0}>
               <div class="pitch-words" style={{ width: `${width() + AXIS_WIDTH}px` }} aria-label="Approximate sung words">
                 <span class="pitch-word-label">Words<br /><small>≈ timing</small></span>
                 <For each={analysis().words}>{(word, index) => {

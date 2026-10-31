@@ -78,7 +78,7 @@ class TranscriptDTO(BaseModel):
     structure_model: str | None
     words: list[TranscriptWord]
     reference: ReferenceReview | None
-    asr_model: str
+    asr_model: str | None
     word_alignment: str | None
     recognition_chunks: list[RecognitionChunk]
     untimed: list[UntimedRecognition]

@@ -987,6 +987,12 @@ algorithm: schema 2 carries canonical nullable confidence/provenance; old caller
 during GPU-first promotion receive truthful readable text with unsupported word
 links omitted.
 
+Stored records without an explicit recognizer/alignment identity keep that
+identity unknown (`null`), including results persisted by an older web worker
+during GPU-first promotion. Neither historical probabilities nor word intervals
+identify a speech model. Read-only decoding preserves those values and readable
+text without guessing Whisper; the browser labels unspecified provenance.
+
 
 ### Measured evaluation and test contracts
 

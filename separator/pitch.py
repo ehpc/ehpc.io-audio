@@ -203,7 +203,7 @@ def transform_analysis(
     pitch_semitones: float,
     tempo_percent: float,
     words: list[TranscriptWord] | None = None,
-    word_alignment: str | None = "whisper-approximate",
+    word_alignment: str | None = None,
 ) -> PitchAnalysis:
     """Project source detections onto the same pitch/tempo as generated audio.
 

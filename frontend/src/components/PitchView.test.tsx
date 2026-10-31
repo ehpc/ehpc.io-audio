@@ -145,3 +145,21 @@ it("shows ordered reference support, unsupported words, conflicting variants and
   expect(screen.getByText("Amber lanterns shine! <img src=x onerror=alert(1)>")).toBeVisible();
   expect(document.querySelector("img")).toBeNull();
 });
+
+it("retains unversioned word timing interactions without inventing a recognizer", () => {
+  const source = job();
+  source.pitch = { ...pitch, word_alignment: null };
+  source.transcript = {
+    status: "recognized", language: "English", timestamp_reference: "original",
+    sections: [], structure_model: null, segments: [{ start_s: 1, end_s: 3, text: "world" }],
+    timestamped_text: "[00:01] world\n", reference: null, asr_model: null, word_alignment: null,
+  };
+  render(() => <><PitchView job={source} /><TranscriptView job={source} /></>);
+  expect(screen.queryByText(/Whisper/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Recognition model unspecified/)).toBeVisible();
+  expect(screen.getByText(/alignment model is unspecified/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" }));
+  expect(document.querySelector("audio")!.currentTime).toBe(1);
+  expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
+  expect(source.pitch!.words[0]).toEqual(pitch.words[0]);
+});

@@ -58,7 +58,7 @@ export interface TranscriptDTO {
   structure_model: string | null;
   words?: AlignedWordDTO[];
   reference?: ReferenceReviewDTO | null;
-  asr_model?: string;
+  asr_model?: string | null;
   word_alignment?: string | null;
   recognition_chunks?: RecognitionChunkDTO[];
   untimed?: UntimedRecognitionDTO[];
