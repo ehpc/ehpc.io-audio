@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from math import isfinite
 from typing import TYPE_CHECKING, Literal
@@ -107,6 +108,15 @@ class TranscriptSection:
 
 
 @dataclass(frozen=True)
+class CanonicalWordPosition:
+    """Published word index and exact position in the intact reference text."""
+
+    word_index: int
+    reference_line_index: int
+    reference_token_index: int
+
+
+@dataclass(frozen=True)
 class Transcript:
     segments: list[TranscriptSegment] = field(default_factory=list)
     language: str | None = None
@@ -120,6 +130,7 @@ class Transcript:
     recognition_chunks: list[RecognitionChunk] = field(default_factory=list)
     untimed: list[UntimedRecognition] = field(default_factory=list)
     asr_extras: list[TranscriptSegment] = field(default_factory=list)
+    canonical_word_positions: list[CanonicalWordPosition] = field(default_factory=list)
 
     status: Literal["recognized", "empty"] = field(init=False, default="empty")
 
@@ -152,6 +163,14 @@ class Transcript:
             for left, right in zip(self.words, self.words[1:], strict=False)
         ):
             raise ValueError("Transcript words must be ordered and non-overlapping")
+        if any(
+            position.word_index < 0
+            or position.word_index >= len(self.words)
+            or position.reference_line_index < 0
+            or position.reference_token_index < 0
+            for position in self.canonical_word_positions
+        ):
+            raise ValueError("Invalid canonical word position")
 
     def __reduce__(self):
         # The already-deployed web worker knows this canonical JSON decoder.
@@ -243,7 +262,7 @@ def recognition_transcript(
 
 
 def format_timestamp(seconds: float) -> str:
-    """Format an onset as whole seconds on the original audio clock."""
+    """Format a start-only onset as whole seconds on the caller's audio clock."""
     total_seconds = int(seconds)
     minutes, seconds = divmod(total_seconds, 60)
     return f"{minutes:02d}:{seconds:02d}"
@@ -273,9 +292,28 @@ def _best_section(
     return best
 
 
+@dataclass(frozen=True)
+class LyricDisplayLine:
+    """Canonical text and independently supported original-clock bounds."""
+
+    text: str
+    prefix: str
+    start_s: float | None = None
+    end_s: float | None = None
+    canonical_line_index: int | None = None
+
+
+type LyricLineRenderer = Callable[[LyricDisplayLine], str]
+
+
+def _plain_line(line: LyricDisplayLine) -> str:
+    return f"[{line.prefix}] {line.text}\n"
+
+
 def transcript_text(
     segments: list[TranscriptSegment],
     sections: list[TranscriptSection] | None = None,
+    render_line: LyricLineRenderer = _plain_line,
 ) -> str:
     """One canonical TXT: model headings and intact ASR lines on the source clock.
 
@@ -286,7 +324,14 @@ def transcript_text(
     """
     if not sections:
         return "".join(
-            f"[{format_timestamp(segment.start_s)}] {segment.text}\n"
+            render_line(
+                LyricDisplayLine(
+                    segment.text,
+                    format_timestamp(segment.start_s),
+                    segment.start_s,
+                    segment.end_s,
+                )
+            )
             for segment in segments
         )
     assigned: list[list[TranscriptSegment]] = [[] for _ in sections]
@@ -313,21 +358,34 @@ def transcript_text(
                 output.append("\n")
             lines = [segments[index]]
         output.extend(
-            f"[{format_timestamp(segment.start_s)}] {segment.text}\n"
+            render_line(
+                LyricDisplayLine(
+                    segment.text,
+                    format_timestamp(segment.start_s),
+                    segment.start_s,
+                    segment.end_s,
+                )
+            )
             for segment in lines
         )
         previous_was_section = kind == 0
     return "".join(output)
 
 
-def transcript_export_text(transcript: Transcript) -> str:
+def transcript_export_text(
+    transcript: Transcript,
+    render_line: LyricLineRenderer = _plain_line,
+    output_tempo_percent: float | None = None,
+) -> str:
     """One primary renderer: ordered canonical candidates or independent ASR."""
+    rate = output_tempo_percent / 100 if output_tempo_percent is not None else 1
+    clock = "Output" if output_tempo_percent is not None else "Original"
     if transcript.reference is not None and transcript.reference.lines:
         review = transcript.reference
         source = review.source_url or review.provider
         output = [
             "[Canonical reference lyrics — candidate text, NOT verified]\n",
-            "[Original audio clock; unconfirmed lines have NO TIMESTAMP]\n",
+            f"[{clock} audio clock; unconfirmed lines have NO TIMESTAMP]\n",
             f"[Reference source: {source}]\n",
         ]
         anchored = [
@@ -373,7 +431,17 @@ def transcript_export_text(transcript: Transcript) -> str:
                 prefix = format_timestamp(line.start_s)
             else:
                 prefix = f"Reference line {index + 1}; UNCONFIRMED, NO TIMESTAMP"
-            output.append(f"[{prefix}] {line.text}\n")
+            output.append(
+                render_line(
+                    LyricDisplayLine(
+                        line.text,
+                        prefix,
+                        line.start_s if line.status == "aligned" else None,
+                        line.end_s if line.status == "aligned" else None,
+                        index,
+                    )
+                )
+            )
             previous_group = line.group
         if has_anchors:
             output.extend(
@@ -384,7 +452,9 @@ def transcript_export_text(transcript: Transcript) -> str:
             output.append(
                 "\n[ASR-only candidate extras/adlibs — not in canonical reference]\n"
             )
-            output.append(transcript_text(transcript.asr_extras))
+            output.append(
+                transcript_text(transcript.asr_extras, render_line=render_line)
+            )
         uncertain = [
             f"[Reference line {index + 1}: {len(line.unconfirmed_words)} "
             "uncorroborated word timings; NO WORD TIMESTAMPS — see JSON]\n"
@@ -395,17 +465,28 @@ def transcript_export_text(transcript: Transcript) -> str:
             output.append("\n[Word-level timing uncertainty]\n")
             output.extend(uncertain)
         if transcript.sections and not has_anchors:
-            output.append("\n[Estimated musical structure — original mix/clock]\n")
+            output.append(
+                "\n[Estimated musical structure — original mix; "
+                f"{clock.lower()} clock]\n"
+                if output_tempo_percent is not None
+                else "\n[Estimated musical structure — original mix/clock]\n"
+            )
             output.extend(
-                f"[{format_timestamp(section.start_s)}] "
+                f"[{format_timestamp(section.start_s / rate)}] "
                 f"{SECTION_HEADINGS[section.label]}\n"
                 for section in transcript.sections
             )
         return "".join(output)
-    text = transcript_text(transcript.segments, transcript.sections)
+    text = transcript_text(transcript.segments, transcript.sections, render_line)
     if transcript.untimed:
         text += "\n[Recognized text — alignment unavailable, NO TIMESTAMPS]\n"
-        text += "".join(f"{item.text} ({item.reason})\n" for item in transcript.untimed)
+        text += "".join(
+            render_line(LyricDisplayLine(item.text, "NO TIMESTAMP"))
+            + f"[Alignment unavailable: {item.reason}]\n"
+            if render_line is not _plain_line
+            else f"{item.text} ({item.reason})\n"
+            for item in transcript.untimed
+        )
     return text
 
 
@@ -432,6 +513,10 @@ def transcript_from_json(data: str) -> Transcript:
         untimed=[UntimedRecognition(**item) for item in value.get("untimed", [])],
         asr_extras=[
             TranscriptSegment(**segment) for segment in value.get("asr_extras", [])
+        ],
+        canonical_word_positions=[
+            CanonicalWordPosition(**position)
+            for position in value.get("canonical_word_positions", [])
         ],
         reference=(
             reference_review_from_dict(value["reference"])

@@ -6,7 +6,7 @@ import { Button } from "~/components/button";
 import KeyNotes from "~/components/KeyNotes";
 import { Label } from "~/components/label";
 import { TextField, TextFieldInput } from "~/components/text-field";
-import { displayOutputLabel, expectedStems } from "~/lib/expectedStems";
+import { displayOutputLabel, expectedPitchStems, expectedStems } from "~/lib/expectedStems";
 import { transposeKey } from "~/lib/music";
 
 type SourceMode = "url" | "file";
@@ -27,6 +27,7 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
   { key: "extract_instruments", label: "Extract instruments", group: "Outputs" },
   { key: "extract_lyrics", label: "Extract lyrics", group: "Outputs" },
   { key: "detect_pitch", label: "Detect vocal pitch", group: "Outputs" },
+  { key: "extract_pitched_lyrics", label: "Lyrics with pitches", group: "Outputs" },
   { key: "mix_female_instruments", label: "Female vocals + instruments", mobileLabel: "Female + instruments", group: "Mixes" },
   { key: "mix_male_instruments", label: "Male vocals + instruments", mobileLabel: "Male + instruments", group: "Mixes" },
   { key: "mix_backing_instruments", label: "Backing vocals + instruments", mobileLabel: "Backing + instruments", group: "Mixes" },
@@ -44,6 +45,7 @@ const DEFAULT_OPTIONS: SeparationOptions = {
   extract_instruments: false,
   extract_lyrics: false,
   detect_pitch: false,
+  extract_pitched_lyrics: false,
   mix_female_instruments: false,
   mix_male_instruments: false,
   mix_backing_instruments: false,
@@ -148,7 +150,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const trimmedUrl = () => url().trim();
   const stems = () => ["original", ...expectedStems(options)];
 
-  const outputCount = () => stems().length + Number(options.extract_lyrics) + Number(options.detect_pitch);
+  const outputCount = () => stems().length + Number(options.extract_lyrics) + Number(options.detect_pitch) +
+    (options.extract_pitched_lyrics ? expectedPitchStems(options).length : 0);
   const validationError = (): string | null => {
     const hasUrl = mode() === "url" && trimmedUrl().length > 0;
     const hasFile = mode() === "file" && file() !== null;
@@ -286,6 +289,9 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           <Show when={options.detect_pitch}>
             <p class="workspace-helper">Vocal melody notes for each selected vocal stem, or full vocals internally if none selected. Add lyrics for approximate sung-word alignment.</p>
           </Show>
+          <Show when={options.extract_pitched_lyrics}>
+            <p class="workspace-helper">Pitch-over-word TXT for each selected vocal stem, or full vocals internally if none selected. Analysis does not add audio exports.</p>
+          </Show>
           <details class="workspace-advanced">
             <summary>Advanced · cache</summary>
             <label class="workspace-option" for="option-no_cache">
@@ -363,6 +369,9 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
               <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options)}</span>}</For>
               <Show when={options.extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
               <Show when={options.detect_pitch}><span>Vocal pitch timeline + JSON</span></Show>
+              <For each={options.extract_pitched_lyrics ? expectedPitchStems(options) : []}>
+                {label => <span>Lyrics with pitches: {label} (TXT)</span>}
+              </For>
             </div>
             <p class="workspace-helper">Your original is included, unchanged.</p>
           </section>

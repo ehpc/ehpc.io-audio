@@ -181,7 +181,7 @@ def run_separation(
     not change selected outputs or add dereverb passes.
     """
     requested = options.output_labels
-    if not requested and not options.extract_lyrics and not options.detect_pitch:
+    if not requested and not options.needs_lyrics and not options.needs_pitch:
         return {}
     use_cache = not options.no_cache
     results: SeparationResult = {}
@@ -208,8 +208,8 @@ def run_separation(
     ]
     needs_vocals = bool(
         options.extract_vocals
-        or options.extract_lyrics
-        or options.detect_pitch
+        or options.needs_lyrics
+        or options.needs_pitch
         or options.decrowd_vocals
         or options.genders
         or options.lead_backing
@@ -258,7 +258,7 @@ def run_separation(
         start = time.monotonic()
         mix_audio(paths[vocal], paths[instrumental], output)
         results[label] = StemResult(output.read_bytes(), time.monotonic() - start)
-    if options.extract_lyrics and "vocals" not in requested:
+    if options.needs_lyrics and "vocals" not in requested:
         requested.append("vocals")
     requested.extend(label for label in options.pitch_labels if label not in requested)
     return {label: results[label] for label in requested}

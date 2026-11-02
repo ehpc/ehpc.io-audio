@@ -48,3 +48,11 @@ export function expectedStems(options: SeparationOptions): string[] {
   if (options.pitch_semitones !== 0 || (labels.length === 0 && options.tempo_percent !== 100)) labels.unshift("song");
   return labels;
 }
+
+/** Mirrors the backend's analysis targets without exporting prerequisite audio. */
+export function expectedPitchStems(options: SeparationOptions): string[] {
+  if (!options.detect_pitch && !options.extract_pitched_lyrics) return [];
+  const vocalLabels: Record<string, true> = { vocals: true, "vocals-decrowded": true, "vocals-male": true, "vocals-female": true, lead: true, backing: true };
+  const selected = expectedStems(options).filter(label => vocalLabels[label.replace(/-dry$/, "")]);
+  return selected.length ? selected : ["vocals"];
+}

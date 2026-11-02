@@ -168,6 +168,7 @@ for (const viewport of [mobile, desktop]) {
     await note.click();
     await expect(view.locator('.pitch-selection')).toContainText('acquaintance');
     await expect.poll(() => player.evaluate(element => !element.seeking && element.readyState >= 4)).toBe(true);
+    await page.mouse.move(0, 0);
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await compare(view, info, `vocal-melody-${viewport.width}-word-notes.png`);
@@ -193,6 +194,7 @@ for (const viewport of [mobile, desktop]) {
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
     const response = await page.request.post('/api/jobs', { multipart: {
       file: { name: 'synthetic-reference.wav', mimeType: 'audio/wav', buffer: source },
+      extract_lyrics: 'true',
     } });
     expect(response.ok()).toBe(true);
     const id = (await response.json()).id as number;
@@ -232,5 +234,74 @@ for (const viewport of [mobile, desktop]) {
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await compare(view, info, `reference-provenance-${viewport.width}.png`);
+  });
+}
+
+const publishPitched = String.raw`
+import json,sys
+from backend import db
+from separator.lyrics import transcript_from_json
+from separator.pitch import pitch_from_json,pitch_to_json
+value=json.load(sys.stdin)
+db.mark_done(int(sys.argv[1]),[],transcript_from_json(json.dumps(value['transcript'])),
+    pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
+`;
+
+for (const viewport of [mobile, desktop]) {
+  test(`pitched lyrics ${viewport.width} canonical word cells and unknown timings`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
+    const response = await page.request.post('/api/jobs', { multipart: {
+      file: { name: 'synthetic-pitch-typography.wav', mimeType: 'audio/wav', buffer: source },
+      extract_pitched_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
+    } });
+    expect(response.ok()).toBe(true);
+    const id = (await response.json()).id as number;
+    // Deliberately synthetic data tests typography, not model accuracy.
+    const words = [
+      { start_s: 1, end_s: 2, text: 'Cœur', probability: null, alignment_score: 0.8, origin: 'reference-aligned' },
+      { start_s: 2, end_s: 3, text: 'поёт', probability: null, alignment_score: 0.8, origin: 'reference-aligned' },
+      { start_s: 3, end_s: 4, text: '星光', probability: null, alignment_score: 0.8, origin: 'reference-aligned' },
+    ];
+    const fixture = {
+      transcript: {
+        segments: [{ start_s: 1, end_s: 4, text: 'Cœur поёт 星光' }], language: 'Synthetic',
+        timestamp_reference: 'original', sections: [{ start_s: 0, end_s: 4, label: 'verse' }],
+        structure_model: 'Synthetic typography fixture', words,
+        canonical_word_positions: words.map((_, index) => ({ word_index: index, reference_line_index: 0, reference_token_index: index })),
+        reference: {
+          status: 'partial', reason: 'Synthetic typography fixture, not inference', provider: 'Synthetic',
+          lines: [
+            { text: 'Cœur поёт 星光', status: 'aligned', start_s: 1, end_s: 4 },
+            { text: 'Unconfirmed closing words', status: 'unconfirmed' },
+          ],
+        },
+      },
+      pitch: {
+        source_duration_s: 5, duration_s: 4, pitch_shift_semitones: 1.25, tempo_percent: 125,
+        timestamp_reference: 'output', pitch_reference: 'output', word_alignment: 'torchaudio/MMS_FA',
+        words: words.map(word => ({ ...word, start_s: word.start_s / 1.25, end_s: word.end_s / 1.25 })),
+        tracks: [{ label: 'vocals', notes: [
+          { start_s: 0.8, end_s: 1, midi: 61.25, frequency_hz: 281.26, confidence: 0.9, word_indices: [0] },
+          { start_s: 1.05, end_s: 1.3, midi: 61.25, frequency_hz: 281.26, confidence: 0.9, word_indices: [0] },
+          { start_s: 1.3, end_s: 1.6, midi: 63.25, frequency_hz: 315.7, confidence: 0.9, word_indices: [0] },
+          { start_s: 1.6, end_s: 2.4, midi: 65.25, frequency_hz: 354.35, confidence: 0.9, word_indices: [1] },
+        ] }],
+      },
+    };
+    execFileSync('uv', ['run', 'python', '-c', publishPitched, String(id)], {
+      cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(fixture),
+      env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+    });
+    await page.reload();
+    const view = page.getByRole('region', { name: 'Lyrics with pitches', exact: true }).first();
+    await expect(view).toBeVisible();
+    const text = view.getByRole('region', { name: 'Aligned pitch and lyric text' });
+    await expect(text).toContainText('C#4 C#4 D#4');
+    await expect(text).toContainText('UNCONFIRMED, NO TIMESTAMP');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.evaluate(() => document.fonts.ready);
+    await compare(view, info, `pitched-lyrics-${viewport.width}-word-cells.png`);
   });
 }

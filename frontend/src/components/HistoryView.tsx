@@ -6,6 +6,7 @@ import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
 import TranscriptView from "~/components/TranscriptView";
+import PitchedLyricsView from "~/components/PitchedLyricsView";
 
 const STATUS_STYLES: Record<JobStatus, string> = {
   queued: "bg-muted text-muted-foreground",
@@ -135,10 +136,15 @@ const HistoryView: Component<{
                       </For>
                     </div>
                   </Show>
-                  <Show when={job.status === "done" && job.transcript}>
+                  <Show when={job.status === "done" && job.options.extract_lyrics && job.transcript}>
                     <TranscriptView job={job} compact />
                   </Show>
-                  <Show when={job.status === "done" && job.pitch}>
+                  <Show when={job.status === "done" && job.pitched_lyrics?.length}>
+                    <div onClick={event => event.stopPropagation()}>
+                      <PitchedLyricsView job={job} />
+                    </div>
+                  </Show>
+                  <Show when={job.status === "done" && job.options.detect_pitch && job.pitch}>
                     <div class="flex flex-wrap items-center gap-3 border-t border-border pt-2 text-sm">
                       <button type="button" class="font-medium text-primary hover:underline"
                         onClick={() => props.onSelect(job)}>View vocal pitch timeline</button>

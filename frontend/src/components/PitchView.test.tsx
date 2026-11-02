@@ -20,6 +20,7 @@ function job(): JobDTO {
     id: 7, status: "done", position: null, source_type: "upload", source_value: "voice.ogg", title: "voice.ogg",
     original_key: null, output_key: null, transcript: null, error_message: null, created_at: 1, has_original: true,
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,
+      extract_pitched_lyrics: false,
       mix_female_instruments: false, mix_male_instruments: false, mix_backing_instruments: false, mix_lead_instruments: false,
       decrowd: false, decrowd_vocals: false, dereverb: false, genders: false, lead_backing: false, drums: false, no_cache: false,
       pitch_semitones: 1.25, tempo_percent: 125 },

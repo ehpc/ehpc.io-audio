@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { BooleanOptionKey, SeparationOptions } from "~/api";
-import { displayOutputLabel, expectedStems } from "./expectedStems";
+import { displayOutputLabel, expectedPitchStems, expectedStems } from "./expectedStems";
 
 const NONE: SeparationOptions = {
   extract_vocals: false, extract_instruments: false,
   extract_lyrics: false,
   detect_pitch: false,
+  extract_pitched_lyrics: false,
   mix_female_instruments: false, mix_male_instruments: false, mix_backing_instruments: false,
   mix_lead_instruments: false,
   decrowd: false, decrowd_vocals: false, dereverb: false, genders: false,
@@ -14,6 +15,14 @@ const NONE: SeparationOptions = {
 };
 
 describe("expectedStems", () => {
+  it("counts one pitched TXT per analyzed vocal output without adding hidden audio", () => {
+    expect(expectedPitchStems(NONE)).toEqual([]);
+    expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true })).toEqual(["vocals"]);
+    expect(expectedStems({ ...NONE, extract_pitched_lyrics: true })).toEqual([]);
+    expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, lead_backing: true, dereverb: true })).toEqual(["lead", "lead-dry", "backing", "backing-dry"]);
+    expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, extract_instruments: true })).toEqual(["vocals"]);
+    expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, mix_female_instruments: true })).toEqual(["vocals"]);
+  });
   it("does not treat lyrics as an audio stem", () => {
     expect(expectedStems({ ...NONE, extract_lyrics: true })).toEqual([]);
     expect(expectedStems({ ...NONE, extract_lyrics: true, extract_vocals: true })).toEqual(["vocals"]);
@@ -106,7 +115,7 @@ describe("expectedStems", () => {
 
   it("keeps the exact public-output contract for all 8192 boolean selections", () => {
     const flags = (Object.keys(NONE) as BooleanOptionKey[]).filter((key) =>
-      key !== "extract_lyrics" && key !== "detect_pitch" && typeof NONE[key] === "boolean",
+      key !== "extract_lyrics" && key !== "detect_pitch" && key !== "extract_pitched_lyrics" && typeof NONE[key] === "boolean",
     );
     const outputs: [string, BooleanOptionKey, boolean][] = [
       ["vocals", "extract_vocals", true],

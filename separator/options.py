@@ -8,6 +8,7 @@ class SeparationOptions:
     extract_instruments: bool = False
     extract_lyrics: bool = False
     detect_pitch: bool = False
+    extract_pitched_lyrics: bool = False
     mix_female_instruments: bool = False
     mix_male_instruments: bool = False
     mix_backing_instruments: bool = False
@@ -27,6 +28,14 @@ class SeparationOptions:
             raise ValueError("pitch_semitones must be finite")
         if not isfinite(self.tempo_percent) or self.tempo_percent <= 0:
             raise ValueError("tempo_percent must be finite and positive")
+
+    @property
+    def needs_lyrics(self) -> bool:
+        return self.extract_lyrics or self.extract_pitched_lyrics
+
+    @property
+    def needs_pitch(self) -> bool:
+        return self.detect_pitch or self.extract_pitched_lyrics
 
     @property
     def output_labels(self) -> list[str]:
@@ -79,7 +88,7 @@ class SeparationOptions:
             for label in self.output_labels
             if label.removesuffix("-dry") in vocal_labels
         ]
-        return selected or ["vocals"] if self.detect_pitch else []
+        return selected or ["vocals"] if self.needs_pitch else []
 
     @property
     def result_labels(self) -> list[str]:

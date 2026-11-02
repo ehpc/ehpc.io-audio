@@ -40,7 +40,9 @@ def analysis_transport(
     if schema_version != 1:
         raise ValueError("Unsupported analysis RPC schema version")
     transcript = (
-        replace(result.transcript, words=[], reference=None)
+        replace(
+            result.transcript, words=[], reference=None, canonical_word_positions=[]
+        )
         if result.transcript is not None
         else None
     )
@@ -80,7 +82,7 @@ def run_processing(
     # pretending they are selected audio outputs (which could add dry passes).
     stems = run_separation(input_path, options, tmp, model_cache, stem_cache)
     transcript = None
-    if options.extract_lyrics:
+    if options.needs_lyrics:
         source = tmp / "lyrics-vocals.mp3"
         source.write_bytes(stems["vocals"].data)
         # Resolve an exact-version reference before unprompted recognition.
@@ -159,7 +161,7 @@ def run_processing(
             structure_model=structure["structure_model"],
         )
     pitch_json = None
-    if options.detect_pitch:
+    if options.needs_pitch:
         sources = {}
         for label in options.pitch_labels:
             path = tmp / f"pitch-{label}.mp3"

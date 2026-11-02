@@ -13,6 +13,7 @@ export interface SeparationOptions {
   extract_instruments: boolean;
   extract_lyrics: boolean;
   detect_pitch: boolean;
+  extract_pitched_lyrics: boolean;
   mix_female_instruments: boolean;
   mix_male_instruments: boolean;
   mix_backing_instruments: boolean;
@@ -63,8 +64,20 @@ export interface TranscriptDTO {
   recognition_chunks?: RecognitionChunkDTO[];
   untimed?: UntimedRecognitionDTO[];
   asr_extras?: TranscriptSegmentDTO[];
+  canonical_word_positions?: CanonicalWordPositionDTO[];
   original_timestamped_text?: string | null;
   timestamped_text: string;
+}
+
+export interface CanonicalWordPositionDTO {
+  word_index: number;
+  reference_line_index: number;
+  reference_token_index: number;
+}
+
+export interface PitchedLyricsTrackDTO {
+  label: string;
+  text: string;
 }
 
 export interface AlignedWordDTO {
@@ -187,6 +200,7 @@ export interface JobDTO {
   transcript: TranscriptDTO | null;
   /** Absent in historical API payloads predating vocal pitch analysis. */
   pitch?: PitchAnalysisDTO | null;
+  pitched_lyrics?: PitchedLyricsTrackDTO[] | null;
   error_message: string | null;
   created_at: number;
   has_original: boolean;
@@ -264,6 +278,7 @@ const OPTION_KEYS: BooleanOptionKey[] = [
   "drums",
   "extract_lyrics",
   "detect_pitch",
+  "extract_pitched_lyrics",
   "no_cache",
 ];
 function isTerminal(status: JobStatus): boolean {
@@ -393,6 +408,10 @@ export function lyricsJsonDownloadUrl(id: number): string {
 
 export function pitchDownloadUrl(id: number): string {
   return `${API_BASE}/jobs/${id}/pitch`;
+}
+
+export function pitchedLyricsDownloadUrl(id: number, label: string): string {
+  return `${API_BASE}/jobs/${id}/pitched-lyrics/${encodeURIComponent(label)}/download`;
 }
 
 export function resultUrl(id: number, label: string): string {

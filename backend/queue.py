@@ -49,7 +49,7 @@ def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
     dest = config.UPLOADS_DIR / str(job.id)
     dest.mkdir(parents=True, exist_ok=True)
     metadata_path = None
-    if job.options.extract_lyrics:
+    if job.options.needs_lyrics:
         metadata_path = config.DATA_DIR / "source-metadata" / f"{job.id}.json"
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
     return download_mp3(
@@ -134,9 +134,9 @@ async def _run_job(job: JobRecord) -> None:
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
         await _publish_status(job.id)
         processed = ProcessingResult(audio={})
-        if job.options.extract_lyrics or job.options.detect_pitch:
+        if job.options.needs_lyrics or job.options.needs_pitch:
             metadata = None
-            if job.options.extract_lyrics:
+            if job.options.needs_lyrics:
                 metadata = await asyncio.to_thread(
                     reference_metadata,
                     audio_bytes,
@@ -161,8 +161,8 @@ async def _run_job(job: JobRecord) -> None:
             processed = ProcessingResult(audio=await _await_modal(job.id, audio_call))
         if (
             job.options.output_labels
-            or job.options.extract_lyrics
-            or job.options.detect_pitch
+            or job.options.needs_lyrics
+            or job.options.needs_pitch
         ):
             log.info(
                 "job %s modal returned %d outputs: %s",
@@ -171,9 +171,9 @@ async def _run_job(job: JobRecord) -> None:
                 ", ".join(processed.audio),
             )
         result = processed.audio
-        if job.options.extract_lyrics and processed.transcript is None:
+        if job.options.needs_lyrics and processed.transcript is None:
             raise RuntimeError("Lyrics extraction returned no transcript")
-        if job.options.detect_pitch and processed.pitch_json is None:
+        if job.options.needs_pitch and processed.pitch_json is None:
             raise RuntimeError("Pitch detection returned no analysis")
         if "song" in job.options.result_labels:
             # Transform the complete source, not a separated/reconstructed mix.

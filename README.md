@@ -102,6 +102,7 @@ authorization does not grant additional rights under the model licenses.
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
 | Detect vocal pitch | Musical-note timeline and pitch JSON (output audio clock) |
+| Lyrics with pitches | One aligned pitch-over-word TXT per vocal stem, also shown in Results/History (output audio clock) |
 | Extract instruments | `instruments` |
 | Remove crowd noise from vocals | `vocals-decrowded` |
 | Remove crowd noise from instrumental | `instruments-decrowded` |
@@ -173,6 +174,56 @@ playback positions. Newly mounted players follow the same rule.
 The frontend regression inventory includes CPU-browser checks for URL and upload
 form retention across completed repeat submissions.
 
+
+## Lyrics with pitches
+
+Choose **Lyrics with pitches** to show detected notes above intact lyric words
+and download the same UTF-8 TXT. This is a separate opt-in output: it reuses the
+existing Qwen/MMS lyric alignment and CREPE notes, without selecting the plain
+lyrics or pitch-timeline checkboxes, introducing another model, or adding audio exports.
+The no-options download-only/no-GPU default is unchanged.
+
+The vocal-stem selector covers the same selected vocal-only outputs as pitch
+detection, including dry variants. Without a selected vocal output, it analyzes
+full vocals internally; that prerequisite is not offered as a vocal download.
+The preview counts one pitched TXT for each analyzed stem. Selecting plain
+**Extract lyrics** or **Detect vocal pitch** as well still shows those explicitly
+requested views.
+
+Pitch rows are above lyric rows in fixed-width whole-word cells. A word spanning
+several detected notes keeps the full ordered sequence, including distinct
+repeated notes; cells widen when that sequence is longer than the word. No
+syllable boundaries are invented. The browser uses one horizontally scrolling
+monospace block, so phone wrapping cannot separate the two rows. Accented Latin,
+Cyrillic, combining marks and East Asian wide/full-width lyric characters use
+display-column padding; this is not a general emoji/grapheme terminal renderer.
+
+Canonical reference lines, their original order, section headings and untimed
+disputed words remain intact. Newly published reference-aligned words carry a
+parallel `canonical_word_positions` array identifying their exact reference
+line/token and published-word index. This survives the final sort with ASR extras
+and links directly to the unchanged pitch-word index order. It does not match
+repeated words greedily. Legacy reference records without that provenance stay
+explicitly unknown; non-reference ASR uses only unambiguous exact ordered word
+matches within its own measured line bounds. `?` means missing/unconfirmed or
+ambiguous alignment, or no detected pitch — **not a musical rest**. Full-vocal
+word alignment does not independently recognize the lyrics of each split voice.
+
+This new TXT uses **output-clock, start-only timestamps**: `125%` tempo divides
+lyric/section onsets by `1.25`. Notes use the output pitch projection, not the song
+key or a fresh measurement of transformed audio. Labels are compact `C#4`, etc.,
+rounded to the nearest semitone for all shifts, like pitch-timeline rectangles.
+Exact requested fractional shifts remain in the header and filename; pitch JSON
+retains fractional MIDI/frequency/cents. Ordinary lyric TXT/JSON stay on the
+original clock. Automatic lyric alignment and monophonic note estimates can be wrong.
+
+`JobDTO.pitched_lyrics` supplies the canonical per-stem text to both Results and
+History. The session-protected TXT endpoint is
+`/api/jobs/{id}/pitched-lyrics/{label}/download`; it runs the same formatter, and
+names downloads like
+`Song - lead - lyrics-with-pitches - pitch+1.25st - tempo125pct.txt`.
+Reference-position provenance is a defaulted top-level transcript addition;
+existing Word/Pitch JSON shapes and schema-2 decoding remain compatible.
 
 ## Vocal pitch detection
 
@@ -457,12 +508,12 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-The default browser matrix contains **59 cases**: 30 processing/behavior cases,
+The default browser matrix contains **61 cases**: 30 processing/behavior cases,
 one undetermined-source-key case, one actual-download metadata case, six native
 MP3 upload cases, seven responsive workspace cases, seven focused adjustment
 cases, two post-submit form-retention cases, one real-speech lyrics case, two
-exclusive-playback cases, and two real vocal-pitch cases. The separate visual
-and manual YouTube suites are excluded from this default matrix.
+exclusive-playback cases, two real vocal-pitch cases, and two pitched-lyrics cases.
+The separate visual and manual YouTube suites are excluded from this matrix.
 
 The form-retention cases use real native processing without GPU calls: desktop
 URL and mobile file upload each complete two submissions without refilling or
@@ -488,6 +539,13 @@ exclusive playback, JSON/original downloads, History, and session isolation.
 Desktop and 390px touch-context screenshots include the shortest associated
 note at maximum zoom, checking that its full 12px note label fits its true
 time-width rectangle without making the page horizontally overflow.
+
+The pitched-lyrics cases use that same complete public-domain recording and
+unchanged sung excerpt with the new option alone or selected vocal outputs.
+They verify real per-stem note sequences/melisma, output-clock lyric onsets,
+browser/TXT byte identity for every stem, canonical word preservation, meaningful
+transformed download names, History, mobile horizontal scrolling, exclusive audio
+playback, session isolation and the absence of implicit legacy views/audio exports.
 
 The singing source is [Frank C. Stanley's 1910 *Auld Lang Syne* recording](https://commons.wikimedia.org/wiki/File:Auld_Lang_Syne.ogg)
 (Indestructible #1267 / UCSB Cylinder4410), marked public domain by Commons.
@@ -621,7 +679,7 @@ completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
 emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 59 cases with no skipped cases.
+a successful full-stack gate executes all 61 cases with no skipped cases.
 
 Both local domain suites also exhaust all **8192 combinations of the 13 audio
 boolean controls** for output/dependency contracts, including raw-cache policy.
@@ -629,12 +687,12 @@ This is local combinatorial verification, **not** 8192 GPU runs or mathematical
 proof over arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, 11 direct deployed GPU smoke cases, the
-59-case browser matrix against a unique test app, and the 17-case visual suite
-below (**76 required browser cases total**) for every push/PR. Only a passing
+61-case browser matrix against a unique test app, and the 19-case visual suite
+below (**80 required browser cases total**) for every push/PR. Only a passing
 main run promotes the production Modal deployment and publishes the image.
 Both promotion jobs retain the deterministic/native, full-stack, and visual
 release gates. The separate manual YouTube workflow adds one optional browser
-case (**77 total if run**) and is not a release dependency.
+case (**81 total if run**) and is not a release dependency.
 
 ### Real external YouTube key analysis
 
@@ -687,15 +745,17 @@ using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
 Updating Playwright requires updating the Docker image version/digest and reviewing
 all regenerated baselines together.
 
-The **17 visual cases** compare committed PNGs in
+The **19 visual cases** compare committed PNGs in
 `frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
 screens, two 1440px/2560px desktop workspaces, eight tightly cropped focused
 pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
 undetermined key, and long fractional cents), two detected-vocal timelines
-with linked sung words (390px/1440px), and two reference-aligned provenance
-views with inline uncertainty and raw recognition (390px/1440px).
-These complement, not replace, the
-**59 functional cases**. The optional external YouTube case is not a release gate.
+with linked sung words (390px/1440px), two reference-aligned provenance
+views with inline uncertainty and raw recognition (390px/1440px), and two
+synthetic pitched-lyrics typography views covering Unicode word cells,
+repeated-note melisma and explicitly untimed lines (390px/1440px).
+These complement, not replace, the **61 functional cases**.
+The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
 
 The suite builds the production frontend and reuses the real isolated HTTP
@@ -953,8 +1013,9 @@ sections. Its estimated `[Verse]`, `[Chorus]` and other headings remain inline
 where actual aligned reference anchors locate them, with blank lines between
 sections. Genuinely unanchored/ambiguous groups get an unknown-section marker or
 a separate beginning-only estimated timeline, not an invented lyric onset.
-Lyrics remain on the source clock; pitch/tempo projections transform only pitch
-output and its supported word links. Original audio bytes are never retagged
+Ordinary lyrics remain on the source clock. The optional **Lyrics with pitches**
+TXT projects its displayed start timestamps onto the output clock, alongside
+pitch output and supported word links. Original audio bytes are never retagged
 or transformed.
 
 The canonical JSON includes model/alignment identity, provider source/fetch

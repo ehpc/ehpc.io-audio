@@ -14,8 +14,9 @@ it("shows transposition and tempo while preserving server download names and the
     options: {
       extract_vocals: true,
       extract_instruments: false,
-      extract_lyrics: false,
+      extract_lyrics: true,
       detect_pitch: false,
+      extract_pitched_lyrics: false,
       mix_female_instruments: false,
       mix_male_instruments: false,
       mix_backing_instruments: false,

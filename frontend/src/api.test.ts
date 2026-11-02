@@ -6,6 +6,7 @@ const defaultOptions: SeparationOptions = {
   extract_instruments: false,
   extract_lyrics: false,
   detect_pitch: false,
+  extract_pitched_lyrics: false,
   mix_female_instruments: false,
   mix_male_instruments: false,
   mix_backing_instruments: false,

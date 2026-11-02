@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from separator.lyrics import (
+    CanonicalWordPosition,
     Transcript,
     TranscriptSegment,
     TranscriptWord,
@@ -721,6 +722,7 @@ def apply_reference(
     lines = []
     accepted = []
     words = []
+    positions: list[CanonicalWordPosition] = []
     previous_end = 0.0
     for index, line in enumerate(review.lines):
         candidate = aligned.get(index, [])
@@ -833,11 +835,10 @@ def apply_reference(
             for index, word in enumerate(candidate)
             if index not in published_indices
         ]
-        words.extend(
-            replace(word, origin="reference-aligned")
-            for index, word in enumerate(candidate)
-            if index in published_indices
-        )
+        for word_index, word in enumerate(candidate):
+            if word_index in published_indices:
+                positions.append(CanonicalWordPosition(len(words), index, word_index))
+                words.append(replace(word, origin="reference-aligned"))
         previous_end = end
         lines.append(
             replace(
@@ -893,7 +894,10 @@ def apply_reference(
     asr_extras = [
         TranscriptSegment(word.start_s, word.end_s, word.text) for word in extras
     ]
-    words = sorted([*words, *extras], key=lambda item: item.start_s)
+    unsorted_words = [*words, *extras]
+    order = sorted(range(len(unsorted_words)), key=lambda i: unsorted_words[i].start_s)
+    new_indices = {old_index: new_index for new_index, old_index in enumerate(order)}
+    words = [unsorted_words[index] for index in order]
     count = sum(line.status == "aligned" for line in lines)
     status = (
         "aligned"
@@ -907,6 +911,10 @@ def apply_reference(
         segments=accepted,
         words=words,
         asr_extras=asr_extras,
+        canonical_word_positions=[
+            replace(position, word_index=new_indices[position.word_index])
+            for position in positions
+        ],
         # Failed ASR alignment remains in original provenance, not mixed into
         # the canonical reference-first primary text.
         untimed=[],

@@ -14,10 +14,12 @@ from backend.models import (
     download_filename,
     lyrics_filename,
     original_filename,
+    pitched_lyrics_filename,
 )
 from backend.session import get_session_id
 from separator.lyrics import transcript_export_text
 from separator.pitch import pitch_from_json, pitch_to_json
+from separator.pitched_lyrics import pitched_lyrics_text
 
 router = APIRouter(tags=["results"])
 
@@ -143,5 +145,25 @@ async def get_pitch(
     return Response(
         content,
         media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
+    )
+
+
+@router.get("/jobs/{job_id}/pitched-lyrics/{label}/download")
+async def download_pitched_lyrics(
+    job_id: int, label: str, session_id: Annotated[str, Depends(get_session_id)]
+) -> Response:
+    job = await _lyrics_job(job_id, session_id)
+    if not job.options.extract_pitched_lyrics or job.pitch_json is None:
+        raise HTTPException(404, "pitched lyrics not found")
+    analysis = pitch_from_json(job.pitch_json)
+    track = next((item for item in analysis.tracks if item.label == label), None)
+    if track is None:
+        raise HTTPException(404, "pitched lyrics not found")
+    assert job.transcript is not None
+    name = quote(pitched_lyrics_filename(job.title, job_id, label, job.options))
+    return Response(
+        pitched_lyrics_text(job.transcript, analysis, track),
+        media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )

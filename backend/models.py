@@ -9,6 +9,7 @@ from pydantic import BaseModel, JsonValue, computed_field, field_serializer
 from backend import config
 from separator.audio import modification_suffix, transposed_key
 from separator.lyrics import (
+    CanonicalWordPosition,
     RecognitionChunk,
     Transcript,
     TranscriptSection,
@@ -20,6 +21,7 @@ from separator.lyrics import (
 from separator.lyrics_reference import ReferenceReview
 from separator.options import SeparationOptions
 from separator.pitch import PitchAnalysis, pitch_from_json, pitch_to_json
+from separator.pitched_lyrics import PitchedLyricsTrack, pitched_lyrics_tracks
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
 _UNSAFE_FILENAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
@@ -54,6 +56,15 @@ def lyrics_filename(title: str | None, job_id: int) -> str:
     return f"{_download_base(title, job_id)} - lyrics.txt"
 
 
+def pitched_lyrics_filename(
+    title: str | None, job_id: int, label: str, options: SeparationOptions
+) -> str:
+    return (
+        f"{_download_base(title, job_id)} - {label} - lyrics-with-pitches"
+        f"{modification_suffix(options)}.txt"
+    )
+
+
 class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -83,6 +94,7 @@ class TranscriptDTO(BaseModel):
     recognition_chunks: list[RecognitionChunk]
     untimed: list[UntimedRecognition]
     asr_extras: list[TranscriptSegment]
+    canonical_word_positions: list[CanonicalWordPosition]
 
     @computed_field
     @property
@@ -126,6 +138,7 @@ class TranscriptDTO(BaseModel):
             recognition_chunks=transcript.recognition_chunks,
             untimed=transcript.untimed,
             asr_extras=transcript.asr_extras,
+            canonical_word_positions=transcript.canonical_word_positions,
         )
 
 
@@ -169,6 +182,7 @@ class JobDTO(BaseModel):
     output_key: str | None
     transcript: TranscriptDTO | None = None
     pitch: PitchAnalysis | None = None
+    pitched_lyrics: list[PitchedLyricsTrack] | None = None
 
     @field_serializer("pitch")
     def serialize_pitch(self, pitch: PitchAnalysis | None) -> JsonValue:
@@ -184,6 +198,7 @@ def _has_original(job_id: int) -> bool:
 
 
 def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
+    pitch = pitch_from_json(job.pitch_json) if job.pitch_json else None
     return JobDTO(
         id=job.id,
         status=job.status,
@@ -218,7 +233,14 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         transcript=(
             TranscriptDTO.from_transcript(job.transcript) if job.transcript else None
         ),
-        pitch=pitch_from_json(job.pitch_json) if job.pitch_json else None,
+        pitch=pitch,
+        pitched_lyrics=(
+            pitched_lyrics_tracks(job.transcript, pitch)
+            if job.options.extract_pitched_lyrics
+            and job.transcript is not None
+            and pitch is not None
+            else None
+        ),
     )
 
 

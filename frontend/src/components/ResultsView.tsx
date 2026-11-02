@@ -7,6 +7,7 @@ import { Button } from "~/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
 import TranscriptView from "~/components/TranscriptView";
 import PitchView from "~/components/PitchView";
+import PitchedLyricsView from "~/components/PitchedLyricsView";
 
 function formatSize(bytes: number): string {
   const mb = bytes / (1024 * 1024);
@@ -87,14 +88,21 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
             </Card>
           )}
         </For>
-        <Show when={props.job.pitch}>
+        <Show when={props.job.options.detect_pitch && props.job.pitch}>
           <Card>
             <CardContent class="min-w-0 p-4">
               <PitchView job={props.job} />
             </CardContent>
           </Card>
         </Show>
-        <Show when={props.job.transcript}>
+        <Show when={props.job.pitched_lyrics?.length}>
+          <Card>
+            <CardContent class="min-w-0 p-4">
+              <PitchedLyricsView job={props.job} />
+            </CardContent>
+          </Card>
+        </Show>
+        <Show when={props.job.options.extract_lyrics && props.job.transcript}>
           <Card>
             <CardContent class="p-4">
               <TranscriptView job={props.job} />

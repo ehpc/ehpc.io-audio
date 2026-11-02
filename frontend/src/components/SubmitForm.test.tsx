@@ -312,6 +312,24 @@ describe("SubmitForm", () => {
     expect(screen.queryByText("vocals-female", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText("instruments", { exact: true })).not.toBeInTheDocument();
   });
+  it("previews one pitched TXT per vocal target without selecting internal analysis outputs", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true }));
+    expect(screen.getByText("Tracks and files you'll get (2)")).toBeInTheDocument();
+    expect(screen.getByText("Lyrics with pitches: vocals (TXT)")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Detect vocal pitch", exact: true })).not.toBeChecked();
+    expect(screen.queryByText("Lyrics (timestamped TXT)")).toBeNull();
+    expect(screen.queryByText("Vocal pitch timeline + JSON")).toBeNull();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Split lead & backing vocals", exact: true }));
+    expect(screen.getByText("Tracks and files you'll get (5)")).toBeInTheDocument();
+    expect(screen.getByText("Lyrics with pitches: lead (TXT)")).toBeInTheDocument();
+    expect(screen.getByText("Lyrics with pitches: backing (TXT)")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Dereverb (remove reverb)", exact: true }));
+    expect(screen.getByText("Tracks and files you'll get (9)")).toBeInTheDocument();
+    expect(screen.getByText("Lyrics with pitches: lead-dry (TXT)")).toBeInTheDocument();
+    expect(screen.getByText("Lyrics with pitches: backing-dry (TXT)")).toBeInTheDocument();
+  });
   it("previews lyrics as a separate original-clock TXT output without audio transforms", async () => {
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
