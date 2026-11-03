@@ -146,6 +146,7 @@ jobs:
           done
           test -n "$E2E_MODAL_APP_NAME"
           test "$E2E_MODAL_APP_NAME" != audio-separator
+          test "$E2E_MODAL_APP_NAME" != audio-separator-v2
           test "$MODAL_APP_NAME" = "$E2E_MODAL_APP_NAME"
       - name: Deploy isolated Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME"
@@ -177,7 +178,7 @@ jobs:
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      MODAL_APP_NAME: audio-separator
+      MODAL_APP_NAME: audio-separator-v2
     steps:
       - uses: actions/checkout@v5
       - name: Install uv

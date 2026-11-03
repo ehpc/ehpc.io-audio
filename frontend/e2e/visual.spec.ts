@@ -52,7 +52,10 @@ for (const tab of ['Outputs', 'Adjust', 'Review']) {
     await analyze(page, info);
     if (tab !== 'Outputs') {
       await page.getByRole('checkbox', { name: 'Extract vocals', exact: true }).check();
-      await page.getByRole('checkbox', { name: 'Female vocals + instruments', exact: true }).check();
+      await page.locator('details.vocal-variants summary').click();
+      await page.getByRole('button', { name: '+ Female vocals', exact: true }).click();
+      await page.getByRole('button', { name: '+ Instruments', exact: true }).click();
+      await page.getByRole('button', { name: 'Add mix', exact: true }).click();
       await adjust(page);
       await page.getByRole('spinbutton', { name: pitchName }).fill('2');
       await page.getByRole('spinbutton', { name: 'Tempo (% of original)' }).fill('120');
@@ -74,6 +77,47 @@ for (const viewport of [desktop, { width: 2560, height: 1440 }]) {
     await expect(page.locator('.pitch-key-badge')).toHaveText('Resulting key: D major');
     await page.getByRole('heading', { name: "ehpc's Vocal Tools", exact: true }).click();
     await compare(page, info, `desktop-${viewport.width}-workspace.png`);
+  });
+}
+
+for (const viewport of [mobile, desktop]) {
+  test(`mix builder queue edit remove ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    await analyze(page, info);
+    const add = async (parts: string[]) => {
+      for (const part of parts) await page.getByRole('button', { name: `+ ${part}`, exact: true }).click();
+      await page.getByRole('button', { name: 'Add mix', exact: true }).click();
+    };
+    // The four approved example pairs plus a 3-part mix.
+    await add(['Drums', 'Bass']);
+    await add(['Drums', 'Vocals']);
+    await add(['Bass', 'Vocals']);
+    await add(['Drums', 'Other instruments']);
+    await page.locator('details.vocal-variants summary').click();
+    await add(['Drums', 'Bass', 'Vocals']);
+    // A custom-named variant mix: mobile must show the component breakdown inline.
+    await add(['Female vocals', 'Instruments']);
+    await page.getByRole('button', { name: 'Edit Female vocals + Instruments' }).click();
+    const name = page.getByLabel('Mix name for Female vocals + Instruments');
+    await page.waitForTimeout(200);
+    await name.press('ControlOrMeta+a');
+    await name.pressSequentially('Chorus lift', { delay: 120 });
+    await expect(page.getByRole('button', { name: 'Save mix' })).toBeVisible();
+    await expect(name).toHaveValue('Chorus lift');
+    await page.getByRole('button', { name: 'Save mix' }).click();
+    await expect(page.getByRole('button', { name: 'Edit Chorus lift' })).toBeVisible();
+    // Remove an earlier row while nothing is being edited.
+    await page.getByRole('button', { name: 'Remove Drums + Bass', exact: true }).click();
+    await expect(page.getByText('Your mixes (5)', { exact: true })).toBeVisible();
+    await page.getByRole('heading', { name: "ehpc's Vocal Tools", exact: true }).click();
+    await page.evaluate(() => window.scrollTo(0, 0));
+    // Mobile tabs hide inactive panes, so capture the builder on its own tab.
+    await compare(page.locator('.mix-group'), info, `mix-builder-${viewport.width}.png`);
+    if (viewport.width <= 700) {
+      await adjust(page);
+      await page.getByRole('tab', { name: 'Review', exact: true }).click();
+    }
+    await compare(page.locator('.review-page'), info, `mix-review-${viewport.width}.png`);
   });
 }
 

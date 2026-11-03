@@ -27,7 +27,7 @@ for (const viewport of [
   test(`desktop workspace scales cleanly at ${viewport.width}px`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
     await page.goto('/');
-    for (const name of ['Outputs', 'Mixes', 'Cleanup', 'Splits']) {
+    for (const name of ['Outputs', 'Mixes Build your own', 'Cleanup', 'Splits']) {
       await expect(page.getByRole('group', { name, exact: true })).toBeVisible();
     }
     const options = page.locator('.option-groups input[type=checkbox]');

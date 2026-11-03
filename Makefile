@@ -36,7 +36,7 @@ test-frontend:
 
 test-e2e:
 	@test -n "$${E2E_MODAL_APP_NAME:-}" || { echo "Set E2E_MODAL_APP_NAME to an isolated Modal app." >&2; exit 2; }
-	@test "$${E2E_MODAL_APP_NAME}" != "audio-separator" || { echo "Refusing to run E2E against the production Modal app." >&2; exit 2; }
+	@test "$${E2E_MODAL_APP_NAME}" != "audio-separator" -a "$${E2E_MODAL_APP_NAME}" != "audio-separator-v2" || { echo "Refusing to run E2E against a production Modal app." >&2; exit 2; }
 	npm --prefix frontend run test:e2e
 
 smoke:

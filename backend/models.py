@@ -44,7 +44,10 @@ def download_filename(
     key_suffix = (
         f" - source-key-{original_key.replace(' ', '-')}" if original_key else ""
     )
-    return f"{base} - {label}{key_suffix}{modification_suffix(options)}.mp3"
+    display = options.display_name(label)
+    if any(mix.id == label for mix in options.mixes):
+        display = f"{_UNSAFE_FILENAME.sub('', display).strip() or 'Mix'} [{label}]"
+    return f"{base} - {display}{key_suffix}{modification_suffix(options)}.mp3"
 
 
 def original_filename(title: str | None, job_id: int, suffix: str) -> str:
@@ -78,6 +81,7 @@ class ResultManifestEntry(BaseModel):
     size_bytes: int
     duration_s: float
     download_name: str = ""
+    display_name: str = ""
 
 
 class TranscriptDTO(BaseModel):
@@ -211,13 +215,14 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
             [
                 entry.model_copy(
                     update={
+                        "display_name": job.options.display_name(entry.label),
                         "download_name": download_filename(
                             job.title,
                             job.id,
                             entry.label,
                             job.options,
                             job.original_key,
-                        )
+                        ),
                     }
                 )
                 for entry in job.result_manifest

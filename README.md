@@ -22,7 +22,7 @@ visitor sees their live position.
                  └────────────────────────────────────────────┼─────────────────────────────────────┘
                                                                 │
                                                                 ▼
-                                                  separator/modal_app.py ("audio-separator" Modal app)
+                                                  separator/modal_app.py ("audio-separator-v2" Modal app)
                                                                 │
                                                                 ▼
                                                    GPU container (separation + optional lyrics/pitch)
@@ -109,26 +109,32 @@ authorization does not grant additional rights under the model licenses.
 | Split by gender | `vocals-male`, `vocals-female` |
 | Split lead & backing | `lead`, `backing` |
 | Split drums, bass & other instruments | `drums`, `bass`, `other-instruments` |
-| Female vocals + instruments | `female-instruments` |
-| Male vocals + instruments | `male-instruments` |
-| Backing vocals + instruments | `backing-instruments` |
-| Lead vocals + instruments | `lead-instruments` |
+| Custom mix | One named audio file per saved mix (`mix-1`, `mix-2`, … internal IDs) |
 
 - Cleanup/split outputs work without selecting their parent extraction. Required
   intermediate tracks are internal unless their own output is selected.
+- In Mixes, choose any two or more of Drums, Bass, Vocals, Other instruments,
+  Instruments, Female vocals, Male vocals, Lead vocals and Backing vocals.
+  Save multiple mixes, edit their automatic names or components, or remove them.
+  Outputs and Splits select separate downloads, never mix ingredients.
+  Instruments includes drums, bass and other instruments; Vocals includes its
+  variants. Overlapping ingredients are allowed and are summed, not deduplicated.
+  Original audio and previous mix outputs are not ingredients.
 - Dereverb adds a `-dry` counterpart to each selected vocal output. **Dereverb
   alone**, with no other output selection, produces only `vocals-dry`.
   Instrument-only + dereverb does not add a vocal track. Mix-only + dereverb
   dries the mix's vocal prerequisite without exposing a standalone dry track.
 - Vocal splits use decrowded vocals when vocal crowd removal is selected.
-  Mixes use those splits, their dry versions when dereverb is selected, and
-  decrowded instruments when instrumental crowd removal is selected.
+  Mixes use cleaned vocals/splits, their dry versions when dereverb is selected,
+  and decrowded instruments when instrumental crowd removal is selected.
+  Drums/bass/other extraction also uses the selected cleaned instrumental source.
 - Lead vocals + instruments omits backing vocals, using the existing lead/backing
   split. Its vocal and instrumental prerequisites stay hidden unless selected.
 - Download order is vocal wet/dry pairs (`vocals`, decrowded vocals, male,
-  female, lead, backing), then instrumental outputs, then female, male, backing,
-  and lead mixes. A shared prerequisite/model pass runs only once.
-- Mixes are simultaneous audio sums, not concatenations: FFmpeg aligns both
+  female, lead, backing), then instrumental outputs, then mixes in saved order.
+  A shared prerequisite/model pass runs only once. Instrument-only mixes do not
+  invoke the vocal model unless another selected feature needs vocals.
+- Mixes are simultaneous audio sums, not concatenations: FFmpeg aligns all
   inputs to stereo/48 kHz and sums at unity gain (`amix normalize=0`). A
   latency-compensated peak limiter with **no automatic makeup gain** reduces only
   excessive peaks; its 0.89 ceiling leaves about 1 dB of MP3 reconstruction
@@ -136,6 +142,28 @@ authorization does not grant additional rights under the model licenses.
   Mixing precedes pitch/tempo rendering, and separation caches remain raw.
 - Stored jobs from before explicit extraction are migrated to request both base
   stems, preserving their history and retry behavior.
+- Historical fixed-mix options are converted once in stored options JSON. Existing
+  result manifests, labels, filenames, audio and analysis data are untouched:
+  old download URLs remain valid. Retrying an old job uses its converted mixes.
+  Names may repeat; stable IDs distinguish outputs even when names sanitize alike.
+
+The multipart API accepts `mixes` as a JSON array (default `[]`), for example:
+
+```json
+[{"id":"mix-1","name":"Rhythm","components":["drums","bass"]},
+ {"id":"mix-2","name":"Band and voice","components":["drums","bass","vocals"]}]
+```
+
+Each object has exactly `id`, `name`, and `components`. Component IDs are `drums`,
+`bass`, `vocals`, `other`, `instruments`, `female`, `male`, `lead`, and `backing`;
+at least two distinct entries are required. IDs match
+`^mix-[a-z0-9][a-z0-9-]{0,47}$` and are unique within a job. Names are trimmed,
+1–120 characters, without control characters. Unknown form fields and invalid
+mixes return HTTP 422 without inserting a job; the removed fixed-mix request
+booleans are not accepted. Result labels/internal filenames use stable IDs;
+`manifest.display_name` carries the editable name. Public filenames and MP3 Title
+tags share one canonical name with sanitized mix name, ID, source key, pitch and
+tempo qualifiers. Results/History use the same saved identity and display name.
 
 ### Responsive workspace
 
@@ -484,7 +512,8 @@ inference and real browser downloads.
 `make test-e2e` (equivalently `npm --prefix frontend run test:e2e`) builds the
 production frontend, serves it from a real uvicorn backend, and drives Chromium
 through the UI. It requires Modal credentials and an **explicit isolated**
-`E2E_MODAL_APP_NAME`; the harness refuses the production `audio-separator` name.
+`E2E_MODAL_APP_NAME`; the harness rejects both production names,
+`audio-separator` and `audio-separator-v2`.
 It allocates loopback backend/source-server ports and a temporary `DATA_DIR`,
 serializes GPU jobs, and removes its servers and temporary state afterward.
 It never uses `dev-data/`, request interception, fake Modal calls, or a fake key
@@ -507,6 +536,25 @@ On NixOS, use a native Chromium executable through
 `E2E_CHROMIUM_EXECUTABLE=/path/to/chromium` and install Playwright's recording
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
+
+For a self-contained real-model mixer proof without deploying any app:
+
+```sh
+MIXER_EVIDENCE_DIR=/tmp/stem-mixer-proof \
+  uv run pytest -m smoke tests/test_mixer_smoke.py -s
+```
+
+This starts a uniquely named ephemeral Modal app and private ephemeral model
+volume, then a real local HTTP server and queue. It processes the licensed voiced
+fixture through all four requested pairs, a three-component mix, and all four
+vocal-variant/instrument mixes. Downloaded audio, Title tags, timing, stereo/48 kHz,
+peak levels, hidden prerequisites and unchanged original bytes are checked.
+The cleanup case additionally compares mixes against independently exported real
+cleaned/dry component audio. App, volume and local server are released on exit;
+MP3s and `proof.json` remain in the evidence directory. Deterministic local tests
+separately measure per-component spectral amplitudes, non-normalized sums,
+multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
+interrupted-job recovery, retry and historical migrations.
 
 The default browser matrix contains **61 cases**: 30 processing/behavior cases,
 one undetermined-source-key case, one actual-download metadata case, six native
@@ -609,23 +657,20 @@ Each case records `mp3-upload-proof.json`, selected-file MIME, actual request
 `multipart/form-data` headers, native codec/key results, original-byte hashes,
 and selection/Results/History PNGs under `frontend/test-results/`.
 
-- Each of the 13 audio boolean controls is submitted individually, plus all 13
-  audio controls together. Independent cleanup/splits and mix-only cases prove
-  that internal prerequisites do not appear as extra downloads.
-  The lead-only mix case exposes exactly original + `lead-instruments`; a
-  separate real reference job supplies lead/instrument tracks for the audio-sum
-  comparison without exposing them in the lead-only job's manifest.
+- Independent output/cleanup/split selections and arbitrary mix-only cases prove
+  that internal prerequisites do not appear as extra downloads. Mix-only cases
+  include all four requested pairs, three components, and vocal variants.
+  Reference jobs supply component tracks for audio-sum comparisons without
+  exposing them in the mix-only job's manifest.
 - Mixes with dry vocal prerequisites, both crowd-cleanup selections plus dry
   mixes, and instruments-only plus dereverb exercise dependency-sensitive paths.
 - Identity, positive/negative fractional pitch, pitch-only, tempo-only,
   speedup/slowdown, and transformed separated output exercise native processing.
-  The all-options transformation applies pitch and tempo to all 21 selected
-  outputs plus the full-source `song` output (22 transformed downloads total),
-  checking every modified name/duration while preserving the unchanged original.
-  Including the original, that job offers 23 downloads. The identity all-options
-  case remains the raw mix-composition proof. Whole-song changes prove expected
-  audio duration and the known generated fundamental's pitch shift; originals
-  are downloaded and hash-checked.
+  Combined-options transformations check modified names/durations across selected
+  stems and named mixes while preserving the unchanged original. Identity cases
+  retain the raw mix-composition proof. Whole-song changes prove expected audio
+  duration and the known generated fundamental's pitch shift; originals are
+  downloaded and hash-checked.
 - Cache bypass alone proves no Modal call is made. A separate explicit
   extraction warms through the browser, repeats with the retained extraction
   selection and zero raw inference time, and bypasses with positive inference
@@ -669,30 +714,29 @@ Every successful audio-options matrix case downloads its exact audio manifest,
 checks public filenames/modification suffixes and absent hidden outputs, decodes
 every audio track in Chromium and FFmpeg, and measures channels, timing, finite
 samples, signal, and peak levels.
-The all-enabled case additionally compares each mix's
-PCM against the aligned unity-gain sum of its actual downloaded vocal and
-instrumental components. This checks real mixing, not just nonempty files.
+The all-enabled case additionally compares each mix's PCM against the aligned
+unity-gain sum of its actual downloaded components. This checks real mixing,
+not just nonempty files.
 
 Artifacts are under `frontend/test-results/`: per-case `proof.json` with options,
 manifest, queue/Modal evidence, hashes and audio measurements; downloaded audio;
 completion screenshots; and `backend.log`/`summary.json`. Failures retain
 screenshots, video, and Playwright traces. The HTML report is in
 `frontend/playwright-report/`. There are no automatic test retries. CI additionally
-emits GitHub annotations for failed assertions and stops on the first failure;
-a successful full-stack gate executes all 61 cases with no skipped cases.
+emits GitHub annotations for failed assertions and stops on the first failure.
+The full-stack gate must complete without skipped cases.
 
-Both local domain suites also exhaust all **8192 combinations of the 13 audio
-boolean controls** for output/dependency contracts, including raw-cache policy.
-This is local combinatorial verification, **not** 8192 GPU runs or mathematical
-proof over arbitrary numeric pitch/tempo values.
+Local domain tests exhaust independent audio-output boolean combinations and
+exercise arbitrary mix selections with decoded waveform/spectral assertions.
+These are deterministic local checks, not thousands of GPU runs or a proof over
+arbitrary numeric pitch/tempo values.
 
-CI runs native/backend/frontend checks, 11 direct deployed GPU smoke cases, the
-61-case browser matrix against a unique test app, and the 19-case visual suite
-below (**80 required browser cases total**) for every push/PR. Only a passing
-main run promotes the production Modal deployment and publishes the image.
-Both promotion jobs retain the deterministic/native, full-stack, and visual
-release gates. The separate manual YouTube workflow adds one optional browser
-case (**81 total if run**) and is not a release dependency.
+CI runs native/backend/frontend checks, real GPU smoke tests, the browser matrix
+against a unique test app, and the visual suite below for every push/PR. Only a
+passing main run promotes `audio-separator-v2` and publishes the image. The old
+`audio-separator` app remains untouched for old web instances. Both promotion
+jobs retain the deterministic/native, full-stack and visual release gates.
+The separate manual YouTube workflow is not a release dependency.
 
 ### Real external YouTube key analysis
 
@@ -827,7 +871,7 @@ recordings are included or fetched.
 |---|---|---|
 | `DATA_DIR` | `/data` | Root for the sqlite DB, uploads, and results |
 | `QUEUE_CONCURRENCY` | `1` | Max separations running on Modal at once |
-| `MODAL_APP_NAME` | `audio-separator` | Deployed Modal app name to look up |
+| `MODAL_APP_NAME` | `audio-separator-v2` | Deployed Modal app name to look up |
 | `MODAL_FUNCTION_NAME` | `separate` | Deployed Modal function name to look up |
 | `COOKIE_SECRET` | *(insecure dev default)* | Signs the session cookie — **must** be set to a stable secret in prod; rotating it logs everyone out |
 | `COOKIE_SECURE` | `false` | Set `true` in prod (behind TLS) — a `Secure` cookie is silently dropped over plain HTTP, which is why local dev defaults to `false` |
@@ -848,17 +892,24 @@ recordings are included or fetched.
    make deploy-modal
    ```
 
-   New extraction/mix options require the current graph; an older deployed
-   function is not compatible with the new defaults/output contract. Redeploy
-   after changes to `separator/stems.py`, `separator/options.py`, or the Modal
-   image. The runtime uses CUDA 12.6.3/cuDNN on Ubuntu 24.04 (FFmpeg 6+ is required
-   for latency-compensated limiting), with `audio-separator[gpu]==0.44.1` and
-   `librosa==0.11.0` pinned to the exercised compatible stack. Coordinate the
-   rollout; local source-only jobs and key previews do not need Modal credentials.
-   For verification without overwriting a deployment, run the current
-   `separator.modal_app.app` inside `with app.run():` and invoke its bound
-   `separate.remote(...)`. `make smoke` targets the deployed function and now
-   checks explicit extraction and mix-only outputs, not implicit default stems.
+   This release uses the versioned **`audio-separator-v2`** app for options
+   protocol 2. CI promotion and `make deploy-modal` target that namespace, not
+   the existing `audio-separator` deployment. Old web instances continue using
+   the old app while the new GPU app is validated; releasing the matching web
+   image switches its default lookup to v2. Do not override the new backend to
+   the old app, replace the old app in place, or stop it while old web jobs need
+   it. No runtime old-option aliases are provided. Lyrics/pitch analysis transport
+   remains independently versioned at schema 2 and its data shape is unchanged.
+   Back up the database and drain old web jobs before the web cutover; stored
+   options migrate once, while completed manifests/audio/analysis stay intact.
+   A web rollback requires the matching pre-migration database backup.
+
+   Redeploy the matching v2 worker after changes to `separator/stems.py`,
+   `separator/options.py`, or the Modal image. The GPU runtime uses Python 3.13,
+   CUDA 12.6.3/cuDNN on Ubuntu 24.04, FFmpeg 6+, `audio-separator[gpu]==0.44.1`
+   and `librosa==0.11.0`. New audio RPC calls supply `options_schema=2`;
+   incompatible versions fail explicitly. Use the ephemeral mixer smoke above
+   for verification without overwriting either production deployment.
 
 3. **Provision cluster resources:**
    - A `PersistentVolumeClaim` (ReadWriteOnce) mounted at `/data` — holds the

@@ -30,7 +30,7 @@ from backend import config, db, events, modal_client, queue
 from backend.models import JobStatus
 from backend.routes import jobs as jobs_route
 from separator import audio, stems
-from separator.options import SeparationOptions
+from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.stems import SeparationResult, Stem, StemResult
 
 _TERMINAL = (JobStatus.DONE, JobStatus.FAILED)
@@ -85,8 +85,13 @@ def _fake_modal(
     spawned: list[tuple[bytes, str, SeparationOptions]] = []
 
     def spawn(
-        audio_bytes: bytes, filename: str, options: SeparationOptions
+        audio_bytes: bytes,
+        filename: str,
+        options: SeparationOptions,
+        *,
+        options_schema: int = OPTIONS_SCHEMA_VERSION,
     ) -> _FakeCall:
+        assert options_schema == OPTIONS_SCHEMA_VERSION
         spawned.append((audio_bytes, filename, options))
         return _FakeCall(
             object_id=f"fc-{len(spawned)}",

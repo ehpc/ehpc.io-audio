@@ -1,7 +1,7 @@
 import { For, Show, type Component } from "solid-js";
 import type { JobDTO, StemManifestEntry } from "~/api";
 import { jobLabel, originalUrl, resultUrl } from "~/api";
-import { displayOutputLabel } from "~/lib/expectedStems";
+import { displayOutputLabel, manifestOutputLabel } from "~/lib/expectedStems";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
@@ -61,7 +61,7 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
             <Card>
               <CardHeader>
                 <CardTitle class="flex items-center justify-between gap-4 text-base">
-                  <span>{displayOutputLabel(stem.label, props.job.options)}</span>
+                  <span>{manifestOutputLabel(stem, props.job.options)}</span>
                   <span class="text-xs font-normal text-muted-foreground">
                     {formatDuration(stem.duration_s)} · {formatSize(stem.size_bytes)}
                   </span>

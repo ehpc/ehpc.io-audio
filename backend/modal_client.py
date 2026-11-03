@@ -5,7 +5,7 @@ from modal.exception import TimeoutError as ModalTimeoutError
 
 from backend import config
 from separator.lyrics_reference import ReferenceMetadata
-from separator.options import SeparationOptions
+from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.processing import ANALYSIS_SCHEMA_VERSION, ProcessingResult
 from separator.stems import SeparationResult
 
@@ -21,7 +21,7 @@ def spawn(
     audio_bytes: bytes, filename: str, options: SeparationOptions
 ) -> modal.functions.FunctionCall[SeparationResult]:
     return _get_function(config.MODAL_FUNCTION_NAME).spawn(
-        audio_bytes, filename, options
+        audio_bytes, filename, options, options_schema=OPTIONS_SCHEMA_VERSION
     )
 
 
@@ -38,6 +38,7 @@ def spawn_with_lyrics(
         options,
         reference_metadata,
         analysis_schema=ANALYSIS_SCHEMA_VERSION,
+        options_schema=OPTIONS_SCHEMA_VERSION,
     )
 
 

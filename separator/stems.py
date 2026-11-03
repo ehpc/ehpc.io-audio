@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from separator.audio import mix_audio
-from separator.options import SeparationOptions
+from separator.options import VOCAL_STEM_LABELS, SeparationOptions
 
 
 class StemOutput(NamedTuple):
@@ -196,16 +196,7 @@ def run_separation(
                 results[label] = result
                 paths[label] = path
 
-    mixes = [
-        (label, vocal)
-        for selected, label, vocal in (
-            (options.mix_female_instruments, "female-instruments", "vocals-female"),
-            (options.mix_male_instruments, "male-instruments", "vocals-male"),
-            (options.mix_backing_instruments, "backing-instruments", "backing"),
-            (options.mix_lead_instruments, "lead-instruments", "lead"),
-        )
-        if selected
-    ]
+    components = options.mix_components
     needs_vocals = bool(
         options.extract_vocals
         or options.needs_lyrics
@@ -213,7 +204,7 @@ def run_separation(
         or options.decrowd_vocals
         or options.genders
         or options.lead_backing
-        or mixes
+        or components.intersection({"vocals", "female", "male", "lead", "backing"})
         or "vocals-dry" in requested
     )
     if needs_vocals:
@@ -222,42 +213,49 @@ def run_separation(
         if options.decrowd_vocals:
             run(DECROWD_VOCALS_STEMS, paths[vocal_source], suffix="-vocals")
             vocal_source = "vocals-decrowded"
-        if (
-            options.genders
-            or options.mix_female_instruments
-            or options.mix_male_instruments
-        ):
+        if options.genders or components.intersection({"female", "male"}):
             run(GENDER_STEMS, paths[vocal_source])
-        if (
-            options.lead_backing
-            or options.mix_backing_instruments
-            or options.mix_lead_instruments
-        ):
+        if options.lead_backing or components.intersection({"lead", "backing"}):
             run(LEAD_BACKING_STEMS, paths[vocal_source])
         dry_sources = [
-            label.removesuffix("-dry") for label in requested if label.endswith("-dry")
+            label.removesuffix("-dry")
+            for label in requested
+            if label.endswith("-dry")
+            and label.removesuffix("-dry") in VOCAL_STEM_LABELS
         ]
         if options.dereverb:
-            dry_sources.extend(vocal for _, vocal in mixes)
+            dry_sources.extend(
+                options.component_label(component).removesuffix("-dry")
+                for component in components
+                if component in {"vocals", "female", "male", "lead", "backing"}
+            )
         for label in dict.fromkeys(dry_sources):
             stem = Stem(DEREVERB_MODEL, [StemOutput(f"{label}-dry", "noreverb")])
             run([stem], paths[label], suffix=f"-{label}")
 
-    if options.extract_instruments or options.decrowd or options.drums or mixes:
+    needs_drums = options.drums or bool(
+        components.intersection({"drums", "bass", "other"})
+    )
+    if (
+        options.extract_instruments
+        or options.decrowd
+        or needs_drums
+        or "instruments" in components
+    ):
         run([INSTRUMENTS_STEM], input_path)
         if options.decrowd:
             run(DECROWD_STEMS, paths["instruments"], suffix="-instruments")
-        if options.drums:
-            run([DRUM_STEMS], paths["instruments"])
+        if needs_drums:
+            source = "instruments-decrowded" if options.decrowd else "instruments"
+            run([DRUM_STEMS], paths[source])
 
-    for label, vocal in mixes:
-        instrumental = "instruments-decrowded" if options.decrowd else "instruments"
-        if options.dereverb:
-            vocal += "-dry"
-        output = tmp_dir / f"{label}.mp3"
+    for mix in options.mixes:
+        output = tmp_dir / f"{mix.id}.mp3"
         start = time.monotonic()
-        mix_audio(paths[vocal], paths[instrumental], output)
-        results[label] = StemResult(output.read_bytes(), time.monotonic() - start)
+        mix_audio(
+            [paths[options.component_label(part)] for part in mix.components], output
+        )
+        results[mix.id] = StemResult(output.read_bytes(), time.monotonic() - start)
     if options.needs_lyrics and "vocals" not in requested:
         requested.append("vocals")
     requested.extend(label for label in options.pitch_labels if label not in requested)

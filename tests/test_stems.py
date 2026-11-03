@@ -7,7 +7,7 @@ from typing import NamedTuple
 import pytest
 
 from separator import stems
-from separator.options import SeparationOptions
+from separator.options import MixSpec, SeparationOptions
 from separator.stems import Stem, StemResult
 
 
@@ -18,8 +18,7 @@ class SeparatorCall(NamedTuple):
 
 
 class MixCall(NamedTuple):
-    vocals: Path
-    instruments: Path
+    inputs: list[Path]
     output: Path
 
 
@@ -45,8 +44,8 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             for output in stem.outputs
         }
 
-    def mix(vocals: Path, instruments: Path, output: Path) -> None:
-        mixes.append(MixCall(vocals, instruments, output))
+    def mix(inputs: list[Path], output: Path) -> None:
+        mixes.append(MixCall(inputs, output))
         output.write_bytes(b"rendered mix")
 
     monkeypatch.setattr(stems, "run_separator", separate)
@@ -122,7 +121,7 @@ def test_independent_outputs_hide_prerequisites_and_run_minimum_models(
     graph, flags: dict[str, bool], expected: list[str], models: list[str]
 ) -> None:
     run, calls, mixes = graph
-    result = run(SeparationOptions(**flags))
+    result = run(replace(SeparationOptions(), **flags))
     assert list(result) == expected
     assert [call.stem.model for call in calls] == models
     assert mixes == []
@@ -150,7 +149,7 @@ def test_dereverb_only_pairs_explicit_vocal_outputs(
     graph, flags: dict[str, bool], expected: list[str]
 ) -> None:
     run, calls, _ = graph
-    assert list(run(SeparationOptions(dereverb=True, **flags))) == expected
+    assert list(run(replace(SeparationOptions(dereverb=True), **flags))) == expected
     dry_calls = [call for call in calls if call.stem.model == stems.DEREVERB_MODEL]
     assert [call.source.name for call in dry_calls] == [
         f"{label.removesuffix('-dry')}.mp3"
@@ -159,256 +158,6 @@ def test_dereverb_only_pairs_explicit_vocal_outputs(
     ]
     if not any(label.endswith("-dry") for label in expected):
         assert all(call.stem.model != stems.VOCALS_STEM.model for call in calls)
-
-
-@pytest.mark.parametrize(
-    ("flag", "label", "vocal", "split_model"),
-    [
-        (
-            "mix_female_instruments",
-            "female-instruments",
-            "vocals-female",
-            stems.GENDER_STEMS[0].model,
-        ),
-        (
-            "mix_male_instruments",
-            "male-instruments",
-            "vocals-male",
-            stems.GENDER_STEMS[0].model,
-        ),
-        (
-            "mix_backing_instruments",
-            "backing-instruments",
-            "backing",
-            stems.LEAD_BACKING_STEMS[0].model,
-        ),
-        (
-            "mix_lead_instruments",
-            "lead-instruments",
-            "lead",
-            stems.LEAD_BACKING_STEMS[0].model,
-        ),
-    ],
-)
-@pytest.mark.parametrize("dereverb", [False, True])
-def test_mix_only_never_exposes_prerequisites(
-    graph, flag: str, label: str, vocal: str, split_model: str, dereverb: bool
-) -> None:
-    run, calls, mixes = graph
-    result = run(SeparationOptions(**{flag: True}, dereverb=dereverb))
-    assert list(result) == [label]
-    expected_models = [stems.VOCALS_STEM.model, split_model]
-    if dereverb:
-        expected_models.append(stems.DEREVERB_MODEL)
-    expected_models.append(stems.INSTRUMENTS_STEM.model)
-    assert [call.stem.model for call in calls] == expected_models
-    assert len(mixes) == 1
-    assert mixes[0].vocals.name == f"{vocal}{'-dry' if dereverb else ''}.mp3"
-    assert mixes[0].instruments.name == "instruments.mp3"
-    assert mixes[0].output.name == f"{label}.mp3"
-    if dereverb:
-        assert (
-            next(
-                call.source.name
-                for call in calls
-                if call.stem.model == stems.DEREVERB_MODEL
-            )
-            == f"{vocal}.mp3"
-        )
-
-
-@pytest.mark.parametrize("genders", [False, True])
-@pytest.mark.parametrize("dereverb", [False, True])
-def test_female_and_male_mixes_share_gender_and_dry_passes(
-    graph, genders: bool, dereverb: bool
-) -> None:
-    run, calls, mixes = graph
-    result = run(
-        SeparationOptions(
-            genders=genders,
-            dereverb=dereverb,
-            mix_female_instruments=True,
-            mix_male_instruments=True,
-        )
-    )
-    expected = []
-    if genders:
-        for label in ("vocals-male", "vocals-female"):
-            expected.append(label)
-            if dereverb:
-                expected.append(f"{label}-dry")
-    assert list(result) == [*expected, "female-instruments", "male-instruments"]
-    models = Counter(call.stem.model for call in calls)
-    assert models == Counter(
-        {
-            stems.VOCALS_STEM.model: 1,
-            stems.GENDER_STEMS[0].model: 1,
-            stems.INSTRUMENTS_STEM.model: 1,
-            **({stems.DEREVERB_MODEL: 2} if dereverb else {}),
-        }
-    )
-    assert [mix.vocals.name for mix in mixes] == [
-        f"vocals-female{'-dry' if dereverb else ''}.mp3",
-        f"vocals-male{'-dry' if dereverb else ''}.mp3",
-    ]
-
-
-@pytest.mark.parametrize("lead_backing", [False, True])
-@pytest.mark.parametrize("dereverb", [False, True])
-def test_lead_and_backing_mixes_share_split_and_dry_prerequisites(
-    graph, lead_backing: bool, dereverb: bool
-) -> None:
-    run, calls, mixes = graph
-    result = run(
-        SeparationOptions(
-            lead_backing=lead_backing,
-            dereverb=dereverb,
-            mix_backing_instruments=True,
-            mix_lead_instruments=True,
-        )
-    )
-    expected = []
-    if lead_backing:
-        for label in ("lead", "backing"):
-            expected.append(label)
-            if dereverb:
-                expected.append(f"{label}-dry")
-    assert list(result) == [*expected, "backing-instruments", "lead-instruments"]
-    assert Counter(call.stem.model for call in calls) == Counter(
-        {
-            stems.VOCALS_STEM.model: 1,
-            stems.LEAD_BACKING_STEMS[0].model: 1,
-            stems.INSTRUMENTS_STEM.model: 1,
-            **({stems.DEREVERB_MODEL: 2} if dereverb else {}),
-        }
-    )
-    assert [mix.vocals.name for mix in mixes] == [
-        f"backing{'-dry' if dereverb else ''}.mp3",
-        f"lead{'-dry' if dereverb else ''}.mp3",
-    ]
-    assert [mix.output.name for mix in mixes] == [
-        "backing-instruments.mp3",
-        "lead-instruments.mp3",
-    ]
-
-
-@pytest.mark.parametrize("decrowd_vocals", [False, True])
-@pytest.mark.parametrize("decrowd", [False, True])
-def test_all_mixes_use_cleaned_split_inputs_and_instruments_when_selected(
-    graph, decrowd_vocals: bool, decrowd: bool
-) -> None:
-    run, calls, mixes = graph
-    result = run(
-        SeparationOptions(
-            decrowd_vocals=decrowd_vocals,
-            decrowd=decrowd,
-            dereverb=True,
-            mix_female_instruments=True,
-            mix_male_instruments=True,
-            mix_backing_instruments=True,
-            mix_lead_instruments=True,
-        )
-    )
-    expected = []
-    if decrowd_vocals:
-        expected.extend(("vocals-decrowded", "vocals-decrowded-dry"))
-    if decrowd:
-        expected.append("instruments-decrowded")
-    assert list(result) == [
-        *expected,
-        "female-instruments",
-        "male-instruments",
-        "backing-instruments",
-        "lead-instruments",
-    ]
-    for model in (stems.GENDER_STEMS[0].model, stems.LEAD_BACKING_STEMS[0].model):
-        split_calls = [call for call in calls if call.stem.model == model]
-        assert len(split_calls) == 1
-        assert split_calls[0].source.name == (
-            "vocals-decrowded.mp3" if decrowd_vocals else "vocals.mp3"
-        )
-    assert [mix.vocals.name for mix in mixes] == [
-        "vocals-female-dry.mp3",
-        "vocals-male-dry.mp3",
-        "backing-dry.mp3",
-        "lead-dry.mp3",
-    ]
-    assert {mix.instruments.name for mix in mixes} == {
-        "instruments-decrowded.mp3" if decrowd else "instruments.mp3"
-    }
-    dry_sources = [
-        call.source.name for call in calls if call.stem.model == stems.DEREVERB_MODEL
-    ]
-    assert Counter(dry_sources) == Counter(
-        [
-            *(["vocals-decrowded.mp3"] if decrowd_vocals else []),
-            "vocals-female.mp3",
-            "vocals-male.mp3",
-            "backing.mp3",
-            "lead.mp3",
-        ]
-    )
-    assert Counter(call.stem.model for call in calls) == Counter(
-        {
-            stems.VOCALS_STEM.model: 1,
-            stems.GENDER_STEMS[0].model: 1,
-            stems.LEAD_BACKING_STEMS[0].model: 1,
-            stems.INSTRUMENTS_STEM.model: 1,
-            stems.DEREVERB_MODEL: 4 + int(decrowd_vocals),
-            **(
-                {stems.DECROWD_STEMS[0].model: int(decrowd) + int(decrowd_vocals)}
-                if decrowd or decrowd_vocals
-                else {}
-            ),
-        }
-    )
-
-
-def test_all_options_keep_explicit_wet_dry_pairs_adjacent(graph) -> None:
-    run, calls, mixes = graph
-    result = run(
-        SeparationOptions(
-            extract_vocals=True,
-            extract_instruments=True,
-            decrowd=True,
-            decrowd_vocals=True,
-            dereverb=True,
-            genders=True,
-            lead_backing=True,
-            drums=True,
-            mix_female_instruments=True,
-            mix_male_instruments=True,
-            mix_backing_instruments=True,
-            mix_lead_instruments=True,
-            no_cache=True,
-        )
-    )
-    assert list(result) == [
-        "vocals",
-        "vocals-dry",
-        "vocals-decrowded",
-        "vocals-decrowded-dry",
-        "vocals-male",
-        "vocals-male-dry",
-        "vocals-female",
-        "vocals-female-dry",
-        "lead",
-        "lead-dry",
-        "backing",
-        "backing-dry",
-        "instruments",
-        "instruments-decrowded",
-        "drums",
-        "bass",
-        "other-instruments",
-        "female-instruments",
-        "male-instruments",
-        "backing-instruments",
-        "lead-instruments",
-    ]
-    assert len(calls) == 13
-    assert all(not call.use_cache for call in calls)
-    assert len(mixes) == 4
 
 
 def test_explicit_base_outputs_are_independent_and_use_cache_by_default(graph) -> None:
@@ -430,15 +179,11 @@ def test_explicit_base_outputs_are_independent_and_use_cache_by_default(graph) -
 
 
 def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(graph):
-    """Exhaust the 8192 local graphs, not 8192 costly GPU inferences."""
+    """Exhaust independent output flags without invoking costly inference."""
     run, calls, mixes = graph
     flags = (
         "extract_vocals",
         "extract_instruments",
-        "mix_female_instruments",
-        "mix_male_instruments",
-        "mix_backing_instruments",
-        "mix_lead_instruments",
         "decrowd",
         "decrowd_vocals",
         "dereverb",
@@ -459,10 +204,6 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
         ("drums", "drums"),
         ("bass", "drums"),
         ("other-instruments", "drums"),
-        ("female-instruments", "mix_female_instruments"),
-        ("male-instruments", "mix_male_instruments"),
-        ("backing-instruments", "mix_backing_instruments"),
-        ("lead-instruments", "mix_lead_instruments"),
     )
     vocal_labels = {
         "vocals",
@@ -474,7 +215,7 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
     }
     for values in product((False, True), repeat=len(flags)):
         selected = dict(zip(flags, values, strict=True))
-        options = SeparationOptions(**selected)
+        options = replace(SeparationOptions(), **selected)
         expected = []
         for label, flag in public_outputs:
             if selected[flag]:
@@ -509,16 +250,6 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
                     "vocals-decrowded.mp3" if options.decrowd_vocals else "vocals.mp3"
                 )
                 assert call.source.name == expected_vocal
-        for mix in mixes:
-            assert mix.vocals.name in available
-            assert mix.instruments.name in available
-            assert mix.vocals.name.endswith("-dry.mp3") is options.dereverb
-            assert mix.instruments.name == (
-                "instruments-decrowded.mp3" if options.decrowd else "instruments.mp3"
-            )
-        assert len(mixes) == sum(
-            selected[flag] for flag in flags if flag.startswith("mix_")
-        )
 
 
 @pytest.mark.parametrize("no_cache", [False, True])
@@ -529,13 +260,13 @@ def test_lyrics_prerequisite_does_not_add_raw_vocal_dereverb_passes(
     result = run(
         SeparationOptions(
             extract_lyrics=True,
-            mix_lead_instruments=True,
+            mixes=(MixSpec("mix-lead", "Lead + Instruments", ("lead", "instruments")),),
             dereverb=True,
             no_cache=no_cache,
         )
     )
     # Raw vocals are internal ASR input, not another selected wet/dry pair.
-    assert list(result) == ["lead-instruments", "vocals"]
+    assert list(result) == ["mix-lead", "vocals"]
     assert Counter(call.stem.model for call in calls) == Counter(
         {
             stems.VOCALS_STEM.model: 1,
@@ -547,7 +278,7 @@ def test_lyrics_prerequisite_does_not_add_raw_vocal_dereverb_passes(
     dry_calls = [call for call in calls if call.stem.model == stems.DEREVERB_MODEL]
     assert dry_calls[0].source.name == "lead.mp3"
     assert len(mixes) == 1
-    assert mixes[0].vocals.name == "lead-dry.mp3"
+    assert mixes[0].inputs[0].name == "lead-dry.mp3"
     assert all(call.use_cache is not no_cache for call in calls)
 
 

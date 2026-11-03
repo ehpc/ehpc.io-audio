@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { BooleanOptionKey, SeparationOptions } from "~/api";
-import { displayOutputLabel, expectedPitchStems, expectedStems } from "./expectedStems";
+import type { BooleanOptionKey, SeparationOptions, StemManifestEntry } from "~/api";
+import { displayOutputLabel, expectedPitchStems, expectedStems, manifestOutputLabel } from "./expectedStems";
+import type { StemMix } from "./stemMix";
 
 const NONE: SeparationOptions = {
   extract_vocals: false, extract_instruments: false,
   extract_lyrics: false,
   detect_pitch: false,
   extract_pitched_lyrics: false,
-  mix_female_instruments: false, mix_male_instruments: false, mix_backing_instruments: false,
-  mix_lead_instruments: false,
+  mixes: [],
   decrowd: false, decrowd_vocals: false, dereverb: false, genders: false,
   lead_backing: false, drums: false, no_cache: false,
   pitch_semitones: 0, tempo_percent: 100,
 };
+
+const MIX = (id: string, components: StemMix["components"], name?: string): StemMix => ({
+  id, name: name ?? components.join(" + "), components,
+});
 
 describe("expectedStems", () => {
   it("counts one pitched TXT per analyzed vocal output without adding hidden audio", () => {
@@ -21,7 +25,7 @@ describe("expectedStems", () => {
     expect(expectedStems({ ...NONE, extract_pitched_lyrics: true })).toEqual([]);
     expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, lead_backing: true, dereverb: true })).toEqual(["lead", "lead-dry", "backing", "backing-dry"]);
     expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, extract_instruments: true })).toEqual(["vocals"]);
-    expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, mix_female_instruments: true })).toEqual(["vocals"]);
+    expect(expectedPitchStems({ ...NONE, extract_pitched_lyrics: true, mixes: [MIX("mix-1", ["female", "instruments"])] })).toEqual(["vocals"]);
   });
   it("does not treat lyrics as an audio stem", () => {
     expect(expectedStems({ ...NONE, extract_lyrics: true })).toEqual([]);
@@ -34,29 +38,33 @@ describe("expectedStems", () => {
     expect(expectedStems({ ...NONE, extract_instruments: true, dereverb: true })).toEqual(["instruments"]);
   });
 
-  it("outputs only explicitly selected extracts and mix labels", () => {
+  it("outputs only explicitly selected extracts", () => {
     expect(expectedStems({ ...NONE, extract_vocals: true })).toEqual(["vocals"]);
     expect(expectedStems({ ...NONE, extract_instruments: true })).toEqual(["instruments"]);
-    expect(expectedStems({ ...NONE, mix_female_instruments: true })).toEqual(["female-instruments"]);
-    expect(expectedStems({ ...NONE, mix_male_instruments: true })).toEqual(["male-instruments"]);
-    expect(expectedStems({ ...NONE, mix_backing_instruments: true })).toEqual(["backing-instruments"]);
-    expect(expectedStems({ ...NONE, mix_lead_instruments: true })).toEqual(["lead-instruments"]);
+    expect(expectedStems({ ...NONE, drums: true })).toEqual(["drums", "bass", "other-instruments"]);
+    expect(expectedStems({ ...NONE, decrowd: true })).toEqual(["instruments-decrowded"]);
+    expect(expectedStems({ ...NONE, tempo_percent: 80, no_cache: true })).toEqual(["song"]);
   });
 
-  it("produces no -dry stems when dereverb is off", () => {
-    const labels = expectedStems({ ...NONE, genders: true, lead_backing: true });
-    expect(labels.some((l) => l.endsWith("-dry"))).toBe(false);
+  it("emits one result per queued mix, labelled by its stable id", () => {
+    expect(expectedStems({ ...NONE, mixes: [MIX("mix-1", ["drums", "bass"]), MIX("mix-2", ["bass", "vocals"])] }))
+      .toEqual(["mix-1", "mix-2"]);
+    expect(expectedStems({
+      ...NONE, mixes: [MIX("mix-7", ["drums", "bass"])], dereverb: true, pitch_semitones: 1.25, tempo_percent: 125,
+    })).toEqual(["song", "mix-7"]);
   });
 
-  it("keeps wet/dry pairs adjacent, followed by instruments and mixes", () => {
+  it("treats mixes as real selections, so dereverb does not fall back to vocals-dry", () => {
+    expect(expectedStems({ ...NONE, dereverb: true, mixes: [MIX("mix-1", ["drums", "bass"])] })).toEqual(["mix-1"]);
+    expect(expectedStems({ ...NONE, dereverb: true })).toEqual(["vocals-dry"]);
+  });
+
+  it("keeps wet/dry pairs adjacent, followed by mixes", () => {
     const all: SeparationOptions = {
       ...NONE,
       extract_vocals: true,
       extract_instruments: true,
-      mix_female_instruments: true,
-      mix_male_instruments: true,
-      mix_backing_instruments: true,
-      mix_lead_instruments: true,
+      mixes: [MIX("mix-1", ["drums", "bass"]), MIX("mix-2", ["female", "instruments"])],
       decrowd: true,
       decrowd_vocals: true,
       dereverb: true,
@@ -85,38 +93,16 @@ describe("expectedStems", () => {
       "drums",
       "bass",
       "other-instruments",
-      "female-instruments",
-      "male-instruments",
-      "backing-instruments",
-      "lead-instruments",
+      "mix-1",
+      "mix-2",
     ]);
   });
 
-  it("cleans mix prerequisites without exposing their stems", () => {
-    expect(expectedStems({
-      ...NONE, dereverb: true,
-      mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true,
-    })).toEqual(["female-instruments", "male-instruments", "backing-instruments", "lead-instruments"]);
-    expect(expectedStems({ ...NONE, drums: true })).toEqual(["drums", "bass", "other-instruments"]);
-    expect(expectedStems({ ...NONE, decrowd: true })).toEqual(["instruments-decrowded"]);
-    expect(expectedStems({ ...NONE, tempo_percent: 80, no_cache: true })).toEqual(["song"]);
-  });
-
-  it("keeps lead-mix prerequisites private with dry vocals, cleanup and transforms", () => {
-    const mix = { ...NONE, mix_lead_instruments: true, dereverb: true, pitch_semitones: 1.25, tempo_percent: 125 };
-    expect(expectedStems(mix)).toEqual(["song", "lead-instruments"]);
-    expect(expectedStems({ ...mix, decrowd: true, decrowd_vocals: true })).toEqual([
-      "song", "vocals-decrowded", "vocals-decrowded-dry", "instruments-decrowded", "lead-instruments",
-    ]);
-    expect(expectedStems({ ...mix, lead_backing: true })).toEqual([
-      "song", "lead", "lead-dry", "backing", "backing-dry", "lead-instruments",
-    ]);
-  });
-
-  it("keeps the exact public-output contract for all 8192 boolean selections", () => {
-    const flags = (Object.keys(NONE) as BooleanOptionKey[]).filter((key) =>
-      key !== "extract_lyrics" && key !== "detect_pitch" && key !== "extract_pitched_lyrics" && typeof NONE[key] === "boolean",
-    );
+  it("keeps the exact public-output contract for all 2048 boolean selections", () => {
+    const flags = (Object.keys(NONE) as (keyof SeparationOptions)[]).filter((key) =>
+      key !== "extract_lyrics" && key !== "detect_pitch" && key !== "extract_pitched_lyrics"
+      && key !== "mixes" && typeof NONE[key] === "boolean",
+    ) as BooleanOptionKey[];
     const outputs: [string, BooleanOptionKey, boolean][] = [
       ["vocals", "extract_vocals", true],
       ["vocals-decrowded", "decrowd_vocals", true],
@@ -129,10 +115,6 @@ describe("expectedStems", () => {
       ["drums", "drums", false],
       ["bass", "drums", false],
       ["other-instruments", "drums", false],
-      ["female-instruments", "mix_female_instruments", false],
-      ["male-instruments", "mix_male_instruments", false],
-      ["backing-instruments", "mix_backing_instruments", false],
-      ["lead-instruments", "mix_lead_instruments", false],
     ];
     for (let mask = 0; mask < 2 ** flags.length; mask++) {
       const options = { ...NONE };
@@ -169,5 +151,25 @@ describe("displayOutputLabel", () => {
       .toBe("vocals (tempo 120%)");
     expect(displayOutputLabel("vocals", { ...NONE, pitch_semitones: -2.5, tempo_percent: 85 }))
       .toBe("vocals (pitch -2.5 st, tempo 85%)");
+  });
+
+  it("resolves mix ids to their mix names, never raw component labels", () => {
+    const options: SeparationOptions = { ...NONE, mixes: [MIX("mix-1", ["drums", "bass"], "My groove")] };
+    expect(displayOutputLabel("mix-1", options)).toBe("My groove");
+    expect(displayOutputLabel("mix-1", { ...options, pitch_semitones: 2 })).toBe("My groove (pitch +2 st)");
+    // Unknown ids (historical jobs) fall back to the raw legacy label.
+    expect(displayOutputLabel("mix-1", NONE)).toBe("mix-1");
+  });
+});
+
+describe("manifestOutputLabel", () => {
+  it("prefers the server display name when the manifest provides one", () => {
+    const stem: StemManifestEntry = { label: "mix-1", display_name: "My groove", filename: "mix-1.mp3", download_name: "My groove - mix-1.mp3", size_bytes: 1, duration_s: 1 };
+    expect(manifestOutputLabel(stem, { ...NONE, mixes: [MIX("mix-1", ["drums", "bass"], "My groove")] })).toBe("My groove");
+  });
+
+  it("falls back to the label for historical payloads without display names", () => {
+    const stem: StemManifestEntry = { label: "female-instruments", filename: "female-instruments.mp3", download_name: "song - female-instruments.mp3", size_bytes: 1, duration_s: 1 };
+    expect(manifestOutputLabel(stem, NONE)).toBe("female-instruments");
   });
 });

@@ -1,7 +1,11 @@
+import { mixIdValid, stemMixError, type StemMix } from "~/lib/stemMix";
+
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
 export interface StemManifestEntry {
   label: string;
+  /** Visible name for the output; the mix name for mix ids, absent in historical payloads. */
+  display_name?: string;
   filename: string;
   download_name: string;
   size_bytes: number;
@@ -14,10 +18,7 @@ export interface SeparationOptions {
   extract_lyrics: boolean;
   detect_pitch: boolean;
   extract_pitched_lyrics: boolean;
-  mix_female_instruments: boolean;
-  mix_male_instruments: boolean;
-  mix_backing_instruments: boolean;
-  mix_lead_instruments: boolean;
+  mixes: StemMix[];
   decrowd: boolean;
   decrowd_vocals: boolean;
   dereverb: boolean;
@@ -266,10 +267,6 @@ const API_BASE = "/api";
 const OPTION_KEYS: BooleanOptionKey[] = [
   "extract_vocals",
   "extract_instruments",
-  "mix_female_instruments",
-  "mix_male_instruments",
-  "mix_backing_instruments",
-  "mix_lead_instruments",
   "decrowd",
   "decrowd_vocals",
   "dereverb",
@@ -302,6 +299,11 @@ export function audioSettingsError(options: SeparationOptions): string | null {
   if (!Number.isFinite(options.tempo_percent) || options.tempo_percent <= 0) {
     return "Tempo must be a positive, finite number.";
   }
+  for (const mix of options.mixes) {
+    const mixError = stemMixError(mix);
+    if (mixError) return mixError;
+    if (!mixIdValid(mix.id)) return "A mix has an invalid identifier.";
+  }
   return null;
 }
 
@@ -319,6 +321,7 @@ export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
   }
   form.append("pitch_semitones", String(input.options.pitch_semitones));
   form.append("tempo_percent", String(input.options.tempo_percent));
+  form.append("mixes", JSON.stringify(input.options.mixes));
 
   const res = await fetch(`${API_BASE}/jobs`, {
     method: "POST",

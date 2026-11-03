@@ -23,10 +23,7 @@ def test_submit_url_queues_job(client: TestClient) -> None:
     options = client.get("/api/jobs/1").json()["options"]
     assert options["extract_vocals"] is False
     assert options["extract_instruments"] is False
-    assert options["mix_female_instruments"] is False
-    assert options["mix_male_instruments"] is False
-    assert options["mix_backing_instruments"] is False
-    assert options["mix_lead_instruments"] is False
+    assert options["mixes"] == []
 
 
 def test_submit_requires_exactly_one_source(client: TestClient) -> None:
@@ -225,28 +222,32 @@ def test_old_jobs_survive_key_metadata_migration(client: TestClient) -> None:
     assert client.get(f"/api/jobs/{job_id}/results/vocals").content.endswith(b"old")
     assert job["options"]["extract_vocals"] is True
     assert job["options"]["extract_instruments"] is True
-    assert job["options"]["mix_lead_instruments"] is False
+    assert job["options"]["mixes"] == []
     retried_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
     retried = client.get(f"/api/jobs/{retried_id}").json()
     assert retried["options"]["extract_vocals"] is True
     assert retried["options"]["extract_instruments"] is True
-    assert retried["options"]["mix_lead_instruments"] is False
+    assert retried["options"]["mixes"] == []
 
 
 def test_explicit_outputs_survive_submission_and_retry(client: TestClient) -> None:
     selected = {
         "extract_vocals": True,
         "extract_instruments": False,
-        "mix_female_instruments": True,
-        "mix_male_instruments": True,
-        "mix_backing_instruments": True,
-        "mix_lead_instruments": True,
+        "mixes": [
+            {
+                "id": f"mix-{part}",
+                "name": f"{part} + instruments",
+                "components": [part, "instruments"],
+            }
+            for part in ("female", "male", "backing", "lead")
+        ],
     }
     job_id = client.post(
         "/api/jobs",
         data={
             "url": "https://example.com/song",
-            **{name: str(value).lower() for name, value in selected.items()},
+            **{name: json.dumps(value) for name, value in selected.items()},
         },
     ).json()["id"]
     db.init_db()
@@ -276,10 +277,14 @@ def test_historical_explicit_mix_options_do_not_enable_lead_on_retry(
     db.init_db()
     stored = db.get_job(job_id)
     assert stored is not None
-    assert stored.options.mix_lead_instruments is False
-    assert stored.options.output_labels == ["backing-instruments"]
+    assert stored.options.output_labels == ["mix-legacy-backing"]
     options = client.get(f"/api/jobs/{job_id}").json()["options"]
-    assert options["mix_backing_instruments"] is True
-    assert options["mix_lead_instruments"] is False
+    assert options["mixes"] == [
+        {
+            "id": "mix-legacy-backing",
+            "name": "Backing vocals + Instruments",
+            "components": ["backing", "instruments"],
+        }
+    ]
     retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
     assert client.get(f"/api/jobs/{retry_id}").json()["options"] == options

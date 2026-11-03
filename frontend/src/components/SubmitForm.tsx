@@ -4,6 +4,7 @@ import type { BooleanOptionKey, JobDTO, SeparationOptions } from "~/api";
 import { analyzeKey, audioSettingsError, submitJob } from "~/api";
 import { Button } from "~/components/button";
 import KeyNotes from "~/components/KeyNotes";
+import MixBuilder from "~/components/MixBuilder";
 import { Label } from "~/components/label";
 import { TextField, TextFieldInput } from "~/components/text-field";
 import { displayOutputLabel, expectedPitchStems, expectedStems } from "~/lib/expectedStems";
@@ -28,10 +29,6 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
   { key: "extract_lyrics", label: "Extract lyrics", group: "Outputs" },
   { key: "detect_pitch", label: "Detect vocal pitch", group: "Outputs" },
   { key: "extract_pitched_lyrics", label: "Lyrics with pitches", group: "Outputs" },
-  { key: "mix_female_instruments", label: "Female vocals + instruments", mobileLabel: "Female + instruments", group: "Mixes" },
-  { key: "mix_male_instruments", label: "Male vocals + instruments", mobileLabel: "Male + instruments", group: "Mixes" },
-  { key: "mix_backing_instruments", label: "Backing vocals + instruments", mobileLabel: "Backing + instruments", group: "Mixes" },
-  { key: "mix_lead_instruments", label: "Lead vocals + instruments", mobileLabel: "Lead + instruments", group: "Mixes" },
   { key: "decrowd", label: "Remove crowd noise from instrumental", mobileLabel: "Crowd off instruments", group: "Cleanup" },
   { key: "decrowd_vocals", label: "Remove crowd noise from vocals", mobileLabel: "Crowd off vocals", group: "Cleanup" },
   { key: "dereverb", label: "Dereverb (remove reverb)", mobileLabel: "Remove reverb", group: "Cleanup" },
@@ -46,10 +43,7 @@ const DEFAULT_OPTIONS: SeparationOptions = {
   extract_lyrics: false,
   detect_pitch: false,
   extract_pitched_lyrics: false,
-  mix_female_instruments: false,
-  mix_male_instruments: false,
-  mix_backing_instruments: false,
-  mix_lead_instruments: false,
+  mixes: [],
   decrowd: false,
   decrowd_vocals: false,
   dereverb: false,
@@ -65,7 +59,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const [mode, setMode] = createSignal<SourceMode>("url");
   const [url, setUrl] = createSignal("");
   const [file, setFile] = createSignal<File | null>(null);
-  const [options, setOptions] = createStore<SeparationOptions>({ ...DEFAULT_OPTIONS });
+  // Fresh mixes array per form instance so nothing shares DEFAULT_OPTIONS.mixes.
+  const [options, setOptions] = createStore<SeparationOptions>({ ...DEFAULT_OPTIONS, mixes: [] });
   const [submitting, setSubmitting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [originalKey, setOriginalKey] = createSignal<string | null>(null);
@@ -174,7 +169,12 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     const usingUrl = mode() === "url";
     const chosenUrl = trimmedUrl();
     const chosenFile = file();
-    const submittedOptions = { ...options };
+    // Snapshot including mixes: editing or removing a mix while the POST is
+    // pending must never mutate the submitted payload or the optimistic job.
+    const submittedOptions: SeparationOptions = {
+      ...options,
+      mixes: options.mixes.map((mix) => ({ ...mix, components: [...mix.components] })),
+    };
     try {
       const result = await submitJob({
         url: usingUrl ? chosenUrl : undefined,
@@ -273,19 +273,21 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           <div class="workspace-heading"><h2>Choose your outputs</h2><span>All optional</span></div>
           <div class="option-groups">
             <For each={OPTION_GROUPS}>{(group) => (
-              <fieldset class="option-group">
-                <legend>{group}</legend>
-                <For each={PROCESSING_OPTIONS.filter((option) => option.group === group)}>{(opt) => (
-                  <label class="workspace-option" for={`option-${opt.key}`}>
-                    <input id={`option-${opt.key}`} type="checkbox" checked={options[opt.key]} aria-label={opt.label}
-                      onChange={(event) => setOptions(opt.key, event.currentTarget.checked)} />
-                    <span>{mobile() && opt.mobileLabel ? opt.mobileLabel : opt.label}</span>
-                  </label>
-                )}</For>
-              </fieldset>
+              <Show when={group !== "Mixes"} fallback={<MixBuilder mixes={options.mixes} onMixesChange={(mixes) => setOptions("mixes", mixes)} mobile={mobile()} />}>
+                <fieldset class="option-group" classList={{ "output-group": group === "Outputs" }}>
+                  <legend>{group}</legend>
+                  <For each={PROCESSING_OPTIONS.filter((option) => option.group === group)}>{(opt) => (
+                    <label class="workspace-option" for={`option-${opt.key}`}>
+                      <input id={`option-${opt.key}`} type="checkbox" checked={options[opt.key]} aria-label={opt.label}
+                        onChange={(event) => setOptions(opt.key, event.currentTarget.checked)} />
+                      <span>{mobile() && opt.mobileLabel ? opt.mobileLabel : opt.label}</span>
+                    </label>
+                  )}</For>
+                </fieldset>
+              </Show>
             )}</For>
           </div>
-          <p class="workspace-helper">{mobile() ? "Mixes auto-extract vocals + instruments." : "Mixes automatically extract their required vocal and instrumental parts."}</p>
+          <p class="workspace-helper"><strong>Needed stems are extracted automatically.</strong> Only your selected mixes and outputs are downloaded, plus the unchanged original.</p>
           <Show when={options.detect_pitch}>
             <p class="workspace-helper">Vocal melody notes for each selected vocal stem, or full vocals internally if none selected. Add lyrics for approximate sung-word alignment.</p>
           </Show>
@@ -365,6 +367,12 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             aria-labelledby={mobile() ? "tab-review" : undefined}>
             <h2>Output preview</h2>
             <p class="workspace-helper">Tracks and files you'll get ({outputCount()})</p>
+            <Show when={options.mixes.length > 0}>
+              <p class="preview-count" aria-live="polite">
+                {options.mixes.length} {options.mixes.length === 1 ? "mix" : "mixes"} ·
+                {" "}{outputCount() - options.mixes.length - 1} separate {outputCount() - options.mixes.length - 1 === 1 ? "output" : "outputs"} · original
+              </p>
+            </Show>
             <div class="output-tags">
               <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options)}</span>}</For>
               <Show when={options.extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
@@ -378,7 +386,11 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
 
           <div class="workspace-action">
             <div class="action-summary">
-              <span>{outputCount() === 1 ? "Original only · unchanged" : `${outputCount()} outputs · original included`}</span>
+              <span>
+                {options.mixes.length > 0
+                  ? `${options.mixes.length} ${options.mixes.length === 1 ? "mix" : "mixes"} · original included`
+                  : outputCount() === 1 ? "Original only · unchanged" : `${outputCount()} outputs · original included`}
+              </span>
               <button type="button" onClick={() => showTab("review", true)}>Review →</button>
             </div>
             <Show when={error()}><p role="alert" class="text-sm text-destructive">{error()}</p></Show>

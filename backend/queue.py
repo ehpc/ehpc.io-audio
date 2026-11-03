@@ -81,6 +81,7 @@ def _persist_results(
                 label=label,
                 filename=filename,
                 download_name=download_name,
+                display_name=job.options.display_name(label),
                 size_bytes=size_bytes,
                 duration_s=stem_result.duration_s,
             )

@@ -23,17 +23,17 @@ from backend import config, db, queue
 from backend.main import app
 from backend.metadata import ensure_download_title
 from backend.models import ResultManifestEntry, download_filename
-from separator.options import SeparationOptions
+from separator.options import MixSpec, SeparationOptions
 from separator.stems import StemResult
 
 _NATIVE = all(shutil.which(tool) for tool in ("ffmpeg", "ffprobe"))
 _ALL_OUTPUTS = SeparationOptions(
     extract_vocals=True,
     extract_instruments=True,
-    mix_female_instruments=True,
-    mix_male_instruments=True,
-    mix_backing_instruments=True,
-    mix_lead_instruments=True,
+    mixes=tuple(
+        MixSpec(f"mix-{part}", f"{part} + instruments", (part, "instruments"))
+        for part in ("female", "male", "backing", "lead")
+    ),
     decrowd=True,
     decrowd_vocals=True,
     dereverb=True,
@@ -201,7 +201,9 @@ def test_lead_mix_is_transformed_as_one_output_before_metadata_persistence(
     tagged_mp3: bytes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     options = SeparationOptions(
-        mix_lead_instruments=True, pitch_semitones=2, tempo_percent=120
+        mixes=(MixSpec("mix-lead", "Lead + Instruments", ("lead", "instruments")),),
+        pitch_semitones=2,
+        tempo_percent=120,
     )
     job_id = db.insert_job("s1", "upload", "Source.mp3", options)
     job = db.get_job(job_id)
@@ -215,14 +217,13 @@ def test_lead_mix_is_transformed_as_one_output_before_metadata_persistence(
         return tagged_mp3
 
     monkeypatch.setattr(queue, "transform_audio", transform)
-    (entry,) = queue._persist_results(
-        job, {"lead-instruments": StemResult(mixed_audio, 0.3)}
-    )
+    (entry,) = queue._persist_results(job, {"mix-lead": StemResult(mixed_audio, 0.3)})
     assert transformed == [(mixed_audio, options)]
-    assert entry.label == "lead-instruments"
-    assert entry.filename == "lead-instruments - pitch+2st - tempo120pct.mp3"
+    assert entry.label == "mix-lead"
+    assert entry.filename == "mix-lead - pitch+2st - tempo120pct.mp3"
     assert entry.download_name == (
-        "Source - lead-instruments - source-key-C-major - pitch+2st - tempo120pct.mp3"
+        "Source - Lead + Instruments [mix-lead] - source-key-C-major"
+        " - pitch+2st - tempo120pct.mp3"
     )
     path = config.RESULTS_DIR / str(job_id) / entry.filename
     assert _tags(path.read_bytes())["TIT2"].text == [
@@ -366,7 +367,7 @@ def test_native_http_history_download_has_title_and_preserves_original(
 
 def test_concurrent_result_size_updates_preserve_other_manifest_fields() -> None:
     job_id = db.insert_job("s1", "upload", "Source.mp3", SeparationOptions())
-    labels = ("vocals", "instruments", "female-instruments", "song")
+    labels = ("vocals", "instruments", "mix-legacy-female", "song")
     manifest = [
         ResultManifestEntry(
             label=label,

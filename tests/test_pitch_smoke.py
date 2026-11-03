@@ -14,7 +14,7 @@ from lyrics_fixture import full_sung_song
 from backend import config
 from backend.modal_client import LYRICS_FUNCTION_NAME
 from separator.modal_app import GPU, STRUCTURE_PYTHON, TIMEOUT, image
-from separator.options import SeparationOptions
+from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.pitch import pitch_from_json
 from separator.processing import ProcessingResult
 
@@ -39,6 +39,7 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
             tempo_percent=125,
         ),
         analysis_schema=2,
+        options_schema=OPTIONS_SCHEMA_VERSION,
     )
     elapsed = time.monotonic() - started
     assert list(result.audio) == ["vocals", "lead", "backing"]

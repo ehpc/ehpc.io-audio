@@ -14,11 +14,11 @@ from pathlib import Path
 import modal
 
 from separator.lyrics_reference import ReferenceMetadata
-from separator.options import SeparationOptions
+from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.processing import ProcessingResult, analysis_transport, run_processing
 from separator.stems import SeparationResult, run_separation
 
-app = modal.App("audio-separator")
+app = modal.App("audio-separator-v2")
 
 model_volume = modal.Volume.from_name("audio-separator-models", create_if_missing=True)
 MODEL_CACHE = "/model-cache"
@@ -116,9 +116,15 @@ def _source_audio(audio_bytes: bytes, filename: str) -> Iterator[tuple[Path, Pat
     timeout=TIMEOUT,
 )
 def separate(
-    audio_bytes: bytes, filename: str, options: SeparationOptions
+    audio_bytes: bytes,
+    filename: str,
+    options: SeparationOptions,
+    *,
+    options_schema: int,
 ) -> SeparationResult:
     """Core audio RPC: keep its dictionary result usable by audio-only clients."""
+    if options_schema != OPTIONS_SCHEMA_VERSION:
+        raise ValueError("incompatible separation options schema")
     with _source_audio(audio_bytes, filename) as (tmp, input_path):
         results = run_separation(input_path, options, tmp, MODEL_CACHE, STEM_CACHE)
         model_volume.commit()
@@ -138,8 +144,11 @@ def separate_with_lyrics(
     reference_metadata: ReferenceMetadata | None = None,
     *,
     analysis_schema: int = 1,
+    options_schema: int,
 ) -> ProcessingResult:
     """Optional lyrics/pitch RPC; audio-only clients retain their dict RPC."""
+    if options_schema != OPTIONS_SCHEMA_VERSION:
+        raise ValueError("incompatible separation options schema")
     with _source_audio(audio_bytes, filename) as (tmp, input_path):
         results = run_processing(
             input_path,

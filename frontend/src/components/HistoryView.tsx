@@ -1,7 +1,7 @@
 import { createSignal, For, Show, type Component } from "solid-js";
 import type { JobDTO, JobStatus } from "~/api";
 import { jobLabel, originalUrl, pitchDownloadUrl, resultUrl, retryJob } from "~/api";
-import { displayOutputLabel } from "~/lib/expectedStems";
+import { displayOutputLabel, manifestOutputLabel } from "~/lib/expectedStems";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
@@ -127,7 +127,7 @@ const HistoryView: Component<{
                             onClick={(event) => event.stopPropagation()}
                             class="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-foreground hover:bg-accent hover:underline"
                           >
-                            {displayOutputLabel(stem.label, job.options)}
+                            {manifestOutputLabel(stem, job.options)}
                             <Show when={job.original_key}>
                               <span class="ml-1.5 normal-case">Source key: {job.original_key}</span>
                             </Show>

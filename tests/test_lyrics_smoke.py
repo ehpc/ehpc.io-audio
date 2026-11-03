@@ -19,7 +19,7 @@ from separator.modal_app import (
     image,
     model_volume,
 )
-from separator.options import SeparationOptions
+from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.processing import ProcessingResult
 
 pytestmark = [pytest.mark.smoke, pytest.mark.timeout(TIMEOUT + 300)]
@@ -52,6 +52,7 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
         "jfk-reference.flac",
         SeparationOptions(extract_lyrics=True, no_cache=True),
         analysis_schema=2,
+        options_schema=OPTIONS_SCHEMA_VERSION,
     )
     assert result.audio == {}, "the prerequisite vocal stem must remain internal"
     transcript = result.transcript
@@ -90,6 +91,7 @@ def test_deployed_lyrics_retains_later_sung_verse() -> None:
         "public-domain-singing.flac",
         SeparationOptions(extract_lyrics=True, no_cache=True),
         analysis_schema=2,
+        options_schema=OPTIONS_SCHEMA_VERSION,
     )
     assert result.audio == {}
     transcript = result.transcript

@@ -5,29 +5,56 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import type { BooleanOptionKey, JobDTO, SeparationOptions } from '../src/api';
 import { displayOutputLabel } from '../src/lib/expectedStems';
 import { keyScale, transposeKey } from '../src/lib/music';
+import { stemMixName, type StemComponent, type StemMix } from '../src/lib/stemMix';
 import { hash, inspectAudio, inspectMix, inspectTransformedSource, pcm } from './audio';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
-const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'mix_female_instruments', 'mix_male_instruments', 'mix_backing_instruments', 'mix_lead_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
+const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
 const booleanKeys: BooleanOptionKey[] = [...audioBooleanKeys, 'extract_lyrics', 'detect_pitch', 'extract_pitched_lyrics'];
-const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['detect_pitch', false], ['extract_pitched_lyrics', false], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
-const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'];
-const mixInputs = [
-  { option: 'mix_female_instruments', label: 'female-instruments', vocal: 'vocals-female' },
-  { option: 'mix_male_instruments', label: 'male-instruments', vocal: 'vocals-male' },
-  { option: 'mix_backing_instruments', label: 'backing-instruments', vocal: 'backing' },
-  { option: 'mix_lead_instruments', label: 'lead-instruments', vocal: 'lead' },
-] as const;
+const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['detect_pitch', false], ['extract_pitched_lyrics', false], ['mixes', []], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
+const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments'];
+const COMPONENT_LABELS: Record<StemComponent, string> = {
+  drums: 'Drums', bass: 'Bass', vocals: 'Vocals', other: 'Other instruments', instruments: 'Instruments',
+  female: 'Female vocals', male: 'Male vocals', lead: 'Lead vocals', backing: 'Backing vocals',
+};
+const VARIANT_COMPONENTS: StemComponent[] = ['female', 'male', 'lead', 'backing'];
+const MIX = (id: string, components: StemComponent[], name?: string): StemMix => ({
+  id, name: name ?? stemMixName(components), components,
+});
+/**
+ * Source stems a mix is built from. Dereverb cleans the vocal ingredient the
+ * same way it did for the previous fixed mixes; the decrowd mapping for
+ * component instruments is a backend-owned decision and mix cases therefore
+ * stay decrowd-free.
+ */
+const componentStems = (component: StemComponent, options: SeparationOptions): string[] => {
+  const dry = options.dereverb ? '-dry' : '';
+  switch (component) {
+    case 'drums': return ['drums'];
+    case 'bass': return ['bass'];
+    case 'vocals': return [`vocals${dry}`];
+    case 'other': return ['other-instruments'];
+    case 'instruments': return ['drums', 'bass', 'other-instruments'];
+    case 'female': return [`vocals-female${dry}`];
+    case 'male': return [`vocals-male${dry}`];
+    case 'lead': return [`lead${dry}`];
+    case 'backing': return [`backing${dry}`];
+  }
+};
 interface Case { name: string; selected: Partial<SeparationOptions>; labels: string[]; source?: 'url'; cache?: 'hit' | 'bypass'; fixture?: 'tone-fixture'; }
 const cases: Case[] = [
   { name: 'identity-original-only', selected: {}, labels: [] },
   { name: 'extract_vocals', selected: { extract_vocals: true }, labels: ['vocals'] },
   { name: 'extract_instruments', selected: { extract_instruments: true }, labels: ['instruments'] },
-  { name: 'mix_female_instruments', selected: { mix_female_instruments: true }, labels: ['female-instruments'] },
-  { name: 'mix_male_instruments', selected: { mix_male_instruments: true }, labels: ['male-instruments'] },
-  { name: 'mix_backing_instruments', selected: { mix_backing_instruments: true }, labels: ['backing-instruments'] },
-  { name: 'mix_lead_instruments', selected: { mix_lead_instruments: true }, labels: ['lead-instruments'] },
+  { name: 'mix-drums-bass', selected: { mixes: [MIX('mix-1', ['drums', 'bass'])] }, labels: ['mix-1'] },
+  { name: 'mix-drums-vocals', selected: { mixes: [MIX('mix-1', ['drums', 'vocals'])] }, labels: ['mix-1'] },
+  { name: 'mix-bass-vocals', selected: { mixes: [MIX('mix-1', ['bass', 'vocals'])] }, labels: ['mix-1'] },
+  { name: 'mix-drums-other', selected: { mixes: [MIX('mix-1', ['drums', 'other'])] }, labels: ['mix-1'] },
+  { name: 'mix-three-parts', selected: { mixes: [MIX('mix-1', ['drums', 'bass', 'vocals'])] }, labels: ['mix-1'] },
+  { name: 'mix-vocal-variant-instruments', selected: { mixes: [MIX('mix-1', ['female', 'instruments'])] }, labels: ['mix-1'] },
+  { name: 'mix-custom-name', selected: { mixes: [MIX('mix-1', ['bass', 'vocals'], 'Karaoke night')] }, labels: ['mix-1'] },
+  { name: 'mixes-multiple-queued', selected: { mixes: [MIX('mix-1', ['drums', 'bass']), MIX('mix-2', ['drums', 'vocals']), MIX('mix-3', ['bass', 'vocals'])] }, labels: ['mix-1', 'mix-2', 'mix-3'] },
   { name: 'decrowd', selected: { decrowd: true }, labels: ['instruments-decrowded'] },
   { name: 'decrowd_vocals', selected: { decrowd_vocals: true }, labels: ['vocals-decrowded'] },
   { name: 'dereverb', selected: { dereverb: true }, labels: ['vocals-dry'] },
@@ -39,8 +66,7 @@ const cases: Case[] = [
   { name: 'gpu-cache-bypass', selected: { extract_vocals: true, no_cache: true }, labels: ['vocals'], cache: 'bypass' },
   { name: 'all-booleans-enabled', selected: Object.fromEntries(audioBooleanKeys.map(key => [key, true])), labels: allLabels },
   { name: 'all-options-with-transforms', selected: { ...Object.fromEntries(audioBooleanKeys.map(key => [key, true])), pitch_semitones: 1.25, tempo_percent: 125 }, labels: ['song', ...allLabels] },
-  { name: 'mixes-hidden-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true, dereverb: true }, labels: ['female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'] },
-  { name: 'mixes-cleaned-dry-prerequisites', selected: { mix_female_instruments: true, mix_male_instruments: true, mix_backing_instruments: true, mix_lead_instruments: true, decrowd: true, decrowd_vocals: true, dereverb: true }, labels: ['vocals-decrowded', 'vocals-decrowded-dry', 'instruments-decrowded', 'female-instruments', 'male-instruments', 'backing-instruments', 'lead-instruments'] },
+  { name: 'mixes-hidden-dry-prerequisites', selected: { mixes: [MIX('mix-1', ['vocals', 'bass']), MIX('mix-2', ['drums', 'vocals'])], dereverb: true }, labels: ['mix-1', 'mix-2'] },
   { name: 'instrument-only-dereverb-no-hidden-vocal', selected: { extract_instruments: true, dereverb: true }, labels: ['instruments'] },
   { name: 'positive-fractional-pitch-speedup-no-extraction', selected: { pitch_semitones: 2.5, tempo_percent: 120 }, labels: ['song'] },
   { name: 'negative-fractional-pitch-slowdown-no-extraction', selected: { pitch_semitones: -1.25, tempo_percent: 80, no_cache: true }, labels: ['song'] },
@@ -61,6 +87,23 @@ async function chooseSource(page: Page, source: 'url' | 'upload' = 'upload', fil
   }
 }
 
+/** Queues mixes through the MixBuilder exactly as a user would. */
+async function configureMixes(page: Page, mixes: StemMix[]) {
+  for (const mix of mixes) {
+    if (mix.components.some(component => VARIANT_COMPONENTS.includes(component))) {
+      const details = page.locator('details.vocal-variants');
+      if (!await details.evaluate(element => element.open)) await details.locator('summary').click();
+    }
+    for (const component of mix.components) {
+      await page.getByRole('button', { name: `+ ${COMPONENT_LABELS[component]}`, exact: true }).click();
+    }
+    if (mix.name !== stemMixName(mix.components)) {
+      await page.getByLabel('Mix name', { exact: true }).fill(mix.name);
+    }
+    await page.getByRole('button', { name: 'Add mix', exact: true }).click();
+  }
+}
+
 async function configure(page: Page, options: SeparationOptions) {
   for (const key of booleanKeys) {
     const checkbox = page.locator(`#option-${key}`);
@@ -70,6 +113,7 @@ async function configure(page: Page, options: SeparationOptions) {
     }
     await checkbox.setChecked(Boolean(options[key]));
   }
+  await configureMixes(page, options.mixes);
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill(String(options.pitch_semitones));
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill(String(options.tempo_percent));
 }
@@ -101,17 +145,16 @@ async function complete(page: Page, id: number) {
 async function referenceMixInputs(page: Page, info: TestInfo, options: SeparationOptions, labels: string[]) {
   // A distinct real job publishes reference stems without exposing prerequisites
   // in the mix-only job whose manifest and links were already asserted.
-  const referencePage = await page.context().newPage();
-  try {
-    const referenceOptions = {
-      ...defaults,
-      extract_instruments: true,
-      genders: options.mix_female_instruments || options.mix_male_instruments,
-      lead_backing: options.mix_backing_instruments || options.mix_lead_instruments,
-      decrowd: options.decrowd,
-      decrowd_vocals: options.decrowd_vocals,
-      dereverb: options.dereverb,
-    };
+  const components = [...new Set(options.mixes.flatMap(mix => mix.components))];
+  const needsSplit = (variants: StemComponent[], flag: BooleanOptionKey) =>
+    components.some(component => variants.includes(component)) && { [flag]: true };
+  const referenceOptions = {
+    ...defaults,
+    ...needsSplit(['female', 'male'], 'genders'),
+    ...needsSplit(['lead', 'backing'], 'lead_backing'),
+    drums: components.some(component => ['drums', 'bass', 'other', 'instruments'].includes(component)),
+    dereverb: options.dereverb,
+  };
     await referencePage.goto('/');
     await chooseSource(referencePage, 'upload', 'musical-fixture');
     await expect(referencePage.getByText('Original key: C major', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
@@ -170,8 +213,19 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   audio.original = await inspectAudio(page, files.original, 8, fixtureName === 'tone-fixture' ? 261.6256 : undefined);
   const suffix = `${options.pitch_semitones ? ` - pitch${options.pitch_semitones > 0 ? '+' : ''}${options.pitch_semitones}st` : ''}${options.tempo_percent !== 100 ? ` - tempo${options.tempo_percent}pct` : ''}`;
   for (const stem of job.manifest!) {
+    const mix = options.mixes.find(candidate => candidate.id === stem.label);
+    expect(stem.display_name).toBe(mix ? mix.name : stem.label);
     expect(stem.filename).toBe(`${stem.label}${suffix}.mp3`);
-    expect(stem.download_name).toBe(`${fixtureName} - ${stem.label} - source-key-${originalKey.replaceAll(' ', '-')}${suffix}.mp3`);
+    if (mix) {
+      // Mix downloads carry the custom name plus the stable mix id qualifier;
+      // identity is never derived from the user-chosen name.
+      expect(stem.download_name).toContain(`${fixtureName} - ${mix.name}`);
+      expect(stem.download_name).toContain(`[${mix.id}]`);
+      expect(stem.download_name).toContain(`source-key-${originalKey.replaceAll(' ', '-')}`);
+      if (suffix) expect(stem.download_name).toContain(suffix.trimStart());
+    } else {
+      expect(stem.download_name).toBe(`${fixtureName} - ${stem.label} - source-key-${originalKey.replaceAll(' ', '-')}${suffix}.mp3`);
+    }
     const served = await page.request.get(`/api/jobs/${job.id}/results/${stem.label}`);
     expect(served.status()).toBe(200);
     expect(decodeURIComponent(served.headers()['content-disposition'])).toContain(stem.download_name);
@@ -179,6 +233,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     await expect(stemLinks).toHaveCount(2);
     await expect(stemLinks.nth(1)).toContainText(`Source key: ${originalKey}`);
     const card = stemLinks.first().locator('../..');
+    if (mix) await expect(card.getByText(mix.name, { exact: true })).toBeVisible();
     await expect(card.getByText(`Source key: ${originalKey}`, { exact: true })).toBeVisible();
     if (job.output_key !== originalKey) {
       await expect(card.getByText(`Source key: ${job.output_key}`, { exact: true })).toHaveCount(0);
@@ -234,20 +289,18 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     expect((await page.request.get(`/api/jobs/${job.id}/results/${label}`)).status()).toBe(404);
   }
   const mixes: Record<string, unknown> = {};
-  const selectedMixes = mixInputs.filter(mix => options[mix.option]);
-  const instrument = options.decrowd ? 'instruments-decrowded' : 'instruments';
-  const vocalLabel = (vocal: string) => `${vocal}${options.dereverb ? '-dry' : ''}`;
+  const selectedMixes = options.mixes;
   const transformed = options.pitch_semitones !== 0 || options.tempo_percent !== 100;
-  const requiredInputs = [...selectedMixes.map(mix => vocalLabel(mix.vocal)), instrument];
+  const requiredInputs = [...new Set(selectedMixes.flatMap(mix => mix.components.flatMap(component => componentStems(component, options))))];
   const reference = selectedMixes.length && (transformed || requiredInputs.some(label => !files[label]))
     ? await referenceMixInputs(page, info, options, requiredInputs)
     : undefined;
   const sourceFiles = reference?.files ?? files;
   for (const mix of selectedMixes) {
-    mixes[mix.label] = inspectMix(files[mix.label], sourceFiles[vocalLabel(mix.vocal)], sourceFiles[instrument], transformed ? {
+    mixes[mix.id] = inspectMix(files[mix.id], mix.components.flatMap(component => componentStems(component, options)).map(label => sourceFiles[label]), transformed ? {
       pitchSemitones: options.pitch_semitones,
       tempoPercent: options.tempo_percent,
-      referencePath: info.outputPath(`${mix.label}-expected-transformed.mp3`),
+      referencePath: info.outputPath(`${mix.id}-expected-transformed.mp3`),
     } : undefined);
   }
   if (item.name === 'all-booleans-enabled') {

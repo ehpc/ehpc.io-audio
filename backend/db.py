@@ -63,8 +63,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Persist that intent once so history and retries retain the old behavior.
     for row in conn.execute("SELECT id, options_json FROM jobs").fetchall():
         options = json.loads(row["options_json"])
+        before = json.dumps(options)
         if "extract_vocals" not in options and "extract_instruments" not in options:
             options.update(extract_vocals=True, extract_instruments=True)
+        mixes = options.setdefault("mixes", [])
+        for component in ("female", "male", "backing", "lead"):
+            if options.pop(f"mix_{component}_instruments", False):
+                mix_id = f"mix-legacy-{component}"
+                mixes.append(
+                    {
+                        "id": mix_id,
+                        "name": f"{component.title()} vocals + Instruments",
+                        "components": [component, "instruments"],
+                    }
+                )
+        if json.dumps(options) != before:
             conn.execute(
                 "UPDATE jobs SET options_json = ? WHERE id = ?",
                 (json.dumps(options), row["id"]),

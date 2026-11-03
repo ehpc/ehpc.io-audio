@@ -95,12 +95,25 @@ def transform_audio(audio_bytes: bytes, options: SeparationOptions) -> bytes:
         return output.read_bytes()
 
 
-def mix_audio(vocals: Path, instruments: Path, output: Path) -> None:
+def mix_audio(inputs: list[Path], output: Path) -> None:
     """Time-align and sum at unity gain, limiting only peaks (no auto makeup).
 
     A 0.89 ceiling leaves about 1 dB of headroom for MP3 reconstruction peaks.
     Unlike amix's default normalization, quiet passages retain their level.
     """
+    if len(inputs) < 2 or len(set(inputs)) != len(inputs):
+        raise ValueError("mix_audio requires at least two distinct input paths")
+    filters = [
+        f"[{index}:a:0]aresample=48000:first_pts=0,"
+        f"aformat=sample_fmts=fltp:channel_layouts=stereo[in{index}]"
+        for index in range(len(inputs))
+    ]
+    filters.append(
+        "".join(f"[in{index}]" for index in range(len(inputs)))
+        + f"amix=inputs={len(inputs)}:duration=longest:"
+        "dropout_transition=0:normalize=0,"
+        "alimiter=limit=0.89:attack=5:release=50:level=false:latency=true[out]"
+    )
     _run(
         [
             "ffmpeg",
@@ -109,17 +122,9 @@ def mix_audio(vocals: Path, instruments: Path, output: Path) -> None:
             "-loglevel",
             "error",
             "-y",
-            "-i",
-            str(vocals),
-            "-i",
-            str(instruments),
+            *(argument for path in inputs for argument in ("-i", str(path))),
             "-filter_complex",
-            "[0:a:0]aresample=48000:first_pts=0,"
-            "aformat=sample_fmts=fltp:channel_layouts=stereo[v];"
-            "[1:a:0]aresample=48000:first_pts=0,"
-            "aformat=sample_fmts=fltp:channel_layouts=stereo[i];"
-            "[v][i]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
-            "alimiter=limit=0.89:attack=5:release=50:level=false:latency=true[out]",
+            ";".join(filters),
             "-map",
             "[out]",
             "-c:a",

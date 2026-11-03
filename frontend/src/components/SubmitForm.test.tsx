@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { JobDTO } from "~/api";
 import * as api from "~/api";
 import SubmitForm from "./SubmitForm";
 
@@ -297,7 +298,7 @@ describe("SubmitForm", () => {
     expect(api.submitJob).not.toHaveBeenCalled();
   });
 
-  it("has accessible extraction controls and predicts original-only by default", async () => {
+  it("has accessible extraction controls and previews a queued mix by name", async () => {
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     expect(screen.getByText("Tracks and files you'll get (1)")).toBeInTheDocument();
     const extract = screen.getByRole("checkbox", { name: "Extract vocals" });
@@ -307,9 +308,13 @@ describe("SubmitForm", () => {
     expect(screen.getByRole("button", { name: "Process audio" })).toBeInTheDocument();
     expect(screen.getByText("vocals", { exact: true })).toBeInTheDocument();
     await userEvent.click(extract);
-    await userEvent.click(screen.getByRole("checkbox", { name: "Female vocals + instruments" }));
-    expect(screen.getByText("female-instruments", { exact: true })).toBeInTheDocument();
-    expect(screen.queryByText("vocals-female", { exact: true })).not.toBeInTheDocument();
+    // Build a mix from 2+ parts; the preview shows the mix, not its ingredients.
+    await userEvent.click(screen.getByRole("button", { name: "Drums" }));
+    await userEvent.click(screen.getByRole("button", { name: "Bass" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add mix" }));
+    expect(screen.getByText("Tracks and files you'll get (2)")).toBeInTheDocument();
+    expect(screen.getAllByText("Drums + Bass", { exact: true }).length).toBeGreaterThan(0);
+    expect(screen.queryByText("vocals", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText("instruments", { exact: true })).not.toBeInTheDocument();
   });
   it("previews one pitched TXT per vocal target without selecting internal analysis outputs", async () => {
@@ -358,7 +363,7 @@ describe("SubmitForm", () => {
         extract_lyrics: true,
         extract_vocals: false,
         extract_instruments: false,
-        mix_female_instruments: false,
+        mixes: [],
         pitch_semitones: 0,
         tempo_percent: 100,
       }),
@@ -467,7 +472,7 @@ describe("SubmitForm", () => {
     render(() => <SubmitForm onSubmitted={onSubmitted} />);
     const url = screen.getByLabelText("Track URL");
     await userEvent.type(url, "https://example.com/song");
-    const groups = ["Outputs", "Mixes", "Cleanup", "Splits"];
+    const groups = ["Outputs", "Mixes Build your own", "Cleanup", "Splits"];
     for (const name of groups) expect(screen.getByRole("group", { name, exact: true })).toBeInTheDocument();
     await userEvent.click(screen.getByText("Advanced · cache"));
     const checkboxes = screen.getAllByRole("checkbox");
@@ -481,17 +486,55 @@ describe("SubmitForm", () => {
     expect(submitButton()).toBeEnabled();
   });
 
-  it("retains the lead mix without selecting or previewing hidden prerequisites", async () => {
+  it("retains a queued vocal-variant mix without selecting or previewing hidden prerequisites", async () => {
     vi.mocked(api.submitJob).mockResolvedValue({ id: 14, status: "queued", position: 1 });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/lead");
-    await userEvent.click(screen.getByRole("checkbox", { name: "Lead vocals + instruments", exact: true }));
+    await userEvent.click(screen.getByText(/Vocal variants/));
+    await userEvent.click(screen.getByRole("button", { name: "Female vocals" }));
+    await userEvent.click(screen.getByRole("button", { name: "Instruments" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add mix" }));
     await userEvent.click(submitButton());
     await waitFor(() => expect(submitButton()).toBeEnabled());
-    expect(screen.getByRole("checkbox", { name: "Lead vocals + instruments", exact: true })).toBeChecked();
-    expect(screen.getByText("lead-instruments", { exact: true })).toBeInTheDocument();
+    // The mix row survives submission; ingredients stay hidden from the preview.
+    expect(screen.getByRole("button", { name: "Edit Female vocals + Instruments" })).toBeInTheDocument();
+    expect(screen.getAllByText("Female vocals + Instruments", { exact: true }).length).toBeGreaterThan(0);
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        mixes: [{ id: "mix-1", name: "Female vocals + Instruments", components: ["female", "instruments"] }],
+      }),
+    }));
     expect(screen.getByRole("checkbox", { name: "Split lead & backing vocals" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Extract vocals" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Extract instruments" })).not.toBeChecked();
+  });
+
+  it("keeps the submitted job snapshot immutable when a mix is edited while the POST is pending", async () => {
+    const deferred = Promise.withResolvers<api.SubmitResult>();
+    vi.mocked(api.submitJob).mockReturnValueOnce(deferred.promise);
+    const onSubmitted = vi.fn();
+    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
+    await userEvent.click(screen.getByRole("button", { name: "Drums" }));
+    await userEvent.click(screen.getByRole("button", { name: "Bass" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add mix" }));
+    await userEvent.click(submitButton());
+    // While the POST is still pending, rename the queued mix.
+    await userEvent.click(screen.getByRole("button", { name: "Edit Drums + Bass" }));
+    await userEvent.type(screen.getByLabelText("Mix name for Drums + Bass"), " · v2");
+    fireEvent.click(screen.getByRole("button", { name: "Save mix" }));
+    deferred.resolve({ id: 21, status: "queued", position: 1 });
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
+    const job = onSubmitted.mock.calls[0][0] as JobDTO;
+    // The queued job keeps the original name, components, and id.
+    expect(job.options.mixes).toEqual([{ id: "mix-1", name: "Drums + Bass", components: ["drums", "bass"] }]);
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        mixes: [{ id: "mix-1", name: "Drums + Bass", components: ["drums", "bass"] }],
+      }),
+    }));
+    // The form itself shows the rename.
+    expect(screen.getByRole("button", { name: "Edit Drums + Bass · v2" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit Drums + Bass", exact: true })).not.toBeInTheDocument();
   });
 });

@@ -1,16 +1,18 @@
 import asyncio
 import json
+from dataclasses import fields
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from backend import config, db, events
 from backend.models import JobDTO, JobRecord, JobStatus, job_to_dto
 from backend.session import get_session_id
-from separator.options import SeparationOptions
+from separator.options import SeparationOptions, parse_mixes
 
 router = APIRouter(tags=["jobs"])
+_FORM_FIELDS = {"url", "file", *(field.name for field in fields(SeparationOptions))}
 
 
 async def _to_dto(job: JobRecord) -> JobDTO:
@@ -30,6 +32,7 @@ async def _save_upload(job_id: int, filename: str, data: bytes) -> None:
 
 @router.post("/jobs")
 async def submit_job(
+    request: Request,
     session_id: Annotated[str, Depends(get_session_id)],
     url: Annotated[str | None, Form()] = None,
     file: Annotated[UploadFile | None, File()] = None,
@@ -38,10 +41,7 @@ async def submit_job(
     extract_lyrics: Annotated[bool, Form()] = False,
     detect_pitch: Annotated[bool, Form()] = False,
     extract_pitched_lyrics: Annotated[bool, Form()] = False,
-    mix_female_instruments: Annotated[bool, Form()] = False,
-    mix_male_instruments: Annotated[bool, Form()] = False,
-    mix_backing_instruments: Annotated[bool, Form()] = False,
-    mix_lead_instruments: Annotated[bool, Form()] = False,
+    mixes: Annotated[str, Form()] = "[]",
     decrowd: Annotated[bool, Form()] = False,
     decrowd_vocals: Annotated[bool, Form()] = False,
     dereverb: Annotated[bool, Form()] = False,
@@ -52,10 +52,17 @@ async def submit_job(
     pitch_semitones: Annotated[float, Form(allow_inf_nan=False)] = 0.0,
     tempo_percent: Annotated[float, Form(gt=0, allow_inf_nan=False)] = 100.0,
 ) -> dict:
+    if set(await request.form()) - _FORM_FIELDS:
+        raise HTTPException(422, "unsupported form field")
     has_url = bool(url and url.strip())
     has_file = file is not None and bool(file.filename)
     if has_url == has_file:
         raise HTTPException(400, "provide exactly one of url or file")
+
+    try:
+        mix_specs = parse_mixes(json.loads(mixes))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
     options = SeparationOptions(
         extract_vocals=extract_vocals,
@@ -63,10 +70,7 @@ async def submit_job(
         extract_lyrics=extract_lyrics,
         detect_pitch=detect_pitch,
         extract_pitched_lyrics=extract_pitched_lyrics,
-        mix_female_instruments=mix_female_instruments,
-        mix_male_instruments=mix_male_instruments,
-        mix_backing_instruments=mix_backing_instruments,
-        mix_lead_instruments=mix_lead_instruments,
+        mixes=mix_specs,
         decrowd=decrowd,
         decrowd_vocals=decrowd_vocals,
         dereverb=dereverb,

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from backend import db, modal_client, queue
 from separator.lyrics import TranscriptWord
-from separator.options import SeparationOptions
+from separator.options import MixSpec, SeparationOptions
 from separator.pitch import (
     PitchAnalysis,
     PitchNote,
@@ -105,7 +105,17 @@ def test_fractional_transposition_tempo_and_melisma_preserve_measured_informatio
         (SeparationOptions(), []),
         (SeparationOptions(detect_pitch=True), ["vocals"]),
         (SeparationOptions(detect_pitch=True, extract_instruments=True), ["vocals"]),
-        (SeparationOptions(detect_pitch=True, mix_female_instruments=True), ["vocals"]),
+        (
+            SeparationOptions(
+                detect_pitch=True,
+                mixes=(
+                    MixSpec(
+                        "mix-female", "Female + Instruments", ("female", "instruments")
+                    ),
+                ),
+            ),
+            ["vocals"],
+        ),
         (
             SeparationOptions(detect_pitch=True, lead_backing=True, dereverb=True),
             ["lead", "lead-dry", "backing", "backing-dry"],

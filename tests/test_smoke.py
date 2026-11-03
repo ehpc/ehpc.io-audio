@@ -18,7 +18,7 @@ import pytest
 
 from backend import config
 from separator.modal_app import TIMEOUT as MODAL_FUNCTION_TIMEOUT_S
-from separator.options import SeparationOptions
+from separator.options import OPTIONS_SCHEMA_VERSION, MixSpec, SeparationOptions
 from separator.stems import SeparationResult
 
 # The suite-wide --timeout is sized for local tests; a cold run here waits on a
@@ -142,18 +142,20 @@ def test_deployed_container_can_import_separator_package() -> None:
         ),
         (
             SeparationOptions(
-                mix_female_instruments=True,
-                mix_male_instruments=True,
-                mix_backing_instruments=True,
-                mix_lead_instruments=True,
+                mixes=tuple(
+                    MixSpec(
+                        f"mix-{part}", f"{part} + instruments", (part, "instruments")
+                    )
+                    for part in ("female", "male", "backing", "lead")
+                ),
                 dereverb=True,
                 no_cache=True,
             ),
             [
-                "female-instruments",
-                "male-instruments",
-                "backing-instruments",
-                "lead-instruments",
+                "mix-female",
+                "mix-male",
+                "mix-backing",
+                "mix-lead",
             ],
         ),
     ],
@@ -173,6 +175,7 @@ def test_deployed_function_separates_audio(
         voiced_wav,
         "smoke-voiced-music.wav",
         options,
+        options_schema=OPTIONS_SCHEMA_VERSION,
     )
 
     assert list(result) == expected

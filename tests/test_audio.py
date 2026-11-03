@@ -22,7 +22,7 @@ from separator.audio import (
     transform_audio,
     transposed_key,
 )
-from separator.options import SeparationOptions
+from separator.options import MixSpec, SeparationOptions
 from separator.stems import Stem, StemResult
 
 _FFMPEG = shutil.which("ffmpeg") is not None
@@ -243,7 +243,7 @@ def test_real_mix_preserves_both_sources_at_unity_gain_and_stereo(
         amplitude=0.18,
     )
     output = tmp_path / "mix.mp3"
-    mix_audio(vocals, instruments, output)
+    mix_audio([vocals, instruments], output)
     audio = decode_audio(output.read_bytes())
 
     assert audio.codec == "mp3"
@@ -293,7 +293,7 @@ def test_real_mix_aligns_onsets_and_keeps_longer_source_without_silence_tail(
         end_s=0.74,
     )
     output = tmp_path / "aligned.mp3"
-    mix_audio(vocals, instruments, output)
+    mix_audio([vocals, instruments], output)
     audio = decode_audio(output.read_bytes())
 
     assert audio.sample_rate == 48000
@@ -336,7 +336,7 @@ def test_real_mix_upmixes_mono_and_resamples_to_stereo_48k(tmp_path: Path) -> No
         sample_rate=44100,
     )
     output = tmp_path / "stereo.mp3"
-    mix_audio(vocals, instruments, output)
+    mix_audio([vocals, instruments], output)
     audio = decode_audio(output.read_bytes())
 
     assert audio.sample_rate == 48000
@@ -376,7 +376,7 @@ def test_real_mix_limits_overload_without_clipping_or_long_tail(
         end_s=0.74,
     )
     output = tmp_path / "limited.mp3"
-    mix_audio(vocals, instruments, output)
+    mix_audio([vocals, instruments], output)
     audio = decode_audio(output.read_bytes())
 
     # Inspect float PCM: integer decoding would hide overshoots by clipping them.
@@ -438,10 +438,10 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
     result = stems.run_separation(
         tmp_path / "original.wav",
         SeparationOptions(
-            mix_female_instruments=True,
-            mix_male_instruments=True,
-            mix_backing_instruments=True,
-            mix_lead_instruments=True,
+            mixes=tuple(
+                MixSpec(f"mix-{part}", f"{part} + instruments", (part, "instruments"))
+                for part in ("female", "male", "backing", "lead")
+            ),
             decrowd=clean,
             decrowd_vocals=clean,
             dereverb=clean,
@@ -455,16 +455,16 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
         if clean
         else []
     ) + [
-        "female-instruments",
-        "male-instruments",
-        "backing-instruments",
-        "lead-instruments",
+        "mix-female",
+        "mix-male",
+        "mix-backing",
+        "mix-lead",
     ]
     for label, vocal in (
-        ("female-instruments", "vocals-female"),
-        ("male-instruments", "vocals-male"),
-        ("backing-instruments", "backing"),
-        ("lead-instruments", "lead"),
+        ("mix-female", "vocals-female"),
+        ("mix-male", "vocals-male"),
+        ("mix-backing", "backing"),
+        ("mix-lead", "lead"),
     ):
         audio = decode_audio(result[label].data)
         expected_frequencies = {
