@@ -55,6 +55,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
+      # Parse-only check over e2e specs: they run only in the deploy-modal job,
+      # so a syntax error there would otherwise burn a full GPU CI cycle.
+      - name: Parse-check e2e specs
+        run: node_modules/.bin/esbuild e2e/*.spec.ts e2e/audio.ts --outdir=/tmp/e2e-parse-check --log-level=error
       - name: Build
         run: npm run build
       - name: Run tests (vitest)
