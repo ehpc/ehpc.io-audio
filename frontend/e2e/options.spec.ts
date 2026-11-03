@@ -155,6 +155,8 @@ async function referenceMixInputs(page: Page, info: TestInfo, options: Separatio
     drums: components.some(component => ['drums', 'bass', 'other', 'instruments'].includes(component)),
     dereverb: options.dereverb,
   };
+  const referencePage = await page.context().newPage();
+  try {
     await referencePage.goto('/');
     await chooseSource(referencePage, 'upload', 'musical-fixture');
     await expect(referencePage.getByText('Original key: C major', { exact: true }).first()).toBeVisible({ timeout: 60_000 });
