@@ -98,7 +98,7 @@ async function configureMixes(page: Page, mixes: StemMix[]) {
       await page.getByRole('button', { name: `+ ${COMPONENT_LABELS[component]}`, exact: true }).click();
     }
     if (mix.name !== stemMixName(mix.components)) {
-      await page.getByLabel('Mix name', { exact: true }).fill(mix.name);
+      await page.getByLabel('New mix name', { exact: true }).fill(mix.name);
     }
     await page.getByRole('button', { name: 'Add mix', exact: true }).click();
   }
