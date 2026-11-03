@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from math import isfinite
 
-OPTIONS_SCHEMA_VERSION = 2
+OPTIONS_SCHEMA_VERSION = 3
 
 MIX_COMPONENTS: dict[str, str] = {
     "drums": "Drums",
@@ -86,7 +86,6 @@ class SeparationOptions:
     genders: bool = False
     lead_backing: bool = False
     drums: bool = False
-    no_cache: bool = False
     pitch_semitones: float = 0.0
     tempo_percent: float = 100.0
 

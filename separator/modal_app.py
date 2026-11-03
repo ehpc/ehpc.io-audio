@@ -125,10 +125,13 @@ def separate(
     """Core audio RPC: keep its dictionary result usable by audio-only clients."""
     if options_schema != OPTIONS_SCHEMA_VERSION:
         raise ValueError("incompatible separation options schema")
+    model_volume.reload()
     with _source_audio(audio_bytes, filename) as (tmp, input_path):
-        results = run_separation(input_path, options, tmp, MODEL_CACHE, STEM_CACHE)
-        model_volume.commit()
-        return results
+        try:
+            return run_separation(input_path, options, tmp, MODEL_CACHE, STEM_CACHE)
+        finally:
+            # A later stage failing must not discard earlier validated work.
+            model_volume.commit()
 
 
 @app.function(
@@ -149,17 +152,20 @@ def separate_with_lyrics(
     """Optional lyrics/pitch RPC; audio-only clients retain their dict RPC."""
     if options_schema != OPTIONS_SCHEMA_VERSION:
         raise ValueError("incompatible separation options schema")
+    model_volume.reload()
     with _source_audio(audio_bytes, filename) as (tmp, input_path):
-        results = run_processing(
-            input_path,
-            options,
-            tmp,
-            MODEL_CACHE,
-            STEM_CACHE,
-            TIMEOUT,
-            ASR_PYTHON,
-            STRUCTURE_PYTHON,
-            reference_metadata,
-        )
-        model_volume.commit()
-        return analysis_transport(results, analysis_schema)
+        try:
+            results = run_processing(
+                input_path,
+                options,
+                tmp,
+                MODEL_CACHE,
+                STEM_CACHE,
+                TIMEOUT,
+                ASR_PYTHON,
+                STRUCTURE_PYTHON,
+                reference_metadata,
+            )
+            return analysis_transport(results, analysis_schema)
+        finally:
+            model_volume.commit()

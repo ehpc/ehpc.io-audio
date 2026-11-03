@@ -4,25 +4,33 @@ Qwen sees no reference/song identity during recognition. MMS CTC then aligns
 candidate text to audio; failed/unsupported alignment never invents timestamps.
 """
 
+# Heavy imports stay within the concrete producers, after cache lookup.
+# ruff: noqa: PLC0415
+from __future__ import annotations
+
 import json
 import math
 import os
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import librosa  # ty: ignore[unresolved-import]
-import numpy as np  # ty: ignore[unresolved-import]
-import torch  # ty: ignore[unresolved-import]
-from qwen_asr import Qwen3ASRModel  # ty: ignore[unresolved-import]
+if TYPE_CHECKING:
+    import numpy as np  # ty: ignore[unresolved-import]
 
-from separator.align_lyrics import MODEL as ALIGNER_MODEL
-from separator.align_lyrics import SAMPLE_RATE, VocalAligner
+    from separator.align_lyrics import VocalAligner
+
+from separator import cache_versions
+from separator.artifact_cache import cache_key, cached_bytes, digest
+from separator.cache_versions import ALIGNMENT_MODEL as ALIGNER_MODEL
+from separator.cache_versions import ASR_SAMPLE_RATE as SAMPLE_RATE
 from separator.lyrics import (
     RecognitionChunk,
     Transcript,
     TranscriptWord,
     recognition_transcript,
+    transcript_from_json,
 )
 from separator.lyrics_reference import (
     AcousticEvidence,
@@ -34,7 +42,7 @@ from separator.lyrics_reference import (
     tokens,
 )
 
-MODEL = "Qwen/Qwen3-ASR-1.7B"
+MODEL = cache_versions.QWEN_MODEL
 _MIN_ACOUSTIC_SCORE = 0.03
 
 
@@ -46,73 +54,161 @@ def _windows(audio: np.ndarray) -> list[tuple[int, int]]:
     ]
 
 
-def transcribe(
-    source: Path, model_cache: Path, review: ReferenceReview | None = None
-) -> Transcript:
-    os.environ["HF_HOME"] = str(model_cache / "huggingface")
-    audio, sample_rate = librosa.load(str(source), sr=SAMPLE_RATE, mono=True)
-    duration_s = len(audio) / sample_rate
-    if not math.isfinite(duration_s) or duration_s <= 0:
-        raise ValueError("Lyrics extraction requires audio with a finite duration")
+def _load_audio(source: Path) -> tuple[np.ndarray, int]:
+    import librosa  # ty: ignore[unresolved-import]
+
+    return librosa.load(str(source), sr=SAMPLE_RATE, mono=True)
+
+
+def _load_aligner(model_cache: Path) -> VocalAligner:
+    from separator.align_lyrics import VocalAligner
+
+    return VocalAligner(model_cache)
+
+
+def _recognize_windows(
+    audio: np.ndarray,
+    sample_rate: int,
+    windows: list[tuple[int, int]],
+) -> list[RecognitionChunk]:
+    import torch  # ty: ignore[unresolved-import]
+    from qwen_asr import Qwen3ASRModel  # ty: ignore[unresolved-import]
+
     model = Qwen3ASRModel.from_pretrained(
         MODEL,
+        revision=cache_versions.QWEN_REVISION,
         dtype=torch.bfloat16,
         device_map="cuda:0",
         max_inference_batch_size=2,
         max_new_tokens=512,
     )
-    windows = _windows(audio)
-    contexts = windows
     results = model.transcribe(
-        audio=[(audio[start:end], sample_rate) for start, end in contexts]
+        audio=[(audio[start:end], sample_rate) for start, end in windows]
     )
-    # The recognizer's allocations are not needed during acoustic alignment.
+    chunks = [
+        RecognitionChunk(
+            start / sample_rate,
+            end / sample_rate,
+            start / sample_rate,
+            end / sample_rate,
+            result.text,
+            result.language,
+        )
+        for (start, end), result in zip(windows, results, strict=True)
+    ]
     del model
     torch.cuda.empty_cache()
-    aligner = VocalAligner(model_cache)
-    chunks = []
-    alignments = []
-    for (core_start, core_end), (start, end), result in zip(
-        windows, contexts, results, strict=True
-    ):
-        chunks.append(
-            RecognitionChunk(
-                start / sample_rate,
-                end / sample_rate,
-                core_start / sample_rate,
-                core_end / sample_rate,
-                result.text,
-                result.language,
-            )
-        )
-        if result.text.strip():
-            emission, frame_s = aligner.emissions(audio[start:end])
-            alignments.append(
-                aligner.align(
-                    emission,
-                    frame_s,
-                    result.text,
-                    start / sample_rate,
-                )
-            )
-        else:
-            alignments.append([])
-    transcript = recognition_transcript(
-        chunks,
-        alignments,
-        MODEL,
-        ALIGNER_MODEL,
-        _MIN_ACOUSTIC_SCORE,
+    return chunks
+
+
+def transcribe(
+    source: Path, model_cache: Path, review: ReferenceReview | None = None
+) -> Transcript:
+    os.environ["HF_HOME"] = str(model_cache / "huggingface")
+    audio, sample_rate = _load_audio(source)
+    duration_s = len(audio) / sample_rate
+    if not math.isfinite(duration_s) or duration_s <= 0:
+        raise ValueError("Lyrics extraction requires audio with a finite duration")
+    windows = _windows(audio)
+    root = model_cache / "results"
+    source_digest = digest(source.read_bytes())
+    # Hash the decoded buffer directly: container tags and unchanged Qwen text
+    # cannot hide a decoder change that moves acoustic boundaries.
+    pcm = memoryview(audio)
+    pcm_identity = (sample_rate, pcm.format, pcm.shape, digest(pcm))
+
+    def recognize() -> bytes:
+        chunks = _recognize_windows(audio, sample_rate, windows)
+        return json.dumps([asdict(chunk) for chunk in chunks]).encode()
+
+    raw = cached_bytes(
+        root / "recognition",
+        cache_key(
+            cache_versions.ASR,
+            cache_versions.QWEN_REVISION,
+            source_digest,
+            cache_versions.binary_revision("ffmpeg"),
+            cache_versions.environment_revisions(None, cache_versions.ASR_PACKAGES),
+        ),
+        recognize,
     )
-    evidence_words = [
-        word
-        for chunk, alignment in zip(chunks, alignments, strict=True)
-        for word in alignment
-        if chunk.ownership_start_s
-        <= (word.start_s + word.end_s) / 2
-        < chunk.ownership_end_s
-    ]
-    return align_reference_audio(transcript, audio, aligner, review, evidence_words)
+    chunks = [RecognitionChunk(**chunk) for chunk in json.loads(raw)]
+    aligner = None
+
+    def get_aligner() -> VocalAligner:
+        nonlocal aligner
+        if aligner is None:
+            aligner = _load_aligner(model_cache)
+        return aligner
+
+    def align_recognition() -> bytes:
+        alignments = []
+        for (start, end), chunk in zip(windows, chunks, strict=True):
+            if chunk.text.strip():
+                model = get_aligner()
+                emission, frame_s = model.emissions(audio[start:end])
+                alignments.append(
+                    model.align(
+                        emission,
+                        frame_s,
+                        chunk.text,
+                        start / sample_rate,
+                    )
+                )
+            else:
+                alignments.append([])
+        transcript = recognition_transcript(
+            chunks,
+            alignments,
+            MODEL,
+            ALIGNER_MODEL,
+            _MIN_ACOUSTIC_SCORE,
+        )
+        evidence = [
+            word
+            for chunk, alignment in zip(chunks, alignments, strict=True)
+            for word in alignment
+            if chunk.ownership_start_s
+            <= (word.start_s + word.end_s) / 2
+            < chunk.ownership_end_s
+        ]
+        return json.dumps(
+            {
+                "transcript": asdict(transcript),
+                "evidence": [asdict(word) for word in evidence],
+            }
+        ).encode()
+
+    aligned = json.loads(
+        cached_bytes(
+            root / "recognition-alignment",
+            cache_key(
+                cache_versions.ALIGNMENT,
+                cache_versions.ALIGNMENT_MODEL,
+                pcm_identity,
+                digest(raw),
+                cache_versions.environment_revisions(
+                    None, cache_versions.ALIGNMENT_PACKAGES
+                ),
+            ),
+            align_recognition,
+        )
+    )
+    transcript = transcript_from_json(json.dumps(aligned["transcript"]))
+    if review is None:
+        return transcript
+    if not review.lines:
+        return replace(
+            transcript,
+            reference=replace(
+                review,
+                original_segments=transcript.segments,
+                original_words=transcript.words,
+                original_untimed=transcript.untimed,
+            ),
+        )
+    evidence = [TranscriptWord(**word) for word in aligned["evidence"]]
+    return align_reference_audio(transcript, audio, get_aligner(), review, evidence)
 
 
 def align_reference_audio(

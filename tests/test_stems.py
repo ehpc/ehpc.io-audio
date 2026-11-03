@@ -14,7 +14,6 @@ from separator.stems import Stem, StemResult
 class SeparatorCall(NamedTuple):
     source: Path
     stem: Stem
-    use_cache: bool
 
 
 class MixCall(NamedTuple):
@@ -33,9 +32,11 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         out_dir: Path,
         model_cache: str,
         stem_cache: str,
-        use_cache: bool = True,
     ) -> dict[str, tuple[StemResult, Path]]:
-        calls.append(SeparatorCall(input_path, stem, use_cache))
+        calls.append(SeparatorCall(input_path, stem))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for output in stem.outputs:
+            (out_dir / f"{output.label}.mp3").write_bytes(output.label.encode())
         return {
             output.label: (
                 StemResult(data=b"audio", duration_s=1.0),
@@ -53,7 +54,11 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     def run(options: SeparationOptions) -> dict[str, StemResult]:
         return stems.run_separation(
-            tmp_path / "original.mp3", options, tmp_path, "models", "cache"
+            tmp_path / "original.mp3",
+            options,
+            tmp_path,
+            str(tmp_path / "models"),
+            str(tmp_path / "cache"),
         )
 
     return run, calls, mixes
@@ -63,7 +68,6 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     "options",
     [
         SeparationOptions(),
-        SeparationOptions(no_cache=True),
         SeparationOptions(pitch_semitones=7, tempo_percent=120),
     ],
 )
@@ -160,7 +164,7 @@ def test_dereverb_only_pairs_explicit_vocal_outputs(
         assert all(call.stem.model != stems.VOCALS_STEM.model for call in calls)
 
 
-def test_explicit_base_outputs_are_independent_and_use_cache_by_default(graph) -> None:
+def test_explicit_base_outputs_are_independent(graph) -> None:
     run, calls, mixes = graph
     assert list(
         run(
@@ -174,7 +178,6 @@ def test_explicit_base_outputs_are_independent_and_use_cache_by_default(graph) -
         stems.VOCALS_STEM.model,
         stems.INSTRUMENTS_STEM.model,
     ]
-    assert all(call.use_cache for call in calls)
     assert mixes == []
 
 
@@ -190,7 +193,6 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
         "genders",
         "lead_backing",
         "drums",
-        "no_cache",
     )
     public_outputs = (
         ("vocals", "extract_vocals"),
@@ -240,7 +242,6 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
         available = {"original.mp3"}
         for call in calls:
             assert call.source.name in available, (selected, call)
-            assert call.use_cache is not options.no_cache
             available.update(f"{output.label}.mp3" for output in call.stem.outputs)
             if call.stem.model in {
                 stems.GENDER_STEMS[0].model,
@@ -252,9 +253,8 @@ def test_every_boolean_combination_has_exact_outputs_and_valid_dependencies(grap
                 assert call.source.name == expected_vocal
 
 
-@pytest.mark.parametrize("no_cache", [False, True])
 def test_lyrics_prerequisite_does_not_add_raw_vocal_dereverb_passes(
-    graph, no_cache: bool
+    graph,
 ) -> None:
     run, calls, mixes = graph
     result = run(
@@ -262,7 +262,6 @@ def test_lyrics_prerequisite_does_not_add_raw_vocal_dereverb_passes(
             extract_lyrics=True,
             mixes=(MixSpec("mix-lead", "Lead + Instruments", ("lead", "instruments")),),
             dereverb=True,
-            no_cache=no_cache,
         )
     )
     # Raw vocals are internal ASR input, not another selected wet/dry pair.
@@ -279,12 +278,11 @@ def test_lyrics_prerequisite_does_not_add_raw_vocal_dereverb_passes(
     assert dry_calls[0].source.name == "lead.mp3"
     assert len(mixes) == 1
     assert mixes[0].inputs[0].name == "lead-dry.mp3"
-    assert all(call.use_cache is not no_cache for call in calls)
 
 
 def test_lyrics_only_shares_one_raw_vocal_pass_and_no_audio_outputs(graph) -> None:
     run, calls, mixes = graph
-    options = SeparationOptions(extract_lyrics=True, no_cache=True)
+    options = SeparationOptions(extract_lyrics=True)
     assert list(run(options)) == ["vocals"]
     assert options.output_labels == []
     assert options.result_labels == []

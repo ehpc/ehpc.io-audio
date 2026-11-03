@@ -30,7 +30,6 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
       genders: false,
       lead_backing: false,
       drums: false,
-      no_cache: false,
       pitch_semitones: 0,
       tempo_percent: 100,
     },
@@ -86,7 +85,7 @@ describe("HistoryView download chips", () => {
       options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
       output_key: "D major",
       manifest: [
-        { label: "song", filename: "song.mp3", download_name: "Great Song - song - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 0 },
+        { label: "song", display_name: "song", filename: "song.mp3", download_name: "Great Song - song - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 0 },
         { label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
         { label: "instruments", filename: "instruments.mp3", download_name: "Great Song - instruments - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
       ],
@@ -119,6 +118,27 @@ describe("HistoryView download chips", () => {
     vocals.addEventListener("click", (event) => event.preventDefault());
     await userEvent.click(vocals);
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("uses transformed server song and custom mix names without duplicate suffixes", () => {
+    const job = urlJob({
+      original_key: null,
+      output_key: null,
+      options: {
+        ...urlJob().options,
+        pitch_semitones: 1.25,
+        tempo_percent: 125,
+        mixes: [{ id: "mix-1", name: "Karaoke", components: ["vocals", "drums"] }],
+      },
+      manifest: [
+        { label: "song", display_name: "song", filename: "song.mp3", download_name: "Great Song - song.mp3", size_bytes: 1, duration_s: 1 },
+        { label: "mix-1", display_name: "Karaoke", filename: "mix-1.mp3", download_name: "Great Song - Karaoke [mix-1].mp3", size_bytes: 1, duration_s: 1 },
+      ],
+    });
+    render(() => <HistoryView jobs={[job]} onSelect={vi.fn()} onRetried={vi.fn()} />);
+
+    expect(screen.getByRole("link", { name: "Full song (pitch +1.25 st, tempo 125%)", exact: true })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Karaoke (pitch +1.25 st, tempo 125%)", exact: true })).toBeInTheDocument();
   });
 
   it("omits the original chip when no original is available", () => {

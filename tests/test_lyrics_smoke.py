@@ -50,7 +50,7 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
     result: ProcessingResult = function.remote(
         source,
         "jfk-reference.flac",
-        SeparationOptions(extract_lyrics=True, no_cache=True),
+        SeparationOptions(extract_lyrics=True),
         analysis_schema=2,
         options_schema=OPTIONS_SCHEMA_VERSION,
     )
@@ -89,7 +89,7 @@ def test_deployed_lyrics_retains_later_sung_verse() -> None:
     result: ProcessingResult = function.remote(
         sung_excerpt(),
         "public-domain-singing.flac",
-        SeparationOptions(extract_lyrics=True, no_cache=True),
+        SeparationOptions(extract_lyrics=True),
         analysis_schema=2,
         options_schema=OPTIONS_SCHEMA_VERSION,
     )

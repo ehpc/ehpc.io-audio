@@ -10,7 +10,7 @@ const NONE: SeparationOptions = {
   extract_pitched_lyrics: false,
   mixes: [],
   decrowd: false, decrowd_vocals: false, dereverb: false, genders: false,
-  lead_backing: false, drums: false, no_cache: false,
+  lead_backing: false, drums: false,
   pitch_semitones: 0, tempo_percent: 100,
 };
 
@@ -43,7 +43,7 @@ describe("expectedStems", () => {
     expect(expectedStems({ ...NONE, extract_instruments: true })).toEqual(["instruments"]);
     expect(expectedStems({ ...NONE, drums: true })).toEqual(["drums", "bass", "other-instruments"]);
     expect(expectedStems({ ...NONE, decrowd: true })).toEqual(["instruments-decrowded"]);
-    expect(expectedStems({ ...NONE, tempo_percent: 80, no_cache: true })).toEqual(["song"]);
+    expect(expectedStems({ ...NONE, tempo_percent: 80 })).toEqual(["song"]);
   });
 
   it("emits one result per queued mix, labelled by its stable id", () => {
@@ -71,7 +71,6 @@ describe("expectedStems", () => {
       genders: true,
       lead_backing: true,
       drums: true,
-      no_cache: false,
       pitch_semitones: 0,
       tempo_percent: 100,
     };
@@ -163,9 +162,16 @@ describe("displayOutputLabel", () => {
 });
 
 describe("manifestOutputLabel", () => {
-  it("prefers the server display name when the manifest provides one", () => {
+  it("uses server mix names and appends pitch/tempo adjustments", () => {
     const stem: StemManifestEntry = { label: "mix-1", display_name: "My groove", filename: "mix-1.mp3", download_name: "My groove - mix-1.mp3", size_bytes: 1, duration_s: 1 };
-    expect(manifestOutputLabel(stem, { ...NONE, mixes: [MIX("mix-1", ["drums", "bass"], "My groove")] })).toBe("My groove");
+    const options = { ...NONE, mixes: [MIX("mix-1", ["drums", "bass"], "My groove")], pitch_semitones: 1.25, tempo_percent: 125 };
+    expect(manifestOutputLabel(stem, options)).toBe("My groove (pitch +1.25 st, tempo 125%)");
+  });
+
+  it("renders transformed song manifests as Full song with adjustments", () => {
+    const stem: StemManifestEntry = { label: "song", display_name: "song", filename: "song.mp3", download_name: "Title - Full song - source-key - pitch+1.25st-tempo125pct.mp3", size_bytes: 1, duration_s: 1 };
+    expect(manifestOutputLabel(stem, { ...NONE, pitch_semitones: 1.25, tempo_percent: 125 }))
+      .toBe("Full song (pitch +1.25 st, tempo 125%)");
   });
 
   it("falls back to the label for historical payloads without display names", () => {

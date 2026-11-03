@@ -160,6 +160,7 @@ def test_processing_uses_reference_aligned_words_for_pitch_and_preserves_asr_clo
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(processing.subprocess, "run", child)
+    (tmp_path / "source.mp3").write_bytes(b"original-source")
     result = processing.run_processing(
         tmp_path / "source.mp3",
         SeparationOptions(
@@ -169,8 +170,8 @@ def test_processing_uses_reference_aligned_words_for_pitch_and_preserves_asr_clo
             tempo_percent=125,
         ),
         tmp_path,
-        "models",
-        "cache",
+        str(tmp_path / "models"),
+        str(tmp_path / "cache"),
         60,
     )
     assert result.audio == {}
@@ -190,6 +191,31 @@ def test_processing_uses_reference_aligned_words_for_pitch_and_preserves_asr_clo
     assert (
         transcript_from_json(json.dumps(asdict(result.transcript))) == result.transcript
     )
+
+    def no_child(*args, **kwargs):
+        raise AssertionError("source-clock cache hit spawned an analysis process")
+
+    monkeypatch.setattr(processing.subprocess, "run", no_child)
+    repeated = processing.run_processing(
+        tmp_path / "source.mp3",
+        SeparationOptions(
+            extract_lyrics=True,
+            detect_pitch=True,
+            pitch_semitones=12,
+            tempo_percent=200,
+        ),
+        tmp_path,
+        str(tmp_path / "models"),
+        str(tmp_path / "cache"),
+        60,
+    )
+    assert repeated.transcript == result.transcript
+    assert repeated.pitch_json is not None
+    shifted = pitch_from_json(repeated.pitch_json)
+    assert shifted.tracks[0].notes[0].note == "C5"
+    assert shifted.tracks[0].notes[0].start_s == 1
+    assert shifted.words[0].start_s == 1
+    assert shifted.source_duration_s == 5
 
 
 def test_review_provenance_json_download_and_history_preserve_original_asr(

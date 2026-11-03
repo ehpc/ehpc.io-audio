@@ -89,8 +89,6 @@
 .workspace-option { display: flex; align-items: center; gap: 9px; min-height: 44px; line-height: 1.3; cursor: pointer; }
 .workspace-option input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; accent-color: hsl(var(--primary)); }
 .workspace-option:has(:checked) { color: hsl(var(--primary)); }
-.workspace-advanced { margin-top: 18px; border-top: 1px solid hsl(var(--border)); }
-.workspace-advanced summary { min-height: 44px; padding: 12px 0; cursor: pointer; color: hsl(var(--muted-foreground)); }
 /* Mix builder (approved design: arbitrary named mixes from 2+ parts). */
 .mix-group legend { display: flex; gap: 8px; align-items: center; }
 .new-tag { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; padding: 3px 6px; border-radius: 4px; background: hsl(var(--accent)); color: hsl(var(--primary)); }
@@ -206,7 +204,6 @@
   .mix-item { padding-top: 2px; padding-bottom: 2px; }
   .mix-item-title, .mix-item button, .draft-foot button { font-size: 16px; }
   .vocal-variants summary { font-size: 16px; }
-  .workspace-advanced { margin-top: 8px; margin-bottom: 12px; }
   .adjustment-rail { display: contents; }
   .adjust-page, .review-page { padding: 12px; border: 1px solid hsl(var(--border)); border-radius: 14px; background: hsl(var(--card)); margin: 0; }
   .adjust-page h2 { display: none; }

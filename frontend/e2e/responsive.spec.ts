@@ -67,7 +67,6 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await expect(page.getByRole('tab', { name: 'Outputs', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('button', { name: 'Download song', exact: true })).toBeInViewport();
     await page.screenshot({ path: info.outputPath(`mobile-${viewport.width}x${viewport.height}.png`), fullPage: true });
-    await assertUncovered(page, page.getByText('Advanced · cache', { exact: true }));
     await page.getByRole('button', { name: 'Download song', exact: true }).click();
     await assertUncovered(page, page.getByRole('alert'));
     await expect(page.getByRole('alert')).toContainText('Provide a URL');
@@ -98,13 +97,9 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
       await option.check();
       await expect(option).toBeChecked();
     }
-    await page.getByText('Advanced · cache', { exact: true }).click();
-    const cache = page.getByRole('checkbox', { name: /Reprocess from scratch/ });
-    await assertUncovered(page, cache.locator('..'));
-    await cache.check();
     await page.getByRole('tab', { name: 'Review', exact: true }).click();
     await expect(page.locator('.output-tags').getByText('Original (unchanged)', { exact: true })).toBeVisible();
-    await expect(page.locator('.output-tags').getByText('Full song (pitch +2 st, tempo 120%)')).toBeVisible();
+    await expect(page.locator('.output-tags').getByText('Full song (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
     await expect(page.locator('.output-tags').getByText('lead-instruments (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
@@ -115,7 +110,6 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
     for (const option of await options.all()) { await expect(option).toBeChecked(); await option.uncheck(); }
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toHaveCount(0);
-    await expect(cache).toBeChecked();
     await page.getByRole('button', { name: 'Review →', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Review', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByText(/Tracks and files you'll get \(2\)/)).toBeVisible();
@@ -126,7 +120,6 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     const job = await (await page.request.get(`/api/jobs/${submitted.id}`)).json();
     expect(job.options.pitch_semitones).toBe(2);
     expect(job.options.tempo_percent).toBe(120);
-    expect(job.options.no_cache).toBe(true);
     expect(job.manifest.map((stem: { label: string }) => stem.label)).toEqual(['song']);
     const downloads = page.locator(`a[download][href^='/api/jobs/${job.id}/']`);
     expect(await downloads.count()).toBe(4);

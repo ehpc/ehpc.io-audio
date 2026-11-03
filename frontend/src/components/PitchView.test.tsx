@@ -22,7 +22,7 @@ function job(): JobDTO {
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,
       extract_pitched_lyrics: false,
       mixes: [],
-      decrowd: false, decrowd_vocals: false, dereverb: false, genders: false, lead_backing: false, drums: false, no_cache: false,
+      decrowd: false, decrowd_vocals: false, dereverb: false, genders: false, lead_backing: false, drums: false,
       pitch_semitones: 1.25, tempo_percent: 125 },
     manifest: [{ label: "vocals", filename: "vocals.mp3", download_name: "voice-vocals.mp3", duration_s: 1, size_bytes: 100 }],
     pitch,

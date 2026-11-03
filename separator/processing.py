@@ -7,10 +7,18 @@ import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from separator import cache_versions
+from separator.artifact_cache import cache_key, cached_bytes, digest
 from separator.lyrics import Transcript, TranscriptSection, transcript_from_json
 from separator.lyrics_reference import ReferenceMetadata, lookup_reference
 from separator.options import SeparationOptions
-from separator.pitch import pitch_from_json, pitch_to_json, transform_analysis
+from separator.pitch import (
+    PitchAnalysis,
+    PitchTrack,
+    pitch_from_json,
+    pitch_to_json,
+    transform_analysis,
+)
 from separator.stems import SeparationResult, run_separation
 
 
@@ -66,6 +74,50 @@ def analysis_transport(
     return replace(result, transcript=transcript, pitch_json=pitch_json)
 
 
+def _analysis_output(
+    command: list[str],
+    output: Path,
+    root: Path,
+    key: str,
+    deadline: float,
+    label: str,
+) -> bytes:
+    def produce() -> bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{label} exceeded the processing time limit")
+        output.unlink(missing_ok=True)
+        try:
+            subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=remaining,
+                cwd=Path(__file__).resolve().parent.parent,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f"{label} failed: {exc.stderr.strip()[-400:]}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(f"{label} exceeded the processing time limit") from exc
+        data = output.read_bytes()
+        # Validate the complete schema before publication, not merely JSON syntax.
+        if label == "Lyrics transcription":
+            transcript_from_json(data.decode())
+        elif label == "Vocal pitch detection":
+            if len(pitch_from_json(data.decode()).tracks) != 1:
+                raise ValueError("Pitch producer must return one source track")
+        else:
+            value = json.loads(data)
+            for section in value["sections"]:
+                TranscriptSection(**section)
+            if not isinstance(value["structure_model"], str):
+                raise ValueError("Invalid structure provenance")
+        return data
+
+    return cached_bytes(root, key, produce)
+
+
 def run_processing(
     input_path: Path,
     options: SeparationOptions,
@@ -78,15 +130,13 @@ def run_processing(
     reference_metadata: ReferenceMetadata | None = None,
 ) -> ProcessingResult:
     deadline = time.monotonic() + timeout_s
-    # Raw vocal prerequisites share the existing graph/cache pass without
-    # pretending they are selected audio outputs (which could add dry passes).
     stems = run_separation(input_path, options, tmp, model_cache, stem_cache)
+    root = Path(model_cache) / "analysis-results"
+    decoder = cache_versions.binary_revision("ffmpeg")
     transcript = None
     if options.needs_lyrics:
         source = tmp / "lyrics-vocals.mp3"
         source.write_bytes(stems["vocals"].data)
-        # Resolve an exact-version reference before unprompted recognition.
-        # Only public provider records are cached; never source audio or ASR.
         reference = lookup_reference(
             reference_metadata, Path(model_cache) / "lyrics-references"
         )
@@ -94,43 +144,44 @@ def run_processing(
         reference_path.write_text(
             json.dumps(asdict(reference.review), ensure_ascii=False), "utf-8"
         )
+        # Fetch time/cache bookkeeping cannot change reference alignment.
+        reference_identity = asdict(reference.review)
+        for field in ("fetched_at", "cached", "reason"):
+            reference_identity.pop(field, None)
         output = tmp / "transcript.json"
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Lyrics extraction exceeded the processing time limit")
-        # Separator runs in its own subprocess too. Its GPU allocations are gone
-        # before ASR loads; this child exits after ASR, releasing its model as well.
-        try:
-            subprocess.run(
-                [
-                    asr_python,
-                    "-m",
-                    "separator.transcribe",
-                    str(source),
-                    str(Path(model_cache) / "qwen-asr"),
-                    str(output),
-                    str(reference_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=remaining,
-                cwd=Path(__file__).resolve().parent.parent,
-            )
-        except subprocess.CalledProcessError as exc:
-            detail = exc.stderr.strip()[-400:]
-            raise RuntimeError(f"Lyrics transcription failed: {detail}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(
-                "Lyrics extraction exceeded the processing time limit"
-            ) from exc
-        transcript = transcript_from_json(output.read_text("utf-8"))
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Lyrics extraction exceeded the processing time limit")
+        data = _analysis_output(
+            [
+                asr_python,
+                "-m",
+                "separator.transcribe",
+                str(source),
+                str(Path(model_cache) / "qwen-asr"),
+                str(output),
+                str(reference_path),
+            ],
+            output,
+            root / "lyrics",
+            cache_key(
+                cache_versions.ASR,
+                cache_versions.QWEN_REVISION,
+                decoder,
+                cache_versions.environment_revisions(
+                    asr_python, cache_versions.ASR_PACKAGES
+                ),
+                cache_versions.environment_revisions(
+                    asr_python, cache_versions.ALIGNMENT_PACKAGES
+                ),
+                cache_versions.ALIGNMENT,
+                digest(stems["vocals"].data),
+                reference_identity,
+            ),
+            deadline,
+            "Lyrics transcription",
+        )
+        transcript = transcript_from_json(data.decode())
         structure_output = tmp / "structure.json"
-        try:
-            subprocess.run(
+        structure = json.loads(
+            _analysis_output(
                 [
                     structure_python,
                     "-m",
@@ -139,20 +190,23 @@ def run_processing(
                     str(Path(model_cache) / "songformer"),
                     str(structure_output),
                 ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=remaining,
-                cwd=Path(__file__).resolve().parent.parent,
+                structure_output,
+                root / "structure",
+                cache_key(
+                    cache_versions.STRUCTURE,
+                    cache_versions.STRUCTURE_MODEL,
+                    cache_versions.STRUCTURE_REVISION,
+                    cache_versions.STRUCTURE_SHA256,
+                    decoder,
+                    cache_versions.environment_revisions(
+                        structure_python, cache_versions.STRUCTURE_PACKAGES
+                    ),
+                    digest(input_path.read_bytes()),
+                ),
+                deadline,
+                "Musical structure analysis",
             )
-        except subprocess.CalledProcessError as exc:
-            detail = exc.stderr.strip()[-400:]
-            raise RuntimeError(f"Musical structure analysis failed: {detail}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(
-                "Lyrics extraction exceeded the processing time limit"
-            ) from exc
-        structure = json.loads(structure_output.read_text("utf-8"))
+        )
         transcript = replace(
             transcript,
             sections=[
@@ -162,42 +216,42 @@ def run_processing(
         )
     pitch_json = None
     if options.needs_pitch:
-        sources = {}
+        tracks = []
+        duration = 0.0
         for label in options.pitch_labels:
             path = tmp / f"pitch-{label}.mp3"
             path.write_bytes(stems[label].data)
-            sources[label] = str(path)
-        manifest = tmp / "pitch-sources.json"
-        manifest.write_text(json.dumps(sources), "utf-8")
-        output = tmp / "pitch.json"
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("Pitch detection exceeded the processing time limit")
-        try:
-            subprocess.run(
-                [
-                    structure_python,
-                    "-m",
-                    "separator.detect_pitch",
-                    str(manifest),
-                    str(output),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=remaining,
-                cwd=Path(__file__).resolve().parent.parent,
+            manifest = tmp / "pitch-sources.json"
+            manifest.write_text(json.dumps({label: str(path)}), "utf-8")
+            output = tmp / "pitch.json"
+            analysis = pitch_from_json(
+                _analysis_output(
+                    [
+                        structure_python,
+                        "-m",
+                        "separator.detect_pitch",
+                        str(manifest),
+                        str(output),
+                    ],
+                    output,
+                    root / "pitch",
+                    cache_key(
+                        cache_versions.PITCH,
+                        decoder,
+                        cache_versions.environment_revisions(
+                            structure_python, cache_versions.PITCH_PACKAGES
+                        ),
+                        digest(stems[label].data),
+                    ),
+                    deadline,
+                    "Vocal pitch detection",
+                ).decode()
             )
-        except subprocess.CalledProcessError as exc:
-            detail = exc.stderr.strip()[-400:]
-            raise RuntimeError(f"Vocal pitch detection failed: {detail}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(
-                "Pitch detection exceeded the processing time limit"
-            ) from exc
+            tracks.append(PitchTrack(label, analysis.tracks[0].notes))
+            duration = max(duration, analysis.source_duration_s)
         pitch_json = pitch_to_json(
             transform_analysis(
-                pitch_from_json(output.read_text("utf-8")),
+                PitchAnalysis(duration, duration, tracks),
                 options.pitch_semitones,
                 options.tempo_percent,
                 transcript.words if transcript is not None else None,

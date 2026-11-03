@@ -64,6 +64,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for row in conn.execute("SELECT id, options_json FROM jobs").fetchall():
         options = json.loads(row["options_json"])
         before = json.dumps(options)
+        options.pop("no_cache", None)
         if "extract_vocals" not in options and "extract_instruments" not in options:
             options.update(extract_vocals=True, extract_instruments=True)
         mixes = options.setdefault("mixes", [])

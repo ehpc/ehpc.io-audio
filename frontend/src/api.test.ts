@@ -14,7 +14,6 @@ const defaultOptions: SeparationOptions = {
   genders: false,
   lead_backing: false,
   drums: false,
-  no_cache: false,
   pitch_semitones: 0,
   tempo_percent: 100,
 };

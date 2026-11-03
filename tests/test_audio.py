@@ -417,7 +417,6 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
         out_dir: Path,
         model_cache: str,
         stem_cache: str,
-        use_cache: bool = True,
     ) -> dict[str, tuple[StemResult, Path]]:
         calls.append((input_path, stem))
         out_dir.mkdir(parents=True)
@@ -447,8 +446,8 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
             dereverb=clean,
         ),
         tmp_path,
-        "models",
-        "cache",
+        str(tmp_path / "models"),
+        str(tmp_path / "cache"),
     )
     assert list(result) == (
         ["vocals-decrowded", "vocals-decrowded-dry", "instruments-decrowded"]

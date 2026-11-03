@@ -25,7 +25,6 @@ export interface SeparationOptions {
   genders: boolean;
   lead_backing: boolean;
   drums: boolean;
-  no_cache: boolean;
   pitch_semitones: number;
   tempo_percent: number;
 }
@@ -276,7 +275,6 @@ const OPTION_KEYS: BooleanOptionKey[] = [
   "extract_lyrics",
   "detect_pitch",
   "extract_pitched_lyrics",
-  "no_cache",
 ];
 function isTerminal(status: JobStatus): boolean {
   return status === "done" || status === "failed";

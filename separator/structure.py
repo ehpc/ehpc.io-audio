@@ -20,11 +20,11 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from types import MethodType
 
+from separator.cache_versions import STRUCTURE_MODEL as MODEL_ID
+from separator.cache_versions import STRUCTURE_REVISION as MODEL_REVISION
+from separator.cache_versions import STRUCTURE_SHA256 as MODEL_SHA256
 from separator.lyrics import SECTION_HEADINGS, TranscriptSection
 
-MODEL_ID = "ASLP-lab/SongFormer"
-MODEL_REVISION = "a75880ed1b7375ac71860ec6c4fc9c899cf99515"
-MODEL_SHA256 = "8dcabf4ea19973edd51b9e5794004775fa7e8de3ecfa07eb1dbce00f516ce7f7"
 MODEL_PROVENANCE = f"{MODEL_ID}@{MODEL_REVISION}"
 
 

@@ -184,8 +184,8 @@ def test_processing_analyzes_original_mix_after_raw_vocal_asr(
         source,
         SeparationOptions(extract_lyrics=True),
         tmp_path,
-        "/cache",
-        "/stems",
+        str(tmp_path / "models"),
+        str(tmp_path / "stems"),
         1200,
         "/asr/python",
         "/structure/python",
@@ -212,6 +212,7 @@ def test_structure_failure_does_not_return_asr_only_success(
         raise subprocess.CalledProcessError(1, command, stderr="real model failure")
 
     monkeypatch.setattr("separator.processing.subprocess.run", run)
+    (tmp_path / "source.wav").write_bytes(b"source")
     with pytest.raises(
         RuntimeError, match="Musical structure analysis failed: real model failure"
     ):
@@ -219,7 +220,7 @@ def test_structure_failure_does_not_return_asr_only_success(
             tmp_path / "source.wav",
             SeparationOptions(extract_lyrics=True),
             tmp_path,
-            "/cache",
-            "/stems",
+            str(tmp_path / "models"),
+            str(tmp_path / "stems"),
             1200,
         )

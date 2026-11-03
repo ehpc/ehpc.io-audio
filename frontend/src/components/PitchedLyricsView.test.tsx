@@ -15,7 +15,7 @@ const job: JobDTO = {
   original_key: null, output_key: null, manifest: [], error_message: null, created_at: 1, has_original: true,
   options: { extract_vocals: false, extract_instruments: false, extract_lyrics: false, detect_pitch: false,
     extract_pitched_lyrics: true, mixes: [], decrowd: false, decrowd_vocals: false,
-    dereverb: false, genders: false, lead_backing: false, drums: false, no_cache: false,
+    dereverb: false, genders: false, lead_backing: false, drums: false,
     pitch_semitones: 1.25, tempo_percent: 125 },
   transcript: { segments: [], sections: [], language: "en", status: "recognized", timestamp_reference: "original",
     structure_model: null, timestamped_text: "not the pitched renderer" },

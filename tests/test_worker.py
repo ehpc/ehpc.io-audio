@@ -13,7 +13,7 @@ from separator.stems import StemResult
 @pytest.fixture(autouse=True)
 def _key_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     # Unit tests use placeholder audio; native analysis is exercised separately.
-    monkeypatch.setattr(queue, "detect_key", lambda audio, name: "C major")
+    monkeypatch.setattr(queue, "detect_key", lambda audio, name, root: "C major")
 
 
 def _write_upload(job_id: int, filename: str) -> None:

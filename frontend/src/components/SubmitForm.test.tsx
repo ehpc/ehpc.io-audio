@@ -142,9 +142,6 @@ describe("SubmitForm", () => {
     fireEvent.input(url, { target: { value: "https://example.com/song" } });
     const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
     await userEvent.click(vocals);
-    await userEvent.click(screen.getByText("Advanced · cache"));
-    const cache = screen.getByRole("checkbox", { name: /reprocess from scratch/i });
-    await userEvent.click(cache);
     const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
     const tempo = screen.getByRole("spinbutton", { name: "Tempo (% of original)" });
     fireEvent.input(pitch, { target: { value: "-1.25" } });
@@ -154,7 +151,7 @@ describe("SubmitForm", () => {
     await userEvent.click(submitButton());
     expect(api.submitJob).toHaveBeenLastCalledWith({
       url: "https://example.com/song", file: undefined,
-      options: expect.objectContaining({ extract_vocals: true, no_cache: true, pitch_semitones: -1.25, tempo_percent: 119.5 }),
+      options: expect.objectContaining({ extract_vocals: true, pitch_semitones: -1.25, tempo_percent: 119.5 }),
     });
     fireEvent.input(url, { target: { value: "https://example.com/edited" } });
     fireEvent.input(pitch, { target: { value: "2.5" } });
@@ -162,20 +159,19 @@ describe("SubmitForm", () => {
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
     expect(onSubmitted.mock.calls[0][0]).toEqual(expect.objectContaining({
       source_value: "https://example.com/song",
-      options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5, extract_vocals: true, no_cache: true }),
+      options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5, extract_vocals: true }),
     }));
     expect(url).toHaveValue("https://example.com/edited");
     expect(pitch).toHaveValue(2.5);
     expect(tempo).toHaveValue(119.5);
     expect(vocals).toBeChecked();
-    expect(cache).toBeChecked();
     expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute("aria-selected", "true");
 
     await userEvent.click(submitButton());
     expect(api.submitJob).toHaveBeenCalledTimes(2);
     expect(api.submitJob).toHaveBeenLastCalledWith(expect.objectContaining({
       url: "https://example.com/edited",
-      options: expect.objectContaining({ pitch_semitones: 2.5, tempo_percent: 119.5, extract_vocals: true, no_cache: true }),
+      options: expect.objectContaining({ pitch_semitones: 2.5, tempo_percent: 119.5, extract_vocals: true }),
     }));
   });
 
@@ -466,7 +462,7 @@ describe("SubmitForm", () => {
     expect(screen.getByRole("button", { name: "Download song" })).toBeInTheDocument();
   });
 
-  it("retains every grouped selection, Advanced cache, and URL after submission", async () => {
+  it("retains every grouped selection and URL after submission", async () => {
     vi.mocked(api.submitJob).mockResolvedValue({ id: 12, status: "queued", position: 1 });
     const onSubmitted = vi.fn();
     render(() => <SubmitForm onSubmitted={onSubmitted} />);
@@ -474,7 +470,6 @@ describe("SubmitForm", () => {
     await userEvent.type(url, "https://example.com/song");
     const groups = ["Outputs", "Mixes Build your own", "Cleanup", "Splits"];
     for (const name of groups) expect(screen.getByRole("group", { name, exact: true })).toBeInTheDocument();
-    await userEvent.click(screen.getByText("Advanced · cache"));
     const checkboxes = screen.getAllByRole("checkbox");
     for (const checkbox of checkboxes) await userEvent.click(checkbox);
     await userEvent.click(submitButton());

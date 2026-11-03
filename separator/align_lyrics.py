@@ -12,11 +12,9 @@ import torch  # ty: ignore[unresolved-import]
 import torchaudio  # ty: ignore[unresolved-import]
 import uroman  # ty: ignore[unresolved-import]
 
+from separator.cache_versions import ASR_SAMPLE_RATE as SAMPLE_RATE
 from separator.lyrics import TranscriptWord
 from separator.lyrics_reference import tokens
-
-MODEL = "torchaudio/MMS_FA"
-SAMPLE_RATE = 16000
 
 
 class VocalAligner:

@@ -79,7 +79,7 @@ for (const viewport of [
       await activate('Decrease tempo');
       await expect(tempo).toHaveValue('119.5');
       if (mobile) await page.getByRole('tab', { name: 'Review', exact: true }).tap();
-      await expect(page.getByText('Full song (pitch -1.25 st, tempo 119.5%)')).toBeVisible();
+      await expect(page.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
       await expect(page.getByText('Original (unchanged)', { exact: true })).toBeVisible();
       if (mobile) await page.getByRole('tab', { name: 'Adjust', exact: true }).tap();
       await expect(pitch).toHaveValue('-1.25');

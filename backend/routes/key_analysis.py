@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from backend import config
 from backend.session import get_session_id
+from backend.source_cache import cached_download
 from separator.audio import detect_key
 from separator.download import download_mp3
 
@@ -24,14 +25,15 @@ def _analyze_source(data: bytes | None, filename: str, url: str | None) -> str |
     # it exits, then the context manager cleans them on both success and error.
     with tempfile.TemporaryDirectory(prefix="vocals-key-preview-") as directory:
         if url is not None:
-            data, filename = download_mp3(
+            data, filename = cached_download(
                 url,
                 directory,
                 max_attempts=config.DOWNLOAD_MAX_ATTEMPTS,
                 backoff_s=config.DOWNLOAD_RETRY_BACKOFF_S,
+                producer=download_mp3,
             )
         assert data is not None
-        return detect_key(data, filename)
+        return detect_key(data, filename, config.DATA_DIR / "artifacts")
 
 
 @router.post("/key-analysis")

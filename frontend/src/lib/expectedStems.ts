@@ -1,13 +1,16 @@
 import type { StemManifestEntry, SeparationOptions } from "~/api";
 
 /**
- * User-facing label for an output. Mix ids resolve to their mix name; other
- * labels pass through unchanged. API labels remain unchanged.
+ * User-facing output labels apply transform suffixes; manifest names replace
+ * only the base label so the suffix remains consistent with the selected options.
  */
-export function displayOutputLabel(label: string, options: SeparationOptions): string {
+function outputBaseLabel(label: string, options: SeparationOptions): string {
   if (label === "original") return "Original (unchanged)";
   const mix = options.mixes?.find((candidate) => candidate.id === label);
-  const base = mix ? mix.name : label === "song" ? "Full song" : label;
+  return mix ? mix.name : label === "song" ? "Full song" : label;
+}
+
+function appendAdjustments(base: string, options: SeparationOptions): string {
   const adjustments: string[] = [];
   if (options.pitch_semitones !== 0) {
     const pitch = String(options.pitch_semitones);
@@ -19,9 +22,18 @@ export function displayOutputLabel(label: string, options: SeparationOptions): s
   return adjustments.length ? `${base} (${adjustments.join(", ")})` : base;
 }
 
-/** Manifest entries prefer the server-provided display name; older payloads fall back to the label. */
+export function displayOutputLabel(label: string, options: SeparationOptions): string {
+  const base = outputBaseLabel(label, options);
+  return label === "original" ? base : appendAdjustments(base, options);
+}
+
+/** Server names replace the base label; client-side transform suffixes still apply. */
 export function manifestOutputLabel(stem: StemManifestEntry, options: SeparationOptions): string {
-  return stem.display_name ?? displayOutputLabel(stem.label, options);
+  if (stem.label === "original") return "Original (unchanged)";
+  const base = stem.label === "song"
+    ? "Full song"
+    : stem.display_name ?? outputBaseLabel(stem.label, options);
+  return appendAdjustments(base, options);
 }
 
 // Mirrors SeparationOptions result labels: full source first when pitched,

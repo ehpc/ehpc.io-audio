@@ -31,6 +31,7 @@ def _fresh_state() -> Iterator[None]:
     conn.close()
     shutil.rmtree(config.UPLOADS_DIR, ignore_errors=True)
     shutil.rmtree(config.RESULTS_DIR, ignore_errors=True)
+    shutil.rmtree(config.DATA_DIR / "artifacts", ignore_errors=True)
     yield
 
 

@@ -34,12 +34,13 @@ visitor sees their live position.
   optional lyric/pitch analysis. It owns the CUDA images and GPU-only dependencies.
 - **`backend/`** — the always-on FastAPI app. It downloads/reads the source and
   detects its key with libkeyfinder. Download-only jobs and whole-song pitch/tempo
-  changes run locally, without calling Modal (even with cache bypass enabled).
+  changes run locally, without calling Modal.
   Normal separation uses the existing `separate` Modal call; lyrics or vocal-pitch
   jobs use the backward-compatible `separate_with_lyrics` analysis RPC alongside
   any requested stems. Rubber Band R3 applies pitch/tempo changes locally to each
   final audio output, after any mixing. A small SQLite-backed queue caps
   concurrent jobs.
+
 - **`frontend/`** — SolidJS + Vite + Tailwind + Solid UI. Built to static
   assets at image-build time and served by the backend from the same origin,
   so there's exactly one port to expose.
@@ -51,6 +52,56 @@ visitor sees their live position.
   jobs keep their live status stream open through proxies. The stream subscribes
   before reading its fresh initial status snapshot to avoid missing a terminal
   update that races with connection setup, and unsubscribes when it closes.
+
+### Persistent artifact reuse
+
+Reusable work is never bypassed by a request flag (`no_cache` was removed in
+options schema 3). The production application namespace remains
+`audio-separator-v2`. Independent producer versions live in
+`separator/cache_versions.py`; changing UI, documentation, a mix name, pitch, or
+tempo does not invalidate recognition, alignment, source pitch, or raw stems.
+Relevant native executable/package revisions and model identities participate
+in each producer key. Model-file digests are memoized by file identity/mtime,
+not reread for every request. There is no TTL or global release/Git-SHA key.
+
+The web data volume stores private `artifacts/sources`, `key-decode`, `keys`,
+and `transforms` files. YouTube aliases use the video ID (different video/version
+IDs remain distinct); other URLs retain their full identity. The first download,
+including key preview, captures artist/track metadata. Each job receives its own
+original-byte copy; output title tags never mutate a shared source. Key preview
+and processing share decoded-audio analysis, including a valid unknown (`null`)
+result. Uploaded filenames and browser sessions do not enter content keys.
+
+The model volume stores versioned stems, mixes, `analysis-results` (lyrics,
+structure, source-clock pitch), and Qwen `results` (raw recognition and MMS
+recognition alignment). A hit is checked before spawning a neural subprocess;
+raw Qwen output survives reference/alignment changes. New pitch/tempo requests
+project source-clock data and cache their native transformed audio separately.
+Baseline MMS alignment keys include decoded PCM, sample rate, raw recognition,
+and aligner model/dependency identity. Changed decoded acoustics invalidate its
+timings even if recognized words stay identical; container metadata or Qwen-only
+dependency changes do not invalidate alignment when PCM and raw chunks agree.
+Custom mix IDs/names do not enter audio keys. Successful LRCLIB records retain
+their existing exact-version cache and are revalidated before use.
+
+Files publish atomically only after successful producer validation. Per-key
+filesystem locks coalesce local processes; the backend serializes same-source
+remote work until its model-volume artifacts commit, and the next remote call
+reloads that volume. Cancellation while waiting for a source lock is nonblocking.
+Caches are internal, not new public routes, job-history sharing, or API telemetry.
+Existing job files remain readable. Old unversioned analysis/stem artifacts lack
+sufficient producer provenance and are not silently relabeled as current Qwen,
+alignment, or model output: their first current-version use recomputes once.
+
+Cache regression proofs use owned synthetic audio and explicitly versioned CPU
+analysis fixtures, not claimed neural-quality substitutes. They observe real
+producer calls, forbid recomputation on hits, exercise independent stage-version
+changes and process restarts, and verify private HTTP results/history. The
+CPU-only Modal smoke uses a private ephemeral volume to check actual FUSE locks,
+atomic publication, commit/reload visibility, cancelled waiters, and preserved
+audio duration. Existing successful neural-quality proofs are not rerun merely
+to check cache hits. Genuine reference-text changes reuse raw recognition and
+baseline alignment but may require fresh reference-dependent acoustic alignment.
 
 ## Choosing outputs
 
@@ -678,11 +729,9 @@ and selection/Results/History PNGs under `frontend/test-results/`.
   retain the raw mix-composition proof. Whole-song changes prove expected audio
   duration and the known generated fundamental's pitch shift; originals are
   downloaded and hash-checked.
-- Cache bypass alone proves no Modal call is made. A separate explicit
-  extraction warms through the browser, repeats with the retained extraction
-  selection and zero raw inference time, and bypasses with positive inference
-  time. Persisted queue timestamps and actual Modal call IDs are included in the
-  evidence.
+- Repeated extraction and custom-name changes retain valid private job outputs.
+  Browser output hashes alone do not prove inference was skipped: cache tests
+  observe actual producer calls and forbid a second call on a valid hit.
 - File and real HTTP URL inputs exercise key preview and yt-dlp downloads;
   spinner/progress, target keys/notes, stale-key clearing, invalid audio/source
   errors, retry after source recovery, reload/history, and session isolation are

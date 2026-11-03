@@ -12,7 +12,7 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
   await expect(page.getByText('Original key: C major', { exact: true })).toBeVisible({ timeout: 60_000 });
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill('2.5');
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill('120');
-  await expect(page.getByText('Full song (pitch +2.5 st, tempo 120%)')).toBeVisible();
+  await expect(page.getByText('Full song (pitch +2.5 st, tempo 120%)', { exact: true })).toBeVisible();
 
   const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
   await page.locator('form button[type=submit]').click();

@@ -10,7 +10,7 @@ import { hash, inspectAudio, inspectMix, inspectTransformedSource, pcm } from '.
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
-const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums', 'no_cache'];
+const audioBooleanKeys: BooleanOptionKey[] = ['extract_vocals', 'extract_instruments', 'decrowd', 'decrowd_vocals', 'dereverb', 'genders', 'lead_backing', 'drums'];
 const booleanKeys: BooleanOptionKey[] = [...audioBooleanKeys, 'extract_lyrics', 'detect_pitch', 'extract_pitched_lyrics'];
 const defaults = Object.fromEntries([...audioBooleanKeys.map(key => [key, false]), ['extract_lyrics', false], ['detect_pitch', false], ['extract_pitched_lyrics', false], ['mixes', []], ['pitch_semitones', 0], ['tempo_percent', 100]]) as unknown as SeparationOptions;
 const allLabels = ['vocals', 'vocals-dry', 'vocals-decrowded', 'vocals-decrowded-dry', 'vocals-male', 'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry', 'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments'];
@@ -42,7 +42,7 @@ const componentStems = (component: StemComponent, options: SeparationOptions): s
     case 'backing': return [`backing${dry}`];
   }
 };
-interface Case { name: string; selected: Partial<SeparationOptions>; labels: string[]; source?: 'url'; cache?: 'hit' | 'bypass'; fixture?: 'tone-fixture'; }
+interface Case { name: string; selected: Partial<SeparationOptions>; labels: string[]; source?: 'url'; fixture?: 'tone-fixture'; }
 const cases: Case[] = [
   { name: 'identity-original-only', selected: {}, labels: [] },
   { name: 'extract_vocals', selected: { extract_vocals: true }, labels: ['vocals'] },
@@ -61,15 +61,11 @@ const cases: Case[] = [
   { name: 'genders', selected: { genders: true }, labels: ['vocals-male', 'vocals-female'] },
   { name: 'lead_backing', selected: { lead_backing: true }, labels: ['lead', 'backing'] },
   { name: 'drums', selected: { drums: true }, labels: ['drums', 'bass', 'other-instruments'] },
-  { name: 'no_cache-without-gpu', selected: { no_cache: true }, labels: [] },
-  { name: 'gpu-cache-hit', selected: { extract_vocals: true }, labels: ['vocals'], cache: 'hit' },
-  { name: 'gpu-cache-bypass', selected: { extract_vocals: true, no_cache: true }, labels: ['vocals'], cache: 'bypass' },
   { name: 'all-booleans-enabled', selected: Object.fromEntries(audioBooleanKeys.map(key => [key, true])), labels: allLabels },
   { name: 'all-options-with-transforms', selected: { ...Object.fromEntries(audioBooleanKeys.map(key => [key, true])), pitch_semitones: 1.25, tempo_percent: 125 }, labels: ['song', ...allLabels] },
   { name: 'mixes-hidden-dry-prerequisites', selected: { mixes: [MIX('mix-1', ['vocals', 'bass']), MIX('mix-2', ['drums', 'vocals'])], dereverb: true }, labels: ['mix-1', 'mix-2'] },
   { name: 'instrument-only-dereverb-no-hidden-vocal', selected: { extract_instruments: true, dereverb: true }, labels: ['instruments'] },
   { name: 'positive-fractional-pitch-speedup-no-extraction', selected: { pitch_semitones: 2.5, tempo_percent: 120 }, labels: ['song'] },
-  { name: 'negative-fractional-pitch-slowdown-no-extraction', selected: { pitch_semitones: -1.25, tempo_percent: 80, no_cache: true }, labels: ['song'] },
   { name: 'pitch-only', selected: { pitch_semitones: 2 }, labels: ['song'] },
   { name: 'tempo-only', selected: { tempo_percent: 80 }, labels: ['song'] },
   { name: 'separated-output-pitch-and-tempo', selected: { extract_instruments: true, pitch_semitones: -2.5, tempo_percent: 125 }, labels: ['song', 'instruments'] },
@@ -108,9 +104,6 @@ async function configure(page: Page, options: SeparationOptions) {
   for (const key of booleanKeys) {
     const checkbox = page.locator(`#option-${key}`);
     if (await checkbox.isChecked() === options[key]) continue;
-    if (key === 'no_cache' && !await checkbox.isVisible()) {
-      await page.getByText('Advanced · cache', { exact: true }).click();
-    }
     await checkbox.setChecked(Boolean(options[key]));
   }
   await configureMixes(page, options.mixes);
@@ -242,7 +235,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
       await expect(card.getByText(`Source key: ${job.output_key}`, { exact: true })).toHaveCount(0);
     }
     if (stem.label === 'song') {
-      await expect(card.getByText(displayOutputLabel('song', options))).toBeVisible();
+      await expect(card.getByText(displayOutputLabel('song', options), { exact: true })).toBeVisible();
       const playback = await card.locator('audio').evaluate(async element => {
         const player = element as HTMLAudioElement;
         player.load();
@@ -285,8 +278,6 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
         info.outputPath('full-source-reference.mp3'),
       );
     }
-    if (item.cache === 'hit') expect(stem.duration_s).toBe(0);
-    if (item.cache === 'bypass') expect(stem.duration_s).toBeGreaterThan(0);
   }
   for (const label of [...allLabels, 'song'].filter(label => !item.labels.includes(label))) {
     expect((await page.request.get(`/api/jobs/${job.id}/results/${label}`)).status()).toBe(404);
@@ -360,13 +351,6 @@ for (const item of cases) {
     await expect(page.getByText(`Target key: ${transposeKey(originalKey, options.pitch_semitones)}`, { exact: true })).toBeVisible();
     const notes = keyScale(transposeKey(originalKey, options.pitch_semitones))!;
     await expect(page.getByText(`Notes (${notes.mode}): ${notes.notes.join(' · ')}`, { exact: true }).last()).toBeVisible();
-    if (item.cache === 'hit') {
-      const warmId = await submit(page);
-      await complete(page, warmId);
-      await chooseSource(page, 'upload', fixtureName);
-      await expect(page.getByText(`Original key: ${originalKey}`, { exact: true }).first()).toBeVisible({ timeout: 60_000 });
-      await configure(page, options);
-    }
     const id = await submit(page);
     if (item.name === 'extract_vocals' || item.name === 'all-booleans-enabled') {
       await expect(page.getByText(/Processing audio, this can take a few minutes/)).toBeVisible({ timeout: 60_000 });

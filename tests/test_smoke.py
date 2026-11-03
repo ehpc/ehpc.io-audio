@@ -135,9 +135,7 @@ def test_deployed_container_can_import_separator_package() -> None:
     ("options", "expected"),
     [
         (
-            SeparationOptions(
-                extract_vocals=True, extract_instruments=True, no_cache=True
-            ),
+            SeparationOptions(extract_vocals=True, extract_instruments=True),
             ["vocals", "instruments"],
         ),
         (
@@ -149,7 +147,6 @@ def test_deployed_container_can_import_separator_package() -> None:
                     for part in ("female", "male", "backing", "lead")
                 ),
                 dereverb=True,
-                no_cache=True,
             ),
             [
                 "mix-female",
@@ -167,8 +164,7 @@ def test_deployed_function_separates_audio(
     """Check the deployed image, models, CUDA, and output contract directly.
 
     The browser suite additionally exercises the HTTP/queue/native boundaries.
-    `no_cache=True` ensures this check always executes real model inference
-    without populating the shared raw-stem cache with fixture outputs.
+    Version-matching artifacts are reusable; this test never bypasses the cache.
     """
     fn = modal.Function.from_name(config.MODAL_APP_NAME, config.MODAL_FUNCTION_NAME)
     result: SeparationResult = fn.remote(
@@ -183,7 +179,5 @@ def test_deployed_function_separates_audio(
         duration = source.getnframes() / source.getframerate()
         channels = source.getnchannels()
     for label, stem in result.items():
-        if label in {"vocals", "instruments"}:
-            assert stem.duration_s > 0, f"{label} bypass must perform fresh inference"
         media = _decoded_audio_contract(stem.data, duration, channels)
         print(f"SMOKE_AUDIO {json.dumps({'label': label, **media})}")

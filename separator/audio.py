@@ -1,11 +1,15 @@
 """CPU-only analysis of originals and postprocessing of completed stems."""
 
+import json
+import os
 import re
 import subprocess
 import tempfile
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from pathlib import Path
 
+from separator import cache_versions
+from separator.artifact_cache import cache_key, cached_bytes, digest
 from separator.options import SeparationOptions
 
 _NOTES = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
@@ -29,10 +33,29 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         raise RuntimeError(f"Required audio tool not found: {command[0]}") from exc
 
 
-def transform_audio(audio_bytes: bytes, options: SeparationOptions) -> bytes:
-    """Apply independent pitch and tempo adjustments in one offline R3 pass."""
+def transform_audio(
+    audio_bytes: bytes,
+    options: SeparationOptions,
+    cache_dir: Path | None = None,
+) -> bytes:
     if options.pitch_semitones == 0 and options.tempo_percent == 100:
         return audio_bytes
+    root = (
+        cache_dir or Path(os.environ.get("DATA_DIR", "/data")) / "artifacts"
+    ) / "transforms"
+    key = cache_key(
+        cache_versions.TRANSFORM,
+        digest(audio_bytes),
+        cache_versions.binary_revision("ffmpeg"),
+        cache_versions.binary_revision("rubberband"),
+        options.pitch_semitones,
+        options.tempo_percent,
+    )
+    return cached_bytes(root, key, lambda: _transform_audio(audio_bytes, options))
+
+
+def _transform_audio(audio_bytes: bytes, options: SeparationOptions) -> bytes:
+    """Apply independent pitch and tempo adjustments in one offline R3 pass."""
 
     with tempfile.TemporaryDirectory(prefix="vocals-transform-") as directory:
         root = Path(directory)
@@ -136,8 +159,34 @@ def mix_audio(inputs: list[Path], output: Path) -> None:
     )
 
 
-def detect_key(audio_bytes: bytes, filename: str) -> str | None:
-    """Analyze the entire recording, with bounded-rate PCM rather than source PCM."""
+def detect_key(
+    audio_bytes: bytes,
+    filename: str,
+    cache_dir: Path | None = None,
+) -> str | None:
+    """Share decoded-source analysis across preview, jobs and sessions."""
+    root = cache_dir or Path(os.environ.get("DATA_DIR", "/data")) / "artifacts"
+    decoder = cache_versions.binary_revision("ffmpeg")
+    decoded = cached_bytes(
+        root / "key-decode",
+        cache_key(cache_versions.DECODE, decoder, digest(audio_bytes)),
+        lambda: _decode_key_audio(audio_bytes, filename),
+    )
+    value = cached_bytes(
+        root / "keys",
+        cache_key(
+            cache_versions.KEY,
+            cache_versions.DECODE,
+            decoder,
+            cache_versions.binary_revision("keyfinder-cli"),
+            digest(decoded),
+        ),
+        lambda: json.dumps(_detect_decoded_key(decoded)).encode(),
+    )
+    return json.loads(value)
+
+
+def _decode_key_audio(audio_bytes: bytes, filename: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="vocals-key-") as directory:
         # The absolute, fixed basename cannot be interpreted as a CLI option or
         # escape the temporary directory, even for hostile upload filenames.
@@ -164,6 +213,8 @@ def detect_key(audio_bytes: bytes, filename: str) -> str | None:
                 "-map",
                 "0:a:0",
                 "-vn",
+                "-map_metadata",
+                "-1",
                 "-ac",
                 "1",
                 "-ar",
@@ -173,6 +224,13 @@ def detect_key(audio_bytes: bytes, filename: str) -> str | None:
                 str(analysis),
             ]
         )
+        return analysis.read_bytes()
+
+
+def _detect_decoded_key(decoded: bytes) -> str | None:
+    with tempfile.TemporaryDirectory(prefix="vocals-key-") as directory:
+        analysis = Path(directory) / "analysis.wav"
+        analysis.write_bytes(decoded)
         result = _run(["keyfinder-cli", "-n", "standard", str(analysis)])
     key = result.stdout.strip()
     if not key:

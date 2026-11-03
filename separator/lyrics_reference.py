@@ -20,6 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from separator.artifact_cache import atomic_write, locked
 from separator.lyrics import (
     CanonicalWordPosition,
     Transcript,
@@ -329,18 +330,27 @@ def _store_reference(
     if not _matches(metadata, record) or not record.plain_lyrics:
         raise ValueError("Only a matching successful provider record can be cached")
     path = _cache_path(cache, metadata)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    atomic_write(
+        path,
         json.dumps(
             {"record": asdict(record), "fetched_at": fetched_at},
             ensure_ascii=False,
-        ),
-        "utf-8",
+        ).encode(),
     )
 
 
 def lookup_reference(
     metadata: ReferenceMetadata | None, cache: Path | None = None
+) -> ReferenceLookup:
+    if cache is not None and metadata is not None:
+        with locked(_cache_path(cache, metadata).with_suffix(".lock")):
+            return _lookup_reference(metadata, cache)
+    return _lookup_reference(metadata, cache)
+
+
+def _lookup_reference(
+    metadata: ReferenceMetadata | None,
+    cache: Path | None,
 ) -> ReferenceLookup:
     reason = _metadata_reason(metadata)
     if reason:

@@ -48,7 +48,6 @@ async def submit_job(
     genders: Annotated[bool, Form()] = False,
     lead_backing: Annotated[bool, Form()] = False,
     drums: Annotated[bool, Form()] = False,
-    no_cache: Annotated[bool, Form()] = False,
     pitch_semitones: Annotated[float, Form(allow_inf_nan=False)] = 0.0,
     tempo_percent: Annotated[float, Form(gt=0, allow_inf_nan=False)] = 100.0,
 ) -> dict:
@@ -77,7 +76,6 @@ async def submit_job(
         genders=genders,
         lead_backing=lead_backing,
         drums=drums,
-        no_cache=no_cache,
         pitch_semitones=pitch_semitones,
         tempo_percent=tempo_percent,
     )

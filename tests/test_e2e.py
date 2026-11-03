@@ -40,7 +40,7 @@ _UPLOAD_BYTES = b"ID3\x03\x00fake-mp3-payload"
 @pytest.fixture(autouse=True)
 def _key_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
     # These separation scenarios use placeholder bytes, not decodable audio.
-    monkeypatch.setattr(queue, "detect_key", lambda audio, name: "C major")
+    monkeypatch.setattr(queue, "detect_key", lambda audio, name, root: "C major")
 
 
 @dataclass
@@ -58,13 +58,15 @@ def _fake_run_separator(
     out_dir: Path,
     model_cache: str,
     stem_cache: str,
-    use_cache: bool = True,
 ) -> dict[str, tuple[StemResult, Path]]:
     """Stand-in for the audio-separator subprocess: per-label bytes, no GPU.
 
     Distinct bytes per label let the download assertions catch mis-wiring
     between a manifest entry and the file it points at.
     """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for output in stem.outputs:
+        (out_dir / f"{output.label}.mp3").write_bytes(f"{output.label}-audio".encode())
     return {
         output.label: (
             StemResult(data=f"{output.label}-audio".encode(), duration_s=1.5),
@@ -96,7 +98,11 @@ def _fake_modal(
         return _FakeCall(
             object_id=f"fc-{len(spawned)}",
             result=stems.run_separation(
-                Path(filename), options, tmp_path / str(len(spawned)), "mc", "sc"
+                Path(filename),
+                options,
+                tmp_path / str(len(spawned)),
+                str(tmp_path / "models"),
+                str(tmp_path / "cache"),
             ),
         )
 
@@ -503,16 +509,16 @@ def test_whole_song_jobs_bypass_modal_and_preserve_original(
     source = tone_wav((440.0,), duration_s=2)
     analyses = []
 
-    def analyze(data: bytes, filename: str) -> str | None:
+    def analyze(data: bytes, filename: str, root: Path) -> str | None:
         analyses.append(filename)
-        return audio.detect_key(data, filename)
+        return audio.detect_key(data, filename, root)
 
     def forbidden(*args: object, **kwargs: object) -> object:
         raise AssertionError("download-only jobs must never spawn Modal")
 
     monkeypatch.setattr(queue, "detect_key", analyze)
     monkeypatch.setattr(modal_client, "spawn", forbidden)
-    options = {"no_cache": "true"}
+    options = {}
     if modified:
         options.update(pitch_semitones="12", tempo_percent="125")
     handler = partial(SimpleHTTPRequestHandler, directory=str(tmp_path))

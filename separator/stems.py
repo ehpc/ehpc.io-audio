@@ -1,10 +1,12 @@
-import hashlib
-import shutil
+import io
 import subprocess
 import time
+import zipfile
 from pathlib import Path
 from typing import NamedTuple
 
+from separator import cache_versions
+from separator.artifact_cache import cache_key, cached_bytes, digest, locked
 from separator.audio import mix_audio
 from separator.options import VOCAL_STEM_LABELS, SeparationOptions
 
@@ -100,49 +102,81 @@ def run_separator(
     out_dir: Path,
     model_cache: str,
     stem_cache: str,
-    use_cache: bool = True,
 ) -> dict[str, tuple[StemResult, Path]]:
-    out_dir.mkdir(parents=True)
-    cache_dir = (
-        Path(stem_cache)
-        / hashlib.sha256(input_path.read_bytes()).hexdigest()
-        / stem.model
+    root = Path(stem_cache) / "versioned"
+    model_path = Path(model_cache) / stem.model
+    identity = (
+        cache_versions.STEM,
+        cache_versions.package_revision("audio-separator"),
+        cache_versions.environment_revisions(
+            None, ("torch", "onnxruntime-gpu", "librosa")
+        ),
+        cache_versions.binary_revision("ffmpeg"),
+        stem.model,
+        stem.outputs,
+        digest(input_path.read_bytes()),
     )
+    # Serializing by source/model also covers the first model download. Old
+    # unversioned directories are not trusted as current algorithm results.
+    duration = 0.0
+    with locked(root / f"{cache_key(*identity)}.lock"):
 
-    if use_cache and cache_dir.is_dir():
-        for src in cache_dir.glob("*.mp3"):
-            shutil.copy(src, out_dir / src.name)
-        duration = 0.0
-    else:
-        start = time.monotonic()
-        subprocess.run(
-            [
-                "audio-separator",
-                str(input_path),
-                "--model_filename",
-                stem.model,
-                "--output_format",
-                "MP3",
-                "--output_dir",
-                str(out_dir),
-                "--model_file_dir",
-                model_cache,
-            ],
-            check=True,
-        )
-        duration = time.monotonic() - start
-        if use_cache:
-            # Stage into a sibling dir and rename so a crash mid-write never leaves
-            # a half-populated cache entry that a later run would treat as a hit.
-            staging = cache_dir.parent / f".{cache_dir.name}.tmp"
-            if staging.exists():
-                shutil.rmtree(staging)
-            staging.mkdir(parents=True)
-            for src in out_dir.glob("*.mp3"):
-                shutil.copy(src, staging / src.name)
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir)
-            staging.rename(cache_dir)
+        def produce() -> bytes:
+            nonlocal duration
+            result = _run_separator(input_path, stem, out_dir, model_cache)
+            duration = next(iter(result.values()))[0].duration_s
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                for label, (audio, _) in result.items():
+                    if not audio.data:
+                        raise RuntimeError("Separator produced an empty stem")
+                    archive.writestr(label, audio.data)
+            return stream.getvalue()
+
+        def model_key() -> str:
+            return cache_key(*identity, cache_versions.file_revision(model_path))
+
+        if model_path.is_file():
+            data = cached_bytes(root / "outputs", model_key(), produce)
+        else:
+            data = produce()
+            if model_path.is_file():
+                data = cached_bytes(root / "outputs", model_key(), lambda: data)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = {}
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for output in stem.outputs:
+            audio = archive.read(output.label)
+            path = out_dir / f"{output.label}.mp3"
+            path.write_bytes(audio)
+            result[output.label] = StemResult(audio, duration), path
+    return result
+
+
+def _run_separator(
+    input_path: Path,
+    stem: Stem,
+    out_dir: Path,
+    model_cache: str,
+) -> dict[str, tuple[StemResult, Path]]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    subprocess.run(
+        [
+            "audio-separator",
+            str(input_path),
+            "--model_filename",
+            stem.model,
+            "--output_format",
+            "MP3",
+            "--output_dir",
+            str(out_dir),
+            "--model_file_dir",
+            model_cache,
+        ],
+        check=True,
+    )
+    duration = time.monotonic() - start
 
     candidates = list(out_dir.glob("*.mp3"))
     used: set[Path] = set()
@@ -183,7 +217,6 @@ def run_separation(
     requested = options.output_labels
     if not requested and not options.needs_lyrics and not options.needs_pitch:
         return {}
-    use_cache = not options.no_cache
     results: SeparationResult = {}
     paths: dict[str, Path] = {}
 
@@ -191,7 +224,7 @@ def run_separation(
         for stem in stems:
             out_dir = tmp_dir / f"{stem.model}{suffix}"
             for label, (result, path) in run_separator(
-                source, stem, out_dir, model_cache, stem_cache, use_cache=use_cache
+                source, stem, out_dir, model_cache, stem_cache
             ).items():
                 results[label] = result
                 paths[label] = path
@@ -252,10 +285,23 @@ def run_separation(
     for mix in options.mixes:
         output = tmp_dir / f"{mix.id}.mp3"
         start = time.monotonic()
-        mix_audio(
-            [paths[options.component_label(part)] for part in mix.components], output
+        inputs = [paths[options.component_label(part)] for part in mix.components]
+
+        def produce_mix(inputs=inputs, output=output) -> bytes:
+            mix_audio(inputs, output)
+            return output.read_bytes()
+
+        audio = cached_bytes(
+            Path(stem_cache) / "mixes",
+            cache_key(
+                cache_versions.MIX,
+                cache_versions.binary_revision("ffmpeg"),
+                sorted(digest(path.read_bytes()) for path in inputs),
+            ),
+            produce_mix,
         )
-        results[mix.id] = StemResult(output.read_bytes(), time.monotonic() - start)
+        output.write_bytes(audio)
+        results[mix.id] = StemResult(audio, time.monotonic() - start)
     if options.needs_lyrics and "vocals" not in requested:
         requested.append("vocals")
     requested.extend(label for label in options.pitch_labels if label not in requested)

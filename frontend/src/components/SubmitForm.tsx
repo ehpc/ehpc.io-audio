@@ -50,7 +50,6 @@ const DEFAULT_OPTIONS: SeparationOptions = {
   genders: false,
   lead_backing: false,
   drums: false,
-  no_cache: false,
   pitch_semitones: 0,
   tempo_percent: 100,
 };
@@ -294,16 +293,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           <Show when={options.extract_pitched_lyrics}>
             <p class="workspace-helper">Pitch-over-word TXT for each selected vocal stem, or full vocals internally if none selected. Analysis does not add audio exports.</p>
           </Show>
-          <details class="workspace-advanced">
-            <summary>Advanced · cache</summary>
-            <label class="workspace-option" for="option-no_cache">
-              <input id="option-no_cache" type="checkbox" checked={options.no_cache}
-                onChange={(event) => setOptions("no_cache", event.currentTarget.checked)} />
-              <span>Reprocess from scratch, even if this exact file was separated before</span>
-            </label>
-          </details>
         </section>
-
         <aside class="adjustment-rail" aria-label="Adjustments and output preview">
           <section class="workspace-page adjust-page" id="page-adjust" data-page="adjust"
             role={mobile() ? "tabpanel" : "region"} aria-label={mobile() ? undefined : "Fine-tune audio"}

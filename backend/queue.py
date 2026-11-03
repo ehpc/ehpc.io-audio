@@ -17,7 +17,9 @@ from backend.models import (
     download_filename,
     job_to_dto,
 )
+from backend.source_cache import cached_download
 from backend.source_metadata import reference_metadata
+from separator.artifact_cache import async_locked, digest
 from separator.audio import detect_key, modification_suffix, transform_audio
 from separator.download import download_mp3
 from separator.processing import ProcessingResult
@@ -52,12 +54,13 @@ def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
     if job.options.needs_lyrics:
         metadata_path = config.DATA_DIR / "source-metadata" / f"{job.id}.json"
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    return download_mp3(
+    return cached_download(
         job.source_value,
         str(dest),
         max_attempts=config.DOWNLOAD_MAX_ATTEMPTS,
         backoff_s=config.DOWNLOAD_RETRY_BACKOFF_S,
         metadata_path=metadata_path,
+        producer=download_mp3,
     )
 
 
@@ -68,7 +71,9 @@ def _persist_results(
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
     for label, stem_result in result.items():
-        audio = transform_audio(stem_result.data, job.options)
+        audio = transform_audio(
+            stem_result.data, job.options, config.DATA_DIR / "artifacts"
+        )
         filename = f"{label}{modification_suffix(job.options)}.mp3"
         path = out_dir / filename
         path.write_bytes(audio)
@@ -131,35 +136,44 @@ async def _run_job(job: JobRecord) -> None:
         if job.source_type == "url":
             job.title = Path(filename).stem
             await asyncio.to_thread(db.set_title, job.id, job.title)
-        job.original_key = await asyncio.to_thread(detect_key, audio_bytes, filename)
+        job.original_key = await asyncio.to_thread(
+            detect_key, audio_bytes, filename, config.DATA_DIR / "artifacts"
+        )
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
         await _publish_status(job.id)
         processed = ProcessingResult(audio={})
-        if job.options.needs_lyrics or job.options.needs_pitch:
-            metadata = None
-            if job.options.needs_lyrics:
-                metadata = await asyncio.to_thread(
-                    reference_metadata,
+        # Serialize identical sources across web processes until remote artifacts
+        # have committed. The next remote call reloads that persistent volume.
+        async with async_locked(
+            config.DATA_DIR / "artifacts" / "gpu-locks" / digest(audio_bytes)
+        ):
+            if job.options.needs_lyrics or job.options.needs_pitch:
+                metadata = None
+                if job.options.needs_lyrics:
+                    metadata = await asyncio.to_thread(
+                        reference_metadata,
+                        audio_bytes,
+                        downloaded_metadata=(
+                            config.DATA_DIR / "source-metadata" / f"{job.id}.json"
+                            if job.source_type == "url"
+                            else None
+                        ),
+                    )
+                analysis_call = await asyncio.to_thread(
+                    modal_client.spawn_with_lyrics,
                     audio_bytes,
-                    downloaded_metadata=(
-                        config.DATA_DIR / "source-metadata" / f"{job.id}.json"
-                        if job.source_type == "url"
-                        else None
-                    ),
+                    filename,
+                    job.options,
+                    *([metadata] if metadata is not None else []),
                 )
-            analysis_call = await asyncio.to_thread(
-                modal_client.spawn_with_lyrics,
-                audio_bytes,
-                filename,
-                job.options,
-                *([metadata] if metadata is not None else []),
-            )
-            processed = await _await_modal(job.id, analysis_call)
-        elif job.options.output_labels:
-            audio_call = await asyncio.to_thread(
-                modal_client.spawn, audio_bytes, filename, job.options
-            )
-            processed = ProcessingResult(audio=await _await_modal(job.id, audio_call))
+                processed = await _await_modal(job.id, analysis_call)
+            elif job.options.output_labels:
+                audio_call = await asyncio.to_thread(
+                    modal_client.spawn, audio_bytes, filename, job.options
+                )
+                processed = ProcessingResult(
+                    audio=await _await_modal(job.id, audio_call)
+                )
         if (
             job.options.output_labels
             or job.options.needs_lyrics
