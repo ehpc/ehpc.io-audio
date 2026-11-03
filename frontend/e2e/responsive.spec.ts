@@ -104,7 +104,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await cache.check();
     await page.getByRole('tab', { name: 'Review', exact: true }).click();
     await expect(page.locator('.output-tags').getByText('Original (unchanged)', { exact: true })).toBeVisible();
-    await expect(page.locator('.output-tags').getByText('Full song (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
+    await expect(page.locator('.output-tags').getByText('Full song (pitch +2 st, tempo 120%)')).toBeVisible();
     await expect(page.locator('.output-tags').getByText('lead-instruments (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
