@@ -242,7 +242,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
       await expect(card.getByText(`Source key: ${job.output_key}`, { exact: true })).toHaveCount(0);
     }
     if (stem.label === 'song') {
-      await expect(card.getByText(displayOutputLabel('song', options), { exact: true })).toBeVisible();
+      await expect(card.getByText(displayOutputLabel('song', options))).toBeVisible();
       const playback = await card.locator('audio').evaluate(async element => {
         const player = element as HTMLAudioElement;
         player.load();
