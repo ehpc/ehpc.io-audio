@@ -150,6 +150,7 @@ async function referenceMixInputs(page: Page, info: TestInfo, options: Separatio
     components.some(component => variants.includes(component)) && { [flag]: true };
   const referenceOptions = {
     ...defaults,
+    extract_vocals: components.some(component => component === 'vocals'),
     ...needsSplit(['female', 'male'], 'genders'),
     ...needsSplit(['lead', 'backing'], 'lead_backing'),
     drums: components.some(component => ['drums', 'bass', 'other', 'instruments'].includes(component)),
