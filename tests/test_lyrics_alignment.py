@@ -43,8 +43,9 @@ def test_unsupported_script_or_failed_alignment_is_untimed_not_chunk_start_onset
     assert result.word_alignment is None
     assert result.untimed[0].text == raw.text
     text = transcript_export_text(result)
-    assert "NO TIMESTAMPS" in text
-    assert raw.text in text
+    assert "[Recognized text — alignment unavailable, NO TIMESTAMPS]" in text
+    assert "[??:??] unrepresented script text" in text
+    assert "[Alignment unavailable:" in text
     assert "[00:20]" not in text and "[00:21]" not in text
     assert transcript_from_json(json.dumps(asdict(result))) == result
 

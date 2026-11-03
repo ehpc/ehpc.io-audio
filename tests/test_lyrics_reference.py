@@ -16,6 +16,7 @@ from separator.lyrics import (
     TranscriptSection,
     TranscriptSegment,
     TranscriptWord,
+    UntimedRecognition,
     transcript_export_text,
 )
 from separator.lyrics_reference import (
@@ -241,9 +242,7 @@ def test_omitted_verse_is_untimed_despite_valid_forced_alignment_spans():
         segment.text for segment in result.segments
     )
     exported = transcript_export_text(result)
-    assert (
-        "[Reference line 2; UNCONFIRMED, NO TIMESTAMP] Silver branches sway" in exported
-    )
+    assert "[??:??] Silver branches sway" in exported
     assert "[00:40] Silver" not in exported
 
 
@@ -487,7 +486,7 @@ def test_primary_canonical_order_keeps_disputed_line_inline_without_asr_typo():
     assert text.index("Amber lanterns shine") < text.index("Silver branches sway")
     assert text.index("Silver branches sway") < text.index("Quiet gardens sleep")
     assert all(text.count(line) == 1 for line in canonical.splitlines())
-    assert "[Reference line 2; UNCONFIRMED, NO TIMESTAMP] Silver branches sway" in text
+    assert "[??:??] Silver branches sway" in text
     assert "[00:04] Silver branches sway" not in text
     assert "Silver branches sleep" not in text
     assert "[Verse]\n[00:01] Amber lanterns shine" in text
@@ -514,6 +513,71 @@ def test_unanchored_canonical_group_has_unknown_section_not_invented_label():
     )
     text = transcript_export_text(result)
     assert "Unknown section" in text
-    assert "UNCONFIRMED, NO TIMESTAMP] Unheard canonical words" in text
+    assert "[??:??] Unheard canonical words" in text
     assert "Estimated musical structure" in text
     assert text.count("Verse") == 1
+
+
+def test_txt_head_is_identity_without_system_messages_or_bottom_legend() -> None:
+    identified = transcript_export_text(
+        Transcript(
+            reference=replace(
+                review("Amber lanterns shine"), artist="Doe", title="Amber Song"
+            )
+        ),
+        title="Upload.wav",
+    )
+    assert identified.splitlines()[0] == "Doe — Amber Song"
+    fallback = transcript_export_text(
+        Transcript(reference=review("Amber lanterns shine")), title="Upload.wav"
+    )
+    assert fallback.splitlines()[0] == "Upload.wav"
+    anonymous = transcript_export_text(
+        Transcript(reference=review("Amber lanterns shine"))
+    )
+    assert anonymous.splitlines()[0] == "[??:??] Amber lanterns shine"
+    for text in (identified, fallback, anonymous):
+        assert "NOT verified" not in text
+        assert "Reference source" not in text
+        assert "audio clock" not in text
+        assert "Word-level timing uncertainty" not in text
+        assert "NO WORD TIMESTAMPS" not in text
+
+
+def test_unconfirmed_word_timings_stay_in_json_not_a_bottom_legend() -> None:
+    text = transcript_export_text(
+        Transcript(
+            reference=ReferenceReview(
+                "aligned",
+                "Synthetic policy fixture",
+                artist="Doe",
+                title="Amber Song",
+                lines=[
+                    ReferenceLine(
+                        "Amber lanterns shine",
+                        "aligned",
+                        1,
+                        2,
+                        3,
+                        unconfirmed_words=["shine"],
+                    )
+                ],
+            )
+        )
+    )
+    assert text.splitlines()[0] == "Doe — Amber Song"
+    assert "[00:02] Amber lanterns shine" in text
+    assert "Word-level timing uncertainty" not in text
+    assert "uncorroborated" not in text
+
+
+def test_unreferenced_txt_head_falls_back_to_title_and_marks_untimed_rows() -> None:
+    transcript = Transcript(
+        segments=[TranscriptSegment(0, 2, "Heard line")],
+        untimed=[UntimedRecognition("Raw words", "Insufficient acoustic evidence")],
+    )
+    text = transcript_export_text(transcript, title="Upload.wav")
+    assert text.startswith("Upload.wav\n[00:00] Heard line\n")
+    assert "[??:??] Raw words" in text
+    assert "[Alignment unavailable: Insufficient acoustic evidence]" in text
+    assert transcript_export_text(transcript) == text.removeprefix("Upload.wav\n")

@@ -12,11 +12,13 @@ from backend.models import (
     JobStatus,
     TranscriptDTO,
     download_filename,
+    header_title,
     lyrics_filename,
     original_filename,
     pitched_lyrics_filename,
 )
 from backend.session import get_session_id
+from separator.audio import transposed_key
 from separator.lyrics import transcript_export_text
 from separator.pitch import pitch_from_json, pitch_to_json
 from separator.pitched_lyrics import pitched_lyrics_text
@@ -94,7 +96,7 @@ async def get_lyrics(
 ) -> TranscriptDTO:
     job = await _lyrics_job(job_id, session_id)
     assert job.transcript is not None
-    return TranscriptDTO.from_transcript(job.transcript)
+    return TranscriptDTO.from_transcript(job.transcript, title=header_title(job.title))
 
 
 @router.get("/jobs/{job_id}/lyrics/download")
@@ -105,7 +107,7 @@ async def download_lyrics(
     assert job.transcript is not None
     name = quote(lyrics_filename(job.title, job_id))
     return Response(
-        transcript_export_text(job.transcript),
+        transcript_export_text(job.transcript, title=header_title(job.title)),
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )
@@ -119,7 +121,9 @@ async def download_lyrics_json(
     assert job.transcript is not None
     name = quote(lyrics_filename(job.title, job_id).removesuffix(".txt") + ".json")
     return Response(
-        TranscriptDTO.from_transcript(job.transcript).model_dump_json(),
+        TranscriptDTO.from_transcript(
+            job.transcript, title=header_title(job.title)
+        ).model_dump_json(),
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )
@@ -163,7 +167,13 @@ async def download_pitched_lyrics(
     assert job.transcript is not None
     name = quote(pitched_lyrics_filename(job.title, job_id, label, job.options))
     return Response(
-        pitched_lyrics_text(job.transcript, analysis, track),
+        pitched_lyrics_text(
+            job.transcript,
+            analysis,
+            track,
+            title=header_title(job.title),
+            output_key=transposed_key(job.original_key, job.options.pitch_semitones),
+        ),
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )

@@ -23,6 +23,7 @@ SECTION_HEADINGS = {
     "silence": "Silence",
     "pre-chorus": "Pre-chorus",
 }
+UNKNOWN_TIMESTAMP = "??:??"
 
 
 @dataclass(frozen=True)
@@ -310,6 +311,38 @@ def _plain_line(line: LyricDisplayLine) -> str:
     return f"[{line.prefix}] {line.text}\n"
 
 
+def _single_line(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _identity_line(
+    reference: "ReferenceReview | None", title: str | None
+) -> str | None:
+    """Reference song identity wins; the job title is the fallback."""
+    if reference is not None:
+        artist = _single_line(reference.artist) if reference.artist else ""
+        track = _single_line(reference.title) if reference.title else ""
+        if artist and track:
+            return f"{artist} — {track}"
+        if artist or track:
+            return artist or track
+    if title:
+        return _single_line(title)
+    return None
+
+
+def _head_lines(
+    reference: "ReferenceReview | None", title: str | None, output_key: str | None
+) -> list[str]:
+    head: list[str] = []
+    identity = _identity_line(reference, title)
+    if identity is not None:
+        head.append(f"{identity}\n")
+    if output_key is not None:
+        head.append(f"Tonality: {output_key}\n")
+    return head
+
+
 def transcript_text(
     segments: list[TranscriptSegment],
     sections: list[TranscriptSection] | None = None,
@@ -376,18 +409,22 @@ def transcript_export_text(
     transcript: Transcript,
     render_line: LyricLineRenderer = _plain_line,
     output_tempo_percent: float | None = None,
+    *,
+    title: str | None = None,
+    output_key: str | None = None,
 ) -> str:
-    """One primary renderer: ordered canonical candidates or independent ASR."""
+    """One primary renderer: ordered canonical candidates or independent ASR.
+
+    The file starts with an identity line (reference artist/track, else the
+    caller's title), plus a Tonality line when the caller supplies an output
+    key. Undetectable onsets render the UNKNOWN_TIMESTAMP token.
+    """
     rate = output_tempo_percent / 100 if output_tempo_percent is not None else 1
     clock = "Output" if output_tempo_percent is not None else "Original"
+    head = _head_lines(transcript.reference, title, output_key)
     if transcript.reference is not None and transcript.reference.lines:
         review = transcript.reference
-        source = review.source_url or review.provider
-        output = [
-            "[Canonical reference lyrics — candidate text, NOT verified]\n",
-            f"[{clock} audio clock; unconfirmed lines have NO TIMESTAMP]\n",
-            f"[Reference source: {source}]\n",
-        ]
+        output = list(head)
         anchored = [
             _best_section(
                 TranscriptSegment(line.start_s, line.end_s, line.text),
@@ -430,7 +467,7 @@ def transcript_export_text(
             if line.status == "aligned" and line.start_s is not None:
                 prefix = format_timestamp(line.start_s)
             else:
-                prefix = f"Reference line {index + 1}; UNCONFIRMED, NO TIMESTAMP"
+                prefix = UNKNOWN_TIMESTAMP
             output.append(
                 render_line(
                     LyricDisplayLine(
@@ -455,15 +492,6 @@ def transcript_export_text(
             output.append(
                 transcript_text(transcript.asr_extras, render_line=render_line)
             )
-        uncertain = [
-            f"[Reference line {index + 1}: {len(line.unconfirmed_words)} "
-            "uncorroborated word timings; NO WORD TIMESTAMPS — see JSON]\n"
-            for index, line in enumerate(review.lines)
-            if line.status == "aligned" and line.unconfirmed_words
-        ]
-        if uncertain:
-            output.append("\n[Word-level timing uncertainty]\n")
-            output.extend(uncertain)
         if transcript.sections and not has_anchors:
             output.append(
                 "\n[Estimated musical structure — original mix; "
@@ -477,16 +505,14 @@ def transcript_export_text(
                 for section in transcript.sections
             )
         return "".join(output)
-    text = transcript_text(transcript.segments, transcript.sections, render_line)
+    text = "".join(head) + transcript_text(
+        transcript.segments, transcript.sections, render_line
+    )
     if transcript.untimed:
         text += "\n[Recognized text — alignment unavailable, NO TIMESTAMPS]\n"
-        text += "".join(
-            render_line(LyricDisplayLine(item.text, "NO TIMESTAMP"))
-            + f"[Alignment unavailable: {item.reason}]\n"
-            if render_line is not _plain_line
-            else f"{item.text} ({item.reason})\n"
-            for item in transcript.untimed
-        )
+        for item in transcript.untimed:
+            text += render_line(LyricDisplayLine(item.text, UNKNOWN_TIMESTAMP))
+            text += f"[Alignment unavailable: {item.reason}]\n"
     return text
 
 

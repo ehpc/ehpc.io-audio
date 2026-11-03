@@ -135,7 +135,7 @@ def test_canonical_json_controls_txt_without_rewriting_legacy_files(
     payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
     assert payload["sections"] == [asdict(s) for s in transcript.sections]
     assert payload["structure_model"] == MODEL_PROVENANCE
-    expected = transcript_text(transcript.segments, transcript.sections)
+    expected = "song\n" + transcript_text(transcript.segments, transcript.sections)
     assert payload["timestamped_text"] == expected
     assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == expected
     assert legacy.read_text("utf-8") == "old timestamp format, do not rewrite"

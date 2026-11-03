@@ -71,6 +71,26 @@ def test_melisma_and_real_repeated_notes_widen_cells_without_changing_lyrics() -
     )
 
 
+def test_pitched_txt_head_is_identity_and_transposed_tonality() -> None:
+    transcript, analysis = singing()
+    text = pitched_lyrics_text(
+        transcript,
+        analysis,
+        analysis.tracks[0],
+        title="Cœur.wav",
+        output_key="D minor",
+    )
+    assert text.startswith("Cœur.wav\nTonality: D minor\n")
+    assert "[Lyrics with pitches" not in text
+    assert "NOT re-measured" not in text
+    assert "NOT a rest" not in text
+    plain = pitched_lyrics_text(
+        transcript, analysis, analysis.tracks[0], title="Cœur.wav"
+    )
+    assert plain.startswith("Cœur.wav\n[")
+    assert "Tonality" not in plain
+
+
 def test_empty_lyrics_do_not_assign_unlinked_notes_to_fake_words() -> None:
     transcript = Transcript(sections=[TranscriptSection(0, 5, "inst")])
     analysis = PitchAnalysis(
@@ -135,8 +155,8 @@ def test_canonical_order_disputed_repeats_and_unconfirmed_lines_are_not_guessed(
         < text.index("Untimed  ending")
     )
     assert "[00:01]\n?     ?     D4\nglow  glow  stars\n" in text
-    assert "Reference line 1; UNCONFIRMED, NO TIMESTAMP" in text
-    assert "Reference line 3; UNCONFIRMED, NO TIMESTAMP" in text
+    assert text.count("[??:??]") == 2
+    assert "Reference line" not in text and "UNCONFIRMED" not in text
     assert "variant" not in text
     assert "C4" not in text
 
@@ -336,6 +356,7 @@ def test_pitched_lyrics_lifecycle_canonical_bytes_history_retry_and_privacy(
         "lead",
         "backing",
     ]
+    assert payload["pitched_lyrics"][0]["text"].startswith("Cœur\n[Verse]\n")
     for track in payload["pitched_lyrics"]:
         path = f"/api/jobs/{job_id}/pitched-lyrics/{track['label']}/download"
         download = client.get(path)
@@ -384,6 +405,12 @@ def test_pitched_download_uses_transform_filename_and_requires_explicit_option(
     assert "lead - lyrics-with-pitches - pitch+1.25st - tempo125pct.txt" in unquote(
         response.headers["content-disposition"]
     )
+    db.set_title(job_id, "Song")
+    db.set_original_key(job_id, "C major")
+    response = client.get(f"/api/jobs/{job_id}/pitched-lyrics/lead/download")
+    assert response.text.startswith("Song\nTonality: Db major (+25 cents)\n")
+    payload = client.get(f"/api/jobs/{job_id}").json()
+    assert payload["pitched_lyrics"][0]["text"] == response.text
     job = db.get_job(job_id)
     assert job is not None
     plain_id = db.insert_job(job.session_id, "url", "example", SeparationOptions())

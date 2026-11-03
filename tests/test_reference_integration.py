@@ -241,7 +241,9 @@ def test_review_provenance_json_download_and_history_preserve_original_asr(
     assert job is not None
     asyncio.run(queue._run_job(job))
     payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
-    assert payload["timestamped_text"] == "[00:01] Good morning to you\n"
+    assert payload["timestamped_text"] == (
+        "Artist — Track\n[00:01] Good morning to you\n"
+    )
     assert payload["original_timestamped_text"] == "[00:01] Good morninx to you\n"
     assert payload["reference"]["original_words"][1]["text"] == "morninx"
     assert (
@@ -344,7 +346,7 @@ def test_historical_review_survives_history_and_download_without_row_rewrite(
     ]
     assert (
         client.get(f"/api/jobs/{job_id}/lyrics/download").text
-        == "[00:01] Good morning\n"
+        == "Artist — Track\n[00:01] Good morning\n"
     )
     assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == payload
     assert client.get("/api/jobs").json()[0]["transcript"] == payload
@@ -428,10 +430,13 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
     assert payload["untimed"] == []
     text = client.get(f"/api/jobs/{job_id}/lyrics/download").text
     assert text == payload["timestamped_text"]
-    assert "NOT verified" in text
+    assert text.startswith("source\n")
     assert "[00:01] Amber lanterns softly shine" in text
-    assert "[Reference line 2; UNCONFIRMED, NO TIMESTAMP] Silver branches sway" in text
-    assert "1 uncorroborated word timings; NO WORD TIMESTAMPS" in text
+    assert "[??:??] Silver branches sway" in text
+    assert "NOT verified" not in text
+    assert "Word-level timing uncertainty" not in text
+    assert "NO WORD TIMESTAMPS" not in text
+    assert "Reference source" not in text
     assert "hmm" in payload["original_timestamped_text"]
     assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == payload
     db.init_db()
@@ -482,10 +487,10 @@ def test_gpu_first_old_persistence_cannot_invent_model_identity_in_new_history(
         )
     history = client.get("/api/jobs").json()[0]["transcript"]
     assert history["asr_model"] is None and history["word_alignment"] is None
-    assert history["timestamped_text"] == "[00:02] Amber lanterns\n"
+    assert history["timestamped_text"] == "transition\n[00:02] Amber lanterns\n"
     assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == history
     assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == (
-        "[00:02] Amber lanterns\n"
+        "transition\n[00:02] Amber lanterns\n"
     )
     with sqlite3.connect(config.DB_PATH) as connection:
         assert (

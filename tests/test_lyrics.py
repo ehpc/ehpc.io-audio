@@ -59,7 +59,7 @@ def test_lyrics_download_matches_browser_text_and_survives_history(
     assert job["options"]["extract_lyrics"] is True
     assert job["manifest"] == []
     assert job["has_original"] is True
-    expected = "[00:01] こんにちは、世界\n[01:01] Cœur et âme\n"
+    expected = "歌声\n[00:01] こんにちは、世界\n[01:01] Cœur et âme\n"
     payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
     assert payload == job["transcript"]
     assert payload["status"] == "recognized"
@@ -92,10 +92,10 @@ def test_empty_recognition_is_distinct_from_not_requested(
     assert payload["status"] == "empty"
     assert payload["segments"] == []
     assert payload["language"] is None
-    assert payload["timestamped_text"] == ""
+    assert payload["timestamped_text"] == "歌声\n"
     download = client.get(f"/api/jobs/{job_id}/lyrics/download")
     assert download.status_code == 200
-    assert download.content == b""
+    assert download.content == "歌声\n".encode()
     unrequested = client.post("/api/jobs", data={"url": "https://example.org/song"})
     other_id = unrequested.json()["id"]
     assert client.get(f"/api/jobs/{other_id}").json()["transcript"] is None
@@ -198,6 +198,6 @@ def test_transformed_audio_does_not_rescale_original_lyrics_clock(
     assert frequency_amplitude(decoded, 880) > frequency_amplitude(decoded, 440) * 10
     assert client.get(f"/api/jobs/{job_id}/original").content == source
     assert job["transcript"]["timestamp_reference"] == "original"
-    expected = "[00:02] Original clock\n"
+    expected = "voice\n[00:02] Original clock\n"
     assert job["transcript"]["timestamped_text"] == expected
     assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == expected

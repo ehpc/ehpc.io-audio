@@ -52,7 +52,7 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
                   <li class="rounded border border-border p-2">
                     <span>{line.text}</span>
                     <p class="text-xs text-muted-foreground">
-                      {line.status === "aligned" ? `Reference-aligned · ${line.start_s?.toFixed(2)}–${line.end_s?.toFixed(2)}s (original clock)` : "Unconfirmed · NO TIMESTAMP"}
+                      {line.status === "aligned" ? `Reference-aligned · ${line.start_s?.toFixed(2)}–${line.end_s?.toFixed(2)}s (original clock)` : "??:??"}
                       {` · ${Math.round(line.support * 100)}% local word agreement`}
                     </p>
                     <Show when={line.unconfirmed_words.length > 0}>

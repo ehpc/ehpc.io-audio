@@ -90,7 +90,12 @@ def _unique_word_cells(cells: list[str], heard: list[str]) -> dict[int, int]:
 
 
 def pitched_lyrics_text(
-    transcript: Transcript, analysis: PitchAnalysis, track: PitchTrack
+    transcript: Transcript,
+    analysis: PitchAnalysis,
+    track: PitchTrack,
+    *,
+    title: str | None = None,
+    output_key: str | None = None,
 ) -> str:
     rate = analysis.tempo_percent / 100
 
@@ -169,31 +174,33 @@ def pitched_lyrics_text(
         )
         return f"[{prefix}]\n{row(pitches)}\n{row(cells)}\n\n"
 
-    shift = analysis.pitch_shift_semitones
-    body = transcript_export_text(transcript, render, analysis.tempo_percent)
+    body = transcript_export_text(
+        transcript,
+        render,
+        analysis.tempo_percent,
+        title=title,
+        output_key=output_key,
+    )
     if transcript.status == "empty" and not (
         transcript.reference is not None and transcript.reference.lines
     ):
         body += "[No lyrics recognized or aligned.]\n"
-    return (
-        f"[Lyrics with pitches — vocal stem: {track.label}; "
-        f"output projection {shift:+g} semitones; "
-        f"tempo {analysis.tempo_percent:g}%]\n"
-        "[Timestamps: output audio clock, start only; "
-        "source-estimated pitch projected, NOT re-measured]\n"
-        "[Individual note names rounded to nearest semitone, not song key; "
-        "? = unknown alignment/no detected pitch, NOT a rest]\n"
-        "[Approximate full-vocal words, not syllables/independent split voices; "
-        "multiple notes preserve melisma/repeated detections]\n\n" + body
-    )
+    return body
 
 
 def pitched_lyrics_tracks(
-    transcript: Transcript, analysis: PitchAnalysis
+    transcript: Transcript,
+    analysis: PitchAnalysis,
+    *,
+    title: str | None = None,
+    output_key: str | None = None,
 ) -> list[PitchedLyricsTrack]:
     return [
         PitchedLyricsTrack(
-            track.label, pitched_lyrics_text(transcript, analysis, track)
+            track.label,
+            pitched_lyrics_text(
+                transcript, analysis, track, title=title, output_key=output_key
+            ),
         )
         for track in analysis.tracks
     ]

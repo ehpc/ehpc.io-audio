@@ -274,7 +274,7 @@ for (const viewport of [mobile, desktop]) {
     const view = page.getByLabel('Lyrics transcript', { exact: true }).first();
     await expect(view).toBeVisible();
     await view.getByText('Canonical reference order and audio support', { exact: true }).click();
-    await expect(view.getByText('Unconfirmed · NO TIMESTAMP', { exact: false })).toBeVisible();
+    await expect(view.getByText('??:?? · 67% local word agreement', { exact: false })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await compare(view, info, `reference-provenance-${viewport.width}.png`);
@@ -343,7 +343,7 @@ for (const viewport of [mobile, desktop]) {
     await expect(view).toBeVisible();
     const text = view.getByRole('region', { name: 'Aligned pitch and lyric text' });
     await expect(text).toContainText('C#4 C#4 D#4');
-    await expect(text).toContainText('UNCONFIRMED, NO TIMESTAMP');
+    await expect(text).toContainText('[??:??] ? ? ? Unconfirmed closing words');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => document.fonts.ready);
     await compare(view, info, `pitched-lyrics-${viewport.width}-word-cells.png`);

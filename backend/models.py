@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, JsonValue, computed_field, field_serializer
+from pydantic import BaseModel, JsonValue, PrivateAttr, computed_field, field_serializer
 
 from backend import config
 from separator.audio import modification_suffix, transposed_key
@@ -27,9 +27,17 @@ _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECAS
 _UNSAFE_FILENAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
 
 
+def _clean_title(title: str | None) -> str:
+    return _UNSAFE_FILENAME.sub("", _AUDIO_EXT.sub("", title or "")).strip()
+
+
+def header_title(title: str | None) -> str | None:
+    """Presentation title for lyric identity lines (no job-id placeholder)."""
+    return _clean_title(title) or None
+
+
 def _download_base(title: str | None, job_id: int) -> str:
-    base = _UNSAFE_FILENAME.sub("", _AUDIO_EXT.sub("", title or "")).strip()
-    return base or str(job_id)
+    return _clean_title(title) or str(job_id)
 
 
 def download_filename(
@@ -99,6 +107,7 @@ class TranscriptDTO(BaseModel):
     untimed: list[UntimedRecognition]
     asr_extras: list[TranscriptSegment]
     canonical_word_positions: list[CanonicalWordPosition]
+    _title: str | None = PrivateAttr(default=None)
 
     @computed_field
     @property
@@ -110,7 +119,8 @@ class TranscriptDTO(BaseModel):
                 reference=self.reference,
                 untimed=self.untimed,
                 asr_extras=self.asr_extras,
-            )
+            ),
+            title=self._title,
         )
 
     @computed_field
@@ -127,8 +137,10 @@ class TranscriptDTO(BaseModel):
         )
 
     @classmethod
-    def from_transcript(cls, transcript: Transcript) -> "TranscriptDTO":
-        return cls(
+    def from_transcript(
+        cls, transcript: Transcript, *, title: str | None = None
+    ) -> "TranscriptDTO":
+        dto = cls(
             segments=transcript.segments,
             language=transcript.language,
             status=transcript.status,
@@ -144,6 +156,8 @@ class TranscriptDTO(BaseModel):
             asr_extras=transcript.asr_extras,
             canonical_word_positions=transcript.canonical_word_positions,
         )
+        dto._title = title
+        return dto
 
 
 @dataclass
@@ -203,6 +217,8 @@ def _has_original(job_id: int) -> bool:
 
 def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
     pitch = pitch_from_json(job.pitch_json) if job.pitch_json else None
+    title = header_title(job.title)
+    output_key = transposed_key(job.original_key, job.options.pitch_semitones)
     return JobDTO(
         id=job.id,
         status=job.status,
@@ -234,13 +250,17 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         created_at=job.created_at,
         has_original=_has_original(job.id),
         original_key=job.original_key,
-        output_key=transposed_key(job.original_key, job.options.pitch_semitones),
+        output_key=output_key,
         transcript=(
-            TranscriptDTO.from_transcript(job.transcript) if job.transcript else None
+            TranscriptDTO.from_transcript(job.transcript, title=title)
+            if job.transcript
+            else None
         ),
         pitch=pitch,
         pitched_lyrics=(
-            pitched_lyrics_tracks(job.transcript, pitch)
+            pitched_lyrics_tracks(
+                job.transcript, pitch, title=title, output_key=output_key
+            )
             if job.options.extract_pitched_lyrics
             and job.transcript is not None
             and pitch is not None

@@ -78,7 +78,11 @@ Internal vocal prerequisites do not become selected audio outputs, and ordinary
 download-only remains the no-GPU default.
 
 Results and History share a timestamped UTF-8 TXT and canonical provenance JSON.
-TXT onsets are floored to whole seconds on the original audio clock; JSON retains
+The TXT opens with an `Artist — Track` identity line — reference metadata when
+present, otherwise the job's presentation title, and omitted when neither
+exists. Undetectable onsets render the `[??:??]` token; no invented timestamp,
+header legend or bottom uncertainty block is appended. TXT onsets are floored to
+whole seconds on the original audio clock; JSON retains
 approximate measured word intervals, not exact syllable/karaoke boundaries.
 Failed alignment preserves raw recognition and explicitly untimed text instead
 of inventing a word onset at the beginning of a decoding window. The source
@@ -241,9 +245,12 @@ This new TXT uses **output-clock, start-only timestamps**: `125%` tempo divides
 lyric/section onsets by `1.25`. Notes use the output pitch projection, not the song
 key or a fresh measurement of transformed audio. Labels are compact `C#4`, etc.,
 rounded to the nearest semitone for all shifts, like pitch-timeline rectangles.
-Exact requested fractional shifts remain in the header and filename; pitch JSON
+Exact requested fractional shifts remain in the download filename; pitch JSON
 retains fractional MIDI/frequency/cents. Ordinary lyric TXT/JSON stay on the
 original clock. Automatic lyric alignment and monophonic note estimates can be wrong.
+The pitched TXT starts with the same `Artist — Track` identity line, followed by
+`Tonality: <key>` — the detected source key transposed by the requested shift
+(fractional shifts append residual cents), omitted when the source key is unknown.
 
 `JobDTO.pitched_lyrics` supplies the canonical per-stem text to both Results and
 History. The session-protected TXT endpoint is
@@ -1043,7 +1050,7 @@ counterfactuals do not reward the recognizer for omitting canonical words.
 Contradictory verses/chorus variants require positive acoustic evidence, not a
 global text-agreement percentage. The complete canonical reference remains the
 primary view in its original order: accepted lines have measured onsets, while
-disputed lines have an inline **UNCONFIRMED, NO TIMESTAMP** marker. Recording-derived
+disputed lines render the inline `[??:??]` untimed token. Recording-derived
 variants remain separately available in comparison/original provenance, not
 silently substituted into the primary reference text.
 
@@ -1080,12 +1087,14 @@ are not interleaved with canonical primary lyrics. Genuine ASR-only candidate
 extras outside reference comparison regions are explicitly separate in
 `asr_extras` and TXT; their word origin is `asr-extra`. Supported canonical words
 are `reference-aligned`. Disputed ASR substitutions do not become canonical
-word/pitch links. No canonical line is duplicated in an appended uncertainty
-block: the primary reference text includes every line exactly once.
+word/pitch links. The former appended uncertainty block no longer exists: word-level
+uncertainty stays in the JSON provenance, and the primary reference text includes
+every line exactly once.
 
 The browser exposes ordered canonical support, explicit unconfirmed text and
-word uncertainty, raw input-window recognition, and original ASR. TXT labels
-reference-aligned candidates and untimed/uncorroborated text explicitly.
+word uncertainty, raw input-window recognition, and original ASR. TXT opens with
+the `Artist — Track` identity and marks undetectable onsets with the `[??:??]`
+token; `?` inside pitch cells means unknown alignment or no detected pitch.
 `/api/jobs/{id}/lyrics/download.json` retains full provenance, while the canonical
 TXT is `/api/jobs/{id}/lyrics/download`; both are session-protected, as are
 History and pitch downloads. The metadata sidecar stays outside original-audio

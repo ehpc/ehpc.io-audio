@@ -115,7 +115,7 @@ it("shows ordered reference support, unsupported words, conflicting variants and
     asr_model: "Qwen/Qwen3-ASR-1.7B", word_alignment: "torchaudio/MMS_FA",
     segments: [{ start_s: 31, end_s: 34, text: "Amber lanterns softly shine" }],
     words: [{ start_s: 31, end_s: 32, text: "Amber", probability: null, alignment_score: 0.7 }],
-    timestamped_text: "[00:31] Amber lanterns softly shine\n[Reference line 2; UNCONFIRMED, NO TIMESTAMP] Silver branches sway\n",
+    timestamped_text: "[00:31] Amber lanterns softly shine\n[??:??] Silver branches sway\n",
     original_timestamped_text: "[00:31] Amber lanterns shine\n",
     recognition_chunks: [{ input_start_s: 20, input_end_s: 47, ownership_start_s: 21, ownership_end_s: 46,
       text: "Amber lanterns shine! <img src=x onerror=alert(1)>", language: "English" }],
@@ -137,7 +137,7 @@ it("shows ordered reference support, unsupported words, conflicting variants and
   const lines = document.querySelectorAll("ol > li");
   expect(lines[0]).toHaveTextContent("Amber lanterns softly shine");
   expect(lines[1]).toHaveTextContent("Silver branches sway");
-  expect(lines[1]).toHaveTextContent("Unconfirmed · NO TIMESTAMP");
+  expect(lines[1]).toHaveTextContent("??:??");
   expect(lines[1]).not.toHaveTextContent("nulls");
   expect(lines[0]).toHaveTextContent("Not independently corroborated; no word timestamps: softly");
   expect(lines[1]).toHaveTextContent("Independent recognition variant (preserved): silver branches sleep");
