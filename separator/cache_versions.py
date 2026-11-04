@@ -93,3 +93,8 @@ ASR_PACKAGES = ("qwen-asr", "torch", "transformers", "librosa", "numpy", "soundf
 ALIGNMENT_PACKAGES = ("torch", "torchaudio", "uroman")
 STRUCTURE_PACKAGES = ("torch", "torchaudio", "transformers", "muq", "librosa", "numpy")
 PITCH_PACKAGES = ("torch", "torchcrepe", "numpy", "scipy")
+
+# Independent discovery producer; never invalidates audio/ASR artifacts.
+SONG_SEARCH = "qwen3-4b-2507-torch2.8-transformers4.57.6-greedy256-grounded-v2"
+SONG_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+SONG_MODEL_REVISION = "cdbee75f17c01a7cc42f958dc650907174af0554"

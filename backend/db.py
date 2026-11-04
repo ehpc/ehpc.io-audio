@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id, id DESC);
+CREATE TABLE IF NOT EXISTS song_searches (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    modal_call_id TEXT NOT NULL,
+    result_json TEXT,
+    created_at INTEGER NOT NULL
+);
 """
 
 
@@ -107,6 +114,34 @@ def init_db() -> None:
 def health_check() -> None:
     with _session() as conn:
         conn.execute("SELECT 1")
+
+
+def create_song_search(search_id: str, session_id: str, call_id: str) -> None:
+    with _session() as conn:
+        conn.execute(
+            "INSERT INTO song_searches (id, session_id, modal_call_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (search_id, session_id, call_id, int(time.time())),
+        )
+
+
+def get_song_search(search_id: str, session_id: str, max_age: int) -> dict | None:
+    with _session() as conn:
+        row = conn.execute(
+            "SELECT modal_call_id, result_json FROM song_searches "
+            "WHERE id = ? AND session_id = ? AND created_at > ?",
+            (search_id, session_id, int(time.time()) - max_age),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def finish_song_search(search_id: str, result: dict) -> None:
+    with _session() as conn:
+        conn.execute(
+            "UPDATE song_searches SET result_json = ? "
+            "WHERE id = ? AND result_json IS NULL",
+            (json.dumps(result), search_id),
+        )
 
 
 def _row_to_job(row: sqlite3.Row) -> JobRecord:

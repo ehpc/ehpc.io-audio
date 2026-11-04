@@ -1,16 +1,17 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
+import { batch, createEffect, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { BooleanOptionKey, JobDTO, SeparationOptions } from "~/api";
-import { analyzeKey, audioSettingsError, submitJob } from "~/api";
+import type { BooleanOptionKey, JobDTO, SeparationOptions, SongMatch } from "~/api";
+import { analyzeKey, audioSettingsError, searchSong, submitJob } from "~/api";
 import { Button } from "~/components/button";
 import KeyNotes from "~/components/KeyNotes";
 import MixBuilder from "~/components/MixBuilder";
+import VoiceQuery from "~/components/VoiceQuery";
 import { Label } from "~/components/label";
 import { TextField, TextFieldInput } from "~/components/text-field";
 import { displayOutputLabel, expectedPitchStems, expectedStems } from "~/lib/expectedStems";
 import { transposeKey } from "~/lib/music";
 
-type SourceMode = "url" | "file";
+type SourceMode = "url" | "file" | "search";
 type WorkspaceTab = "outputs" | "adjust" | "review";
 type AudioOptionKey = "pitch_semitones" | "tempo_percent";
 const WORKSPACE_TABS: WorkspaceTab[] = ["outputs", "adjust", "review"];
@@ -58,6 +59,59 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const [mode, setMode] = createSignal<SourceMode>("url");
   const [url, setUrl] = createSignal("");
   const [file, setFile] = createSignal<File | null>(null);
+  const [query, setQuery] = createSignal("");
+  const [song, setSong] = createSignal<SongMatch | null>(null);
+  const [searching, setSearching] = createSignal(false);
+  const [searchError, setSearchError] = createSignal<string | null>(null);
+  const [voiceRevision, setVoiceRevision] = createSignal(0);
+  let searchController: AbortController | null = null;
+  const invalidateSearch = () => {
+    searchController?.abort();
+    searchController = null;
+    setSearching(false);
+    setSearchError(null);
+    setSong(null);
+  };
+  const editQuery = (value: string) => batch(() => {
+    invalidateSearch();
+    setQuery(value.slice(0, 500));
+    setVoiceRevision(value => value + 1);
+    setError(null);
+  });
+  const changeMode = (value: SourceMode) => {
+    if (mode() === value) return;
+    batch(() => {
+      invalidateSearch();
+      setMode(value);
+      setVoiceRevision(value => value + 1);
+      setError(null);
+    });
+  };
+  const findSong = async () => {
+    invalidateSearch();
+    setVoiceRevision(value => value + 1);
+    setError(null);
+    if (!query().trim()) {
+      setSearchError("Describe a song or enter its title and artist.");
+      return;
+    }
+    const controller = new AbortController();
+    searchController = controller;
+    setSearching(true);
+    try {
+      const result = await searchSong(query(), controller.signal);
+      if (!controller.signal.aborted) setSong(result);
+    } catch (err) {
+      if (!controller.signal.aborted) setSearchError(err instanceof Error ? err.message : "Song search failed. Try again.");
+    } finally {
+      if (!controller.signal.aborted) {
+        setSearching(false);
+        searchController = null;
+      }
+    }
+  };
+  onCleanup(() => searchController?.abort());
+  const effectiveUrl = () => mode() === "search" ? song()?.url ?? "" : url().trim();
   // Fresh mixes array per form instance so nothing shares DEFAULT_OPTIONS.mixes.
   const [options, setOptions] = createStore<SeparationOptions>({ ...DEFAULT_OPTIONS, mixes: [] });
   const [submitting, setSubmitting] = createSignal(false);
@@ -83,13 +137,13 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
 
   createEffect(() => {
     const currentMode = mode();
-    const currentUrl = url().trim();
+    const currentUrl = effectiveUrl();
     const currentFile = file();
     setOriginalKey(null);
     setAnalyzed(false);
     setAnalyzing(false);
     setAnalysisError(null);
-    if (currentMode === "url") {
+    if (currentMode !== "file") {
       try {
         const parsed = new URL(currentUrl);
         if (!["http:", "https:"].includes(parsed.protocol)) return;
@@ -102,7 +156,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     const analyze = async () => {
       try {
         const result = await analyzeKey(
-          currentMode === "url" ? { url: currentUrl } : { file: currentFile! },
+          currentMode !== "file" ? { url: currentUrl } : { file: currentFile! },
           controller.signal,
         );
         if (controller.signal.aborted) return;
@@ -141,13 +195,13 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   };
 
   // The source is always retained. Lyrics are a separate non-audio output.
-  const trimmedUrl = () => url().trim();
   const stems = () => ["original", ...expectedStems(options)];
 
   const outputCount = () => stems().length + Number(options.extract_lyrics) + Number(options.detect_pitch) +
     (options.extract_pitched_lyrics ? expectedPitchStems(options).length : 0);
   const validationError = (): string | null => {
-    const hasUrl = mode() === "url" && trimmedUrl().length > 0;
+    if (mode() === "search" && !song()) return "Find and select a song before processing audio.";
+    const hasUrl = mode() !== "file" && effectiveUrl().length > 0;
     const hasFile = mode() === "file" && file() !== null;
     if (!hasUrl && !hasFile) {
       return "Provide a URL or choose a file to upload.";
@@ -165,8 +219,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     setError(null);
     setSubmitting(true);
 
-    const usingUrl = mode() === "url";
-    const chosenUrl = trimmedUrl();
+    const usingUrl = mode() !== "file";
+    const chosenUrl = effectiveUrl();
     const chosenFile = file();
     // Snapshot including mixes: editing or removing a mix while the POST is
     // pending must never mutate the submitted payload or the optimistic job.
@@ -211,16 +265,16 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
       <section class="source-panel" aria-label="Audio source">
         <div class="source-line">
           <div class="source-tabs" role="group" aria-label="Source type">
-            <For each={["url", "file"] as SourceMode[]}>
+            <For each={["url", "file", "search"] as SourceMode[]}>
               {(value) => (
                 <Button type="button" variant="ghost" aria-pressed={mode() === value}
-                  onClick={() => { setMode(value); setError(null); }}>
-                  {value === "url" ? "From URL" : "Upload audio"}
+                  onClick={() => changeMode(value)}>
+                  {value === "url" ? "From URL" : value === "file" ? "Upload audio" : "Find song"}
                 </Button>
               )}
             </For>
           </div>
-          <Show when={mode() === "url"} fallback={
+          <Show when={mode() === "file"}>
             <div class="source-field">
               <Label for="file-input">Audio file</Label>
               {/* Providers can omit an audio MIME type; extensions keep those files selectable. */}
@@ -228,18 +282,50 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                 onChange={(e) => { setFile(e.currentTarget.files?.[0] ?? null); setError(null); }} />
               <Show when={file()}>{(f) => <p class="workspace-helper">Selected: {f().name}</p>}</Show>
             </div>
-          }>
+          </Show>
+          <Show when={mode() === "url"}>
             <TextField value={url()} onChange={setUrl} class="source-field">
               <Label for="url-input">Track URL</Label>
               <TextFieldInput id="url-input" type="url" placeholder="https://..." autocomplete="off" />
             </TextField>
+          </Show>
+          <Show when={mode() === "search"}>
+            <div class="song-search source-field">
+              <div class="song-search-controls">
+                <TextField value={query()} onChange={editQuery} class="source-field">
+                  <Label for="song-query">Describe a song</Label>
+                  <TextFieldInput id="song-query" type="text" placeholder="Song, artist, or a description…" maxlength={500}
+                    autocomplete="off" onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); }} />
+                </TextField>
+                <VoiceQuery resetToken={voiceRevision()} onStart={invalidateSearch} onTranscript={editQuery} />
+                <Button type="button" class="song-search-button" disabled={searching()} onClick={() => { void findSong(); }}>Search</Button>
+              </div>
+              <Show when={searching()}>
+                <p role="status" class="analysis-status">
+                  <span aria-hidden="true" class="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                  Finding on YouTube Music…
+                </p>
+                <p class="workspace-helper">The first search can take a few minutes while the song finder starts.</p>
+              </Show>
+              <Show when={searchError()}><p role="alert" class="song-search-error text-destructive">{searchError()}</p></Show>
+              <Show when={song()}>{match => (
+                <div class="song-match" aria-label="Selected song">
+                  <div>
+                    <strong>{match().title}</strong>
+                    <p>{match().artists.join(", ")}</p>
+                    <a href={match().url} target="_blank" rel="noopener noreferrer">Verify on YouTube Music</a>
+                  </div>
+                  <Button type="button" variant="ghost" onClick={invalidateSearch}>Clear selection</Button>
+                </div>
+              )}</Show>
+            </div>
           </Show>
         </div>
         <p class="workspace-helper">{mobile() ? "Default: original only, unchanged." : "Download only by default. Your original always stays unchanged."}</p>
         <Show when={analyzing()}>
           <p role="status" aria-live="polite" class="analysis-status">
             <span aria-hidden="true" class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            {mode() === "url" ? "Downloading audio and analyzing original key…" : "Analyzing original key…"}
+            {mode() !== "file" ? "Downloading audio and analyzing original key…" : "Analyzing original key…"}
           </p>
         </Show>
         <Show when={analysisError()}>

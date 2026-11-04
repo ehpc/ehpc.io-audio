@@ -80,6 +80,47 @@ for (const viewport of [desktop, { width: 2560, height: 1440 }]) {
   });
 }
 
+// Deterministic catalog boundary fixtures: these snapshots assert discovery UI,
+// not model/provider accuracy. Existing native key/audio fixtures stay real.
+for (const viewport of [mobile, desktop]) {
+  test(`song discovery selected ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    await page.route('**/api/song-search', route => route.fulfill({
+      status: 202, json: { status: 'pending', search_id: 'visual-song' },
+    }));
+    await page.route('**/api/song-search/visual-song', route => route.fulfill({ json: {
+      status: 'done', song: { title: 'First Love', artists: ['Hikaru Utada'], duration_seconds: 258,
+        url: 'https://music.youtube.com/watch?v=o1sUaVJUeB0' },
+    } }));
+    await page.route('**/api/key-analysis', route => route.fulfill({ json: { original_key: 'C major' } }));
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Find song', exact: true }).click();
+    await page.getByLabel('Describe a song').fill('Hikaru Utada First Love');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.getByRole('link', { name: 'Verify on YouTube Music' })).toBeVisible();
+    await expect(page.getByRole('status')).toHaveCount(0);
+    await page.getByRole('heading', { name: "ehpc's Vocal Tools", exact: true }).click();
+    await page.evaluate(() => document.fonts.ready);
+    await compare(page, info, `song-discovery-selected-${viewport.width}.png`);
+  });
+
+  test(`song discovery pending ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    await page.route('**/api/song-search', route => route.fulfill({
+      status: 202, json: { status: 'pending', search_id: 'visual-pending' },
+    }));
+    await page.route('**/api/song-search/visual-pending', route => route.fulfill({ json: { status: 'pending' } }));
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Find song', exact: true }).click();
+    await page.getByLabel('Describe a song').fill('A soulful piano ballad by Hikaru Utada');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Finding on YouTube Music');
+    await page.getByRole('heading', { name: "ehpc's Vocal Tools", exact: true }).click();
+    await page.evaluate(() => document.fonts.ready);
+    await compare(page.locator('.source-panel'), info, `song-discovery-pending-${viewport.width}.png`);
+  });
+}
+
 for (const viewport of [mobile, desktop]) {
   test(`mix builder queue edit remove ${viewport.width}`, async ({ page }, info) => {
     await page.setViewportSize(viewport);

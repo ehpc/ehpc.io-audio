@@ -103,6 +103,55 @@ audio duration. Existing successful neural-quality proofs are not rerun merely
 to check cache hits. Genuine reference-text changes reuse raw recognition and
 baseline alignment but may require fresh reference-dependent acoustic alignment.
 
+### Text-assisted YouTube Music discovery
+
+`POST /api/song-search` accepts `{"query":"artist, title, or lyric clue"}` and
+returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after spawning
+remote work, not after GPU inference. `GET /api/song-search/{search_id}` returns
+`{"status":"pending"}` or `{"status":"done","song":{"title":"…","artists":["…"],
+"url":"https://music.youtube.com/watch?v=…","duration_seconds":214}}`.
+Duration may be `null`. Poll every two seconds; polls retrieve the existing call
+with zero inference wait and never spawn another model request. Browser voice
+input is browser dictation into this same text field, not server audio upload.
+
+Whitespace is normalized; the 500-character limit admits a spoken paragraph
+while bounding model input (not whole lyrics/documents). Search does not create
+audio jobs, download music, or change processing options. Selecting its grounded
+URL feeds the existing source/key-preview workflow; processing still requires
+the normal explicit submission.
+
+The additive, idempotent SQLite `song_searches` table stores opaque random IDs,
+session ownership, Modal call ID, creation time and terminal JSON results/errors;
+it does not store the query. Existing `jobs`, options, manifests and artifacts
+are unchanged. Handles expire after 15 minutes and require the originating
+signed session cookie, including after process restart. Foreign, unknown and
+expired handles return 404 without contacting Modal. No match is 404; ambiguity
+is 422; malformed model/catalog output is 502; remote unavailability is 503.
+Errors use the usual `{"detail":"…"}` envelope. Completed polls read durable
+terminal state; closing the browser stops polling but does not cancel GPU work.
+
+The existing Modal app gains `search_song` on an **independent Python 3.13 / L4**
+image, without changing separator or ASR dependencies. It runs the Apache-2.0
+[Qwen3-4B-Instruct-2507 text instruction model](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)
+(pinned revision in `separator/cache_versions.py`), not the singing ASR model.
+It needs existing Modal authentication only: no paid LLM API key and no web-host
+model loading. GPU workers scale to zero rather than staying warm.
+The model extracts supplied clues into search text (validated not to invent
+artist/title words), then selects strictly from fresh public YouTube Music
+**song** candidates via `ytmusicapi==1.11.5`. Lyric clues go to catalog search
+as lyrics, not a model's guessed artist. Catalog HTTP
+connect/read timeouts are 5/15 seconds; the remote function is capped at 600
+seconds. User and catalog text are untrusted prompt data. The model cannot
+supply URLs, metadata or uncatalogued IDs; invalid selections/abstentions fail
+explicitly, never falling back to the first song.
+
+The separate `audio-song-discovery` Modal volume stores model weights and
+versioned, validated inference artifacts. Keys include the pinned model,
+inference/prompt version and complete prompt/candidate inputs. Heavy loaders run
+only on cache misses. Catalog searches themselves are always fresh, so mutable
+catalog results are not frozen indefinitely; candidate changes invalidate only
+selection inference. Discovery never invalidates existing audio caches.
+
 ## Choosing outputs
 
 The original source remains downloadable and unchanged by processing, preserving
@@ -229,6 +278,30 @@ screens and 20px at 3000px and above; Results and History typography scales with
 it. At widths up to 700px, the same controls become **Outputs / Adjust / Review**
 tabs; changing tabs never resets processing choices, pitch, tempo or key analysis.
 Arrow keys, Home and End navigate the tab bar.
+
+The source selector offers **From URL**, **Upload audio**, and **Find song**.
+In Find song, enter a title, artist, or description (up to 500 characters), then
+select **Search**. Typing and pressing Enter in the query do not start a search
+or submit audio. While the model starts and searches, the form shows
+**Finding on YouTube Music…**; first use can take a few minutes. The returned
+title, artists, and **Verify on YouTube Music** link let you check the match.
+Its canonical URL immediately feeds the existing key preview, but a processing
+job is created only when you select **Download song** or **Process audio**.
+Editing the query, clearing the selection, or switching source modes invalidates
+the match and cancels browser polling/key preview, so an old match cannot be
+processed for a new query. This does not cancel remote model work already started.
+URL, upload, and query drafts remain separate; processing options and mixes stay
+in place. Submission retains the selected match and query just like other sources.
+
+Where `SpeechRecognition` or Safari's prefixed `webkitSpeechRecognition` is
+available, a microphone button offers user-initiated dictation. It fills the
+query only: select **Search** afterward. The button switches to **Stop voice
+input** while listening, and permission, network, and no-speech failures leave
+typing/retry available. Leaving the source or editing the query aborts dictation;
+late callbacks cannot replace newer text. Use HTTPS (or localhost) and grant
+microphone permission. Recognition may use the browser vendor's online service;
+microphone audio is not uploaded to this app's processing API. Unsupported
+browsers simply omit the microphone button.
 
 Pitch and tempo have explicit **− / +** buttons in the mobile **Adjust** tab and
 desktop rail, with accessible decrease/increase names and 44px touch targets.
@@ -574,8 +647,10 @@ through the UI. It requires Modal credentials and an **explicit isolated**
 `audio-separator` and `audio-separator-v2`.
 It allocates loopback backend/source-server ports and a temporary `DATA_DIR`,
 serializes GPU jobs, and removes its servers and temporary state afterward.
-It never uses `dev-data/`, request interception, fake Modal calls, or a fake key
-detector.
+It never uses `dev-data/`. Existing processing/audio cases use real native and
+Modal boundaries. The explicitly labeled song-discovery UI cases below instead
+control search/key responses, keeping external LLM/YouTube availability out of CI.
+All browser specs are parsed before the build and backend startup.
 
 With the native tools above, Python/Node dependencies installed, and Modal
 credentials configured:
@@ -614,12 +689,22 @@ separately measure per-component spectral amplitudes, non-normalized sums,
 multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
 interrupted-job recovery, retry and historical migrations.
 
-The default browser matrix contains **61 cases**: 30 processing/behavior cases,
-one undetermined-source-key case, one actual-download metadata case, six native
-MP3 upload cases, seven responsive workspace cases, seven focused adjustment
-cases, two post-submit form-retention cases, one real-speech lyrics case, two
-exclusive-playback cases, two real vocal-pitch cases, and two pitched-lyrics cases.
-The separate visual and manual YouTube suites are excluded from this matrix.
+The default browser matrix contains **66 cases**, covering processing/behavior,
+unknown keys, download metadata, native MP3 uploads, responsive workspaces,
+adjustments, retained forms, lyrics, exclusive playback, vocal pitch, pitched
+lyrics, and six song-discovery UI cases. The separate visual and manual YouTube
+suites are excluded from this matrix.
+
+The six discovery cases exercise five viewport widths (375/390/430/1440/2560),
+explicit search, pending/selected states, canonical URL key-preview handoff,
+stale-source protection, 16px inputs, 44px buttons, and no automatic job creation.
+The sixth simulates the prefixed Web Speech API for deterministic dictation and
+permission/lifecycle coverage; it does **not** prove a physical microphone or
+actual Safari. Vitest additionally covers polling cancellation, provider errors,
+Unicode normalization, race ordering, clear selection, retry, retained mixes,
+unsupported browsers, and stale speech callbacks. Run these browser cases with
+`npm --prefix frontend run test:e2e -- --cpu song-discovery.spec.ts`.
+These controlled API fixtures prove the UI contract, not real LLM/catalog accuracy.
 
 The form-retention cases use real native processing without GPU calls: desktop
 URL and mobile file upload each complete two submissions without refilling or
@@ -810,7 +895,8 @@ The separate **Real YouTube key analysis** workflow
 (`.github/workflows/youtube.yml`) runs only through `workflow_dispatch`, selected
 from GitHub Actions' **Run workflow** control. It preserves this real external
 check without making YouTube's runner/IP authentication decisions a push/PR or
-release prerequisite. Together with required CI it covers **69 browser cases**.
+release prerequisite. Together with the functional and visual suites it covers
+**92 browser cases**, including the explicitly controlled discovery UI cases.
 YouTube bot/authentication restrictions, missing tools, and network failures
 still **fail the manual workflow visibly**; it never skips or substitutes
 fixtures, submits a processing job, or invokes a GPU. Artifacts are uploaded
@@ -845,16 +931,17 @@ using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
 Updating Playwright requires updating the Docker image version/digest and reviewing
 all regenerated baselines together.
 
-The **19 visual cases** compare committed PNGs in
+The **25 visual cases** compare committed PNGs in
 `frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
 screens, two 1440px/2560px desktop workspaces, eight tightly cropped focused
 pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
 undetermined key, and long fractional cents), two detected-vocal timelines
 with linked sung words (390px/1440px), two reference-aligned provenance
-views with inline uncertainty and raw recognition (390px/1440px), and two
+views with inline uncertainty and raw recognition (390px/1440px), two
 synthetic pitched-lyrics typography views covering Unicode word cells,
-repeated-note melisma and explicitly untimed lines (390px/1440px).
-These complement, not replace, the **61 functional cases**.
+repeated-note melisma and explicitly untimed lines (390px/1440px), two mix
+builder/review cases, and four song-discovery pending/selected cases
+(390px/1440px). These complement, not replace, the **66 functional cases**.
 The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
 
@@ -865,8 +952,10 @@ CREPE/Whisper output filtered to output9.5–15.2s of the public-domain full-son
 fixture (`frontend/e2e/fixtures/pitch-visual-window.json`), preserving its original
 clock and notes rather than synthesizing results. They upload the unchanged
 source, run the real native full-song transform/storage/API consumers, and
-publish the captured inference with queue workers disabled. No API responses are
-intercepted, external recording fetched, or Modal function called by visual tests.
+publish the captured inference with queue workers disabled. Only the four
+song-discovery UI cases intercept search/key API responses with deterministic
+catalog fixtures. No external recording is fetched or Modal function called by
+visual tests; existing audio/key cases continue to use real native consumers.
 Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
 timezone, colors, fonts and CPU rasterization; native audio metadata is loaded
 before timeline capture. Animations are disabled and the caret hidden.

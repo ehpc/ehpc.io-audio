@@ -90,6 +90,37 @@ image = (
     .add_local_python_source("separator")
 )
 
+# Text discovery has no audio dependencies and never runs in the web container.
+song_search_image = (
+    modal.Image.debian_slim(python_version="3.13")
+    .pip_install(
+        "torch==2.8.0",
+        "transformers==4.57.6",
+        "ytmusicapi==1.11.5",
+    )
+    .add_local_python_source("separator")
+)
+song_search_volume = modal.Volume.from_name(
+    "audio-song-discovery", create_if_missing=True
+)
+
+
+@app.function(
+    image=song_search_image,
+    gpu="L4",
+    volumes={"/song-search-cache": song_search_volume},
+    timeout=600,
+    max_containers=1,
+)
+def search_song(query: str) -> dict:
+    from separator.song_search import run_search  # noqa: PLC0415
+
+    song_search_volume.reload()
+    try:
+        return run_search(query, "/song-search-cache")
+    finally:
+        song_search_volume.commit()
+
 
 @app.function(image=image)
 def healthcheck() -> str:

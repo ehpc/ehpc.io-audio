@@ -261,6 +261,15 @@ export interface KeyAnalysis {
   original_key: string | null;
 }
 
+export interface SongMatch {
+  title: string;
+  artists: string[];
+  url: string;
+  duration_seconds: number | null;
+}
+
+type SongSearchStatus = { status: "pending" } | { status: "done"; song: SongMatch };
+
 const API_BASE = "/api";
 
 const OPTION_KEYS: BooleanOptionKey[] = [
@@ -344,6 +353,41 @@ export async function analyzeKey(source: AudioSource, signal: AbortSignal): Prom
   });
   if (!res.ok) throw new Error(await readError(res));
   return (await res.json()) as KeyAnalysis;
+}
+
+/** Cancellation stops this browser's polling, not the remote model invocation. */
+export async function searchSong(query: string, signal: AbortSignal): Promise<SongMatch> {
+  const response = await fetch(`${API_BASE}/song-search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: query.trim().replace(/\s+/gu, " ") }),
+    credentials: "include",
+    signal,
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const { search_id } = await response.json() as { search_id: string; status: "pending" };
+  while (true) {
+    signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, 2000);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    signal.throwIfAborted();
+    const poll = await fetch(`${API_BASE}/song-search/${encodeURIComponent(search_id)}`, {
+      credentials: "include",
+      signal,
+    });
+    if (!poll.ok) throw new Error(await readError(poll));
+    const result = await poll.json() as SongSearchStatus;
+    if (result.status === "done") return result.song;
+  }
 }
 
 export async function getCurrentJob(): Promise<JobDTO | null> {

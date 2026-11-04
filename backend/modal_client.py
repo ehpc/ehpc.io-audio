@@ -42,6 +42,19 @@ def spawn_with_lyrics(
     )
 
 
+async def spawn_song_search(query: str) -> str:
+    call = await _get_function("search_song").spawn.aio(query)
+    return call.object_id
+
+
+async def poll_song_search(call_id: str) -> dict | None:
+    call = modal.FunctionCall.from_id(call_id)
+    try:
+        return await call.get.aio(timeout=0)
+    except (TimeoutError, ModalTimeoutError):
+        return None
+
+
 def poll[T](call: modal.functions.FunctionCall[T], timeout: float) -> T | None:
     """Returns the result once ready, or None if it's not done within `timeout`."""
     try:

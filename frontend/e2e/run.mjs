@@ -2,11 +2,12 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
+import { transform } from 'esbuild';
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
@@ -23,6 +24,11 @@ if (!app || app === 'audio-separator' || app === 'audio-separator-v2') {
   throw new Error('Set E2E_MODAL_APP_NAME to an explicitly isolated Modal test deployment (not audio-separator or audio-separator-v2).');
 }
 console.log(youtube ? 'YouTube verification: real external download + full-song native key analysis, no GPU jobs' : visual ? 'Visual verification: real native key analysis, deterministic local audio, no GPU jobs' : cpu ? 'CPU verification: real native processing and key analysis, deterministic local audio, no GPU jobs' : `Real full-stack verification: Modal app=${app}; no mocked boundaries`);
+// Parse every browser spec before paying for the build/backend/model startup.
+for (const entry of await readdir(resolve(frontend, 'e2e'))) {
+  if (!entry.endsWith('.ts')) continue;
+  await transform(await readFile(resolve(frontend, 'e2e', entry), 'utf8'), { loader: 'ts', sourcefile: entry });
+}
 const build = spawnSync('npm', ['run', 'build'], { cwd: frontend, stdio: 'inherit' });
 if (build.status !== 0) process.exit(build.status ?? 1);
 const fixtureSeed = cpuOnly ? 0 : randomBytes(4).readUInt32LE();

@@ -25,6 +25,7 @@ def _fresh_state() -> Iterator[None]:
     db.init_db()
     conn = sqlite3.connect(config.DB_PATH)
     conn.executescript(
+        "DELETE FROM song_searches; "
         "DELETE FROM jobs; DELETE FROM sqlite_sequence WHERE name = 'jobs';"
     )
     conn.commit()
