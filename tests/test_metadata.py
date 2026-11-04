@@ -15,7 +15,7 @@ from urllib.parse import quote
 import httpx
 import pytest
 import uvicorn
-from audio_samples import tone_wav
+from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
 from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TXXX, ID3NoHeaderError
 
@@ -197,8 +197,9 @@ def test_title_replacement_is_atomic_idempotent_and_preserves_metadata(
     assert sorted(p.name for p in tmp_path.iterdir()) == ["old.mp3"]
 
 
-def test_lead_mix_is_transformed_as_one_output_before_metadata_persistence(
-    tagged_mp3: bytes, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.skipif(shutil.which("rubberband") is None, reason="Rubber Band required")
+def test_named_mix_native_transform_has_correct_audio_and_private_metadata(
+    tagged_mp3: bytes,
 ) -> None:
     options = SeparationOptions(
         mixes=(MixSpec("mix-lead", "Lead + Instruments", ("lead", "instruments")),),
@@ -209,16 +210,11 @@ def test_lead_mix_is_transformed_as_one_output_before_metadata_persistence(
     job = db.get_job(job_id)
     assert job is not None
     job.original_key = "C major"
-    mixed_audio = b"already mixed lead and instruments"
-    transformed = []
-
-    def transform(audio: bytes, selected: SeparationOptions) -> bytes:
-        transformed.append((audio, selected))
-        return tagged_mp3
-
-    monkeypatch.setattr(queue, "transform_audio", transform)
-    (entry,) = queue._persist_results(job, {"mix-lead": StemResult(mixed_audio, 0.3)})
-    assert transformed == [(mixed_audio, options)]
+    original = config.UPLOADS_DIR / str(job_id) / "Source.mp3"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(tagged_mp3)
+    original_duration, original_frequency = mp3_measurements(tagged_mp3)
+    (entry,) = queue._persist_results(job, {"mix-lead": StemResult(tagged_mp3, 0.3)})
     assert entry.label == "mix-lead"
     assert entry.filename == "mix-lead - pitch+2st - tempo120pct.mp3"
     assert entry.download_name == (
@@ -229,7 +225,13 @@ def test_lead_mix_is_transformed_as_one_output_before_metadata_persistence(
     assert _tags(path.read_bytes())["TIT2"].text == [
         entry.download_name.removesuffix(".mp3")
     ]
-    assert _tags(path.read_bytes())["TPE1"].text == ["Original artist"]
+    duration, frequency = mp3_measurements(path.read_bytes())
+    assert duration == pytest.approx(original_duration / 1.2, abs=0.04)
+    assert frequency == pytest.approx(original_frequency * 2 ** (2 / 12), rel=0.02)
+    assert entry.size_bytes == path.stat().st_size
+    assert original.read_bytes() == tagged_mp3
+    assert ID3(original)["TIT2"].text == ["Original embedded title"]
+    assert ID3(original)["TPE1"].text == ["Original artist"]
     assert sorted(file.name for file in path.parent.iterdir()) == [entry.filename]
 
 
