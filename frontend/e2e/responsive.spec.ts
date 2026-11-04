@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { JobDTO } from '../src/api';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
@@ -15,6 +16,24 @@ async function assertUncovered(page: Page, locator: Locator) {
 
 async function assertNoOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+}
+
+async function submitAndComplete(page: Page): Promise<JobDTO> {
+  const response = page.waitForResponse(res => res.url().endsWith('/api/jobs') && res.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Process audio', exact: true }).click();
+  const posted = await response;
+  expect(posted.status()).toBe(200);
+  const submitted = await posted.json();
+  let job: JobDTO | undefined;
+  await expect.poll(async () => {
+    const response = await page.request.get(`/api/jobs/${submitted.id}`);
+    expect(response.ok()).toBe(true);
+    job = await response.json() as JobDTO;
+    expect(job.status, job.error_message ?? '').not.toBe('failed');
+    return job.status;
+  }, { timeout: 120_000 }).toBe('done');
+  await expect(page.locator(`a[href='/api/jobs/${submitted.id}/results/song']`).first()).toBeVisible();
+  return job!;
 }
 
 
@@ -97,10 +116,18 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
       await option.check();
       await expect(option).toBeChecked();
     }
+    const mixName = 'Mobile lead + instruments';
+    const mixLabel = `${mixName} (pitch +2 st, tempo 120%)`;
+    await page.locator('details.vocal-variants > summary').click();
+    await page.getByRole('button', { name: '+ Lead vocals', exact: true }).click();
+    await page.getByRole('button', { name: '+ Instruments', exact: true }).click();
+    await page.getByLabel('New mix name', { exact: true }).fill(mixName);
+    await page.getByRole('button', { name: 'Add mix', exact: true }).click();
+    await expect(page.getByTestId('mix-item')).toHaveAttribute('data-mix-name', mixName);
     await page.getByRole('tab', { name: 'Review', exact: true }).click();
     await expect(page.locator('.output-tags').getByText('Original (unchanged)', { exact: true })).toBeVisible();
     await expect(page.locator('.output-tags').getByText('Full song (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
-    await expect(page.locator('.output-tags').getByText('lead-instruments (pitch +2 st, tempo 120%)', { exact: true })).toBeVisible();
+    await expect(page.locator('.output-tags').getByText(mixLabel, { exact: true })).toBeVisible();
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
     await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toHaveValue('2');
@@ -110,17 +137,31 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
     for (const option of await options.all()) { await expect(option).toBeChecked(); await option.uncheck(); }
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Review', exact: true }).click();
+    await expect(page.locator('.output-tags').getByText(mixLabel, { exact: true })).toBeVisible();
+    const mixedJob = await submitAndComplete(page);
+    expect(mixedJob.options.mixes).toEqual([{ id: 'mix-1', name: mixName, components: ['lead', 'instruments'] }]);
+    expect(mixedJob.options.pitch_semitones).toBe(2);
+    expect(mixedJob.options.tempo_percent).toBe(120);
+    expect(mixedJob.manifest?.map(stem => stem.label)).toEqual(['song', 'mix-1']);
+    const mixCard = page.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`).first().locator('../..');
+    await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
+    await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
+    const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+    const exactMixName = new RegExp('^' + mixLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*Source key: C major$');
+    await expect(history.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveAccessibleName(exactMixName);
+    await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
+    await expect(page.getByTestId('mix-item')).toHaveAttribute('data-mix-name', mixName);
+    await page.getByRole('button', { name: `Remove ${mixName}`, exact: true }).click();
+    await expect(page.getByTestId('mix-item')).toHaveCount(0);
     await page.getByRole('button', { name: 'Review →', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Review', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByText(/Tracks and files you'll get \(2\)/)).toBeVisible();
-    const response = page.waitForResponse(res => res.url().endsWith('/api/jobs') && res.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Process audio', exact: true }).click();
-    const submitted = await (await response).json();
-    await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible({ timeout: 120_000 });
-    const job = await (await page.request.get(`/api/jobs/${submitted.id}`)).json();
+    const job = await submitAndComplete(page);
+    expect(job.options.mixes).toEqual([]);
     expect(job.options.pitch_semitones).toBe(2);
     expect(job.options.tempo_percent).toBe(120);
-    expect(job.manifest.map((stem: { label: string }) => stem.label)).toEqual(['song']);
+    expect(job.manifest?.map(stem => stem.label)).toEqual(['song']);
     const downloads = page.locator(`a[download][href^='/api/jobs/${job.id}/']`);
     expect(await downloads.count()).toBe(4);
     for (const link of await downloads.all()) {
