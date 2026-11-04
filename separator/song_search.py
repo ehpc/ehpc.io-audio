@@ -1,13 +1,14 @@
-"""Grounded text discovery; portable source shared with the isolated GPU runtime."""
+"""Grounded text discovery; portable source shared with the Modal CPU worker."""
 
-# GPU/catalog dependencies live only in the isolated Modal image.
+# Catalog/HTTP dependencies live in the isolated Modal image.
 # ruff: noqa: PLC0415
 
 import json
 import math
+import os
 import re
 from collections.abc import Callable
-from functools import cache, partial
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,6 +24,7 @@ QUERY_MAX_LENGTH = 500  # A spoken paragraph, not lyrics/documents; bounds model
 CANDIDATE_LIMIT = 8
 SEARCH_TTL = 900
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 class SearchError(Exception):
@@ -159,54 +161,63 @@ def fetch_catalog(query: str) -> CatalogCandidates:
         ) from exc
 
 
-@cache
-def _load_model(model_cache: str):
-    import torch  # ty: ignore[unresolved-import]
-    from transformers import (  # ty: ignore[unresolved-import]
-        AutoModelForCausalLM,
-        AutoTokenizer,
-    )
+def generate(messages: ChatMessages) -> str:
+    import requests
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        cache_versions.SONG_MODEL,
-        revision=cache_versions.SONG_MODEL_REVISION,
-        cache_dir=model_cache,
-    )
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            cache_versions.SONG_MODEL,
-            revision=cache_versions.SONG_MODEL_REVISION,
-            cache_dir=model_cache,
-            torch_dtype=torch.bfloat16,
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise SearchError("unavailable", "Song finder credentials are not configured.")
+    try:
+        response = requests.post(
+            OPENROUTER_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": cache_versions.SONG_MODEL,
+                "messages": messages,
+                "max_tokens": 256,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "reasoning": {"enabled": False},
+                "provider": {"require_parameters": True},
+            },
+            timeout=(5, 30),
+            allow_redirects=False,
         )
-        .to("cuda")
-        .eval()
-    )
-    return tokenizer, model
-
-
-def generate(messages: ChatMessages, model_cache: str) -> str:
-    import torch  # ty: ignore[unresolved-import]
-
-    tokenizer, model = _load_model(model_cache)
-    prompt = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    if inputs.input_ids.shape[1] > 8192:
+    except requests.RequestException as exc:
         raise SearchError(
-            "invalid_model", "Song clue and catalog exceed the model limit."
+            "unavailable", "Song finder provider is unavailable. Try again later."
+        ) from exc
+    if response.status_code != 200:
+        unavailable = response.status_code in (401, 402, 403, 429)
+        code = (
+            "unavailable"
+            if unavailable or response.status_code >= 500
+            else "invalid_model"
         )
-    with torch.inference_mode():
-        output = model.generate(
-            **inputs,
-            max_new_tokens=256,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
+        raise SearchError(code, "Song finder provider could not complete the request.")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise SearchError(
+            "invalid_model", "Song finder returned invalid output."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise SearchError("invalid_model", "Song finder returned invalid output.")
+    if "error" in payload:
+        raise SearchError(
+            "unavailable", "Song finder provider could not complete the request."
         )
-    return tokenizer.decode(
-        output[0][inputs.input_ids.shape[1] :], skip_special_tokens=True
-    ).strip()
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise SearchError("invalid_model", "Song finder returned invalid output.")
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        raise SearchError("invalid_model", "Song finder returned incomplete output.")
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise SearchError("invalid_model", "Song finder returned empty output.")
+    return content
 
 
 def discover(
@@ -221,7 +232,8 @@ def discover(
         key = cache_key(
             cache_versions.SONG_SEARCH,
             cache_versions.SONG_MODEL,
-            cache_versions.SONG_MODEL_REVISION,
+            OPENROUTER_URL,
+            cache_versions.package_revision("requests"),
             messages,
         )
 
@@ -296,7 +308,7 @@ def run_search(query: str, cache_root: str) -> dict[str, Any]:
         song = discover(
             query,
             Path(cache_root) / "results",
-            partial(generate, model_cache=str(Path(cache_root) / "models")),
+            generate,
         )
         return {"status": "done", "song": song}
     except SearchError as exc:

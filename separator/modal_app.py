@@ -94,8 +94,7 @@ image = (
 song_search_image = (
     modal.Image.debian_slim(python_version="3.13")
     .pip_install(
-        "torch==2.8.0",
-        "transformers==4.57.6",
+        "requests==2.34.2",
         "ytmusicapi==1.11.5",
     )
     .add_local_python_source("separator")
@@ -107,9 +106,15 @@ song_search_volume = modal.Volume.from_name(
 
 @app.function(
     image=song_search_image,
-    gpu="L4",
+    secrets=[
+        modal.Secret.from_name(
+            "audio-openrouter",
+            environment_name="ehpc-audio",
+            required_keys=["OPENROUTER_API_KEY"],
+        )
+    ],
     volumes={"/song-search-cache": song_search_volume},
-    timeout=600,
+    timeout=180,
     max_containers=1,
 )
 def search_song(query: str) -> dict:

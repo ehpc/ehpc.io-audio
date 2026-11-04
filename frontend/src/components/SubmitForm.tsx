@@ -305,7 +305,6 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                   <span aria-hidden="true" class="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" />
                   Finding on YouTube Music…
                 </p>
-                <p class="workspace-helper">The first search can take a few minutes while the song finder starts.</p>
               </Show>
               <Show when={searchError()}><p role="alert" class="song-search-error text-destructive">{searchError()}</p></Show>
               <Show when={song()}>{match => (

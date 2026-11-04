@@ -107,7 +107,7 @@ baseline alignment but may require fresh reference-dependent acoustic alignment.
 
 `POST /api/song-search` accepts `{"query":"artist, title, or lyric clue"}` and
 returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after spawning
-remote work, not after GPU inference. `GET /api/song-search/{search_id}` returns
+remote work, not after provider inference. `GET /api/song-search/{search_id}` returns
 `{"status":"pending"}` or `{"status":"done","song":{"title":"…","artists":["…"],
 "url":"https://music.youtube.com/watch?v=…","duration_seconds":214}}`.
 Duration may be `null`. Poll every two seconds; polls retrieve the existing call
@@ -128,29 +128,52 @@ signed session cookie, including after process restart. Foreign, unknown and
 expired handles return 404 without contacting Modal. No match is 404; ambiguity
 is 422; malformed model/catalog output is 502; remote unavailability is 503.
 Errors use the usual `{"detail":"…"}` envelope. Completed polls read durable
-terminal state; closing the browser stops polling but does not cancel GPU work.
+terminal state; closing the browser stops polling but does not cancel remote work.
 
-The existing Modal app gains `search_song` on an **independent Python 3.13 / L4**
-image, without changing separator or ASR dependencies. It runs the Apache-2.0
-[Qwen3-4B-Instruct-2507 text instruction model](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507)
-(pinned revision in `separator/cache_versions.py`), not the singing ASR model.
-It needs existing Modal authentication only: no paid LLM API key and no web-host
-model loading. GPU workers scale to zero rather than staying warm.
+`search_song` runs on an **independent Python 3.13 CPU** Modal image, without
+changing separator or singing-ASR GPU dependencies. Both text extraction and
+catalog selection use [OpenRouter chat completions](https://openrouter.ai/docs/api/reference/overview)
+with the explicit model `z-ai/glm-4.7-flash` (listed in the
+[public model catalog](https://openrouter.ai/api/v1/models/z-ai/glm-4.7-flash/endpoints)).
+Requests use JSON mode, temperature zero and at most 256 output tokens.
+GLM's optional default-on thinking is explicitly disabled using OpenRouter's
+[reasoning control](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens),
+so reasoning does not consume the small visible-JSON budget.
+Only endpoints supporting those parameters are eligible; normal OpenRouter
+provider routing/account preferences remain in effect. There are no application
+retries, alternate-model fallbacks or local text-model loaders.
+
+Before deployment, create the dedicated **`audio-openrouter` Modal Secret** in
+the **`ehpc-audio` environment** of the existing `ehpc` workspace using the
+[Modal Dashboard](https://modal.com/secrets), containing **`OPENROUTER_API_KEY`**
+from the application's authorized OpenRouter account. The existing app stays
+in `main`; the search function explicitly references this cross-environment secret.
+Never paste the key into chat, commit it, or reuse coding-assistant credentials.
+The secret is attached only to the search function; no web-container/provider
+key or frontend configuration is needed. Account credits and provider access
+must permit this model. Missing credentials or authentication/billing/rate-limit
+failures return a safe 503 error. HTTP requests have 5-second connect and
+30-second read timeouts; redirects are rejected and provider response bodies
+are not exposed in public errors. Search clues and candidate metadata are sent
+to OpenRouter and its selected model provider, but not browser/session IDs,
+audio bytes, job history or application credentials in prompt content.
 The model extracts supplied clues into search text (validated not to invent
 artist/title words), then selects strictly from fresh public YouTube Music
 **song** candidates via `ytmusicapi==1.11.5`. Lyric clues go to catalog search
 as lyrics, not a model's guessed artist. Catalog HTTP
-connect/read timeouts are 5/15 seconds; the remote function is capped at 600
+connect/read timeouts are 5/15 seconds; the remote function is capped at 180
 seconds. User and catalog text are untrusted prompt data. The model cannot
 supply URLs, metadata or uncatalogued IDs; invalid selections/abstentions fail
 explicitly, never falling back to the first song.
 
-The separate `audio-song-discovery` Modal volume stores model weights and
-versioned, validated inference artifacts. Keys include the pinned model,
-inference/prompt version and complete prompt/candidate inputs. Heavy loaders run
-only on cache misses. Catalog searches themselves are always fresh, so mutable
-catalog results are not frozen indefinitely; candidate changes invalidate only
-selection inference. Discovery never invalidates existing audio caches.
+The existing `audio-song-discovery` Modal volume stores versioned, validated
+inference artifacts. Keys include the explicit model, OpenRouter endpoint,
+HTTP dependency revision, inference/prompt version and complete prompt/candidate
+inputs. Provider calls happen only on cache misses. The new producer identity
+does not reuse previous local-model inference; unused historical model files
+are left untouched, not deleted. Catalog searches themselves are always fresh,
+so mutable catalog results are not frozen indefinitely; candidate changes
+invalidate only selection inference. Discovery never invalidates audio caches.
 
 ## Choosing outputs
 
@@ -282,8 +305,8 @@ Arrow keys, Home and End navigate the tab bar.
 The source selector offers **From URL**, **Upload audio**, and **Find song**.
 In Find song, enter a title, artist, or description (up to 500 characters), then
 select **Search**. Typing and pressing Enter in the query do not start a search
-or submit audio. While the model starts and searches, the form shows
-**Finding on YouTube Music…**; first use can take a few minutes. The returned
+or submit audio. While the search is pending, the form shows
+**Finding on YouTube Music…**. The returned
 title, artists, and **Verify on YouTube Music** link let you check the match.
 Its canonical URL immediately feeds the existing key preview, but a processing
 job is created only when you select **Download song** or **Process audio**.
