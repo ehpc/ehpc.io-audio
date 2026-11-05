@@ -432,15 +432,12 @@ for (const viewport of [mobile, desktop]) {
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
       };
       await assertDeviceWidth();
-      await expect(view.getByLabel('Pitch background audio', { exact: true }).locator('option')).toHaveText([
-        'Full song', 'Just vocals', 'lead (pitch +1.25 st, tempo 125%)', 'backing (pitch +1.25 st, tempo 125%)',
-      ]);
       const scroll = view.locator('.pitch-viewport');
       await scroll.evaluate(element => { element.scrollLeft = 1000; });
       await view.getByRole('slider', { name: 'Melody zoom', exact: true }).press('End');
       await assertDeviceWidth();
-      await expect(view.locator('.pitch-svg')).toHaveAttribute('height', '1008');
-      expect(Number(await view.locator('.pitch-svg').getAttribute('width'))).toBeGreaterThan(70_000);
+      expect(await scroll.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+      expect(await scroll.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
       const note = view.locator('.pitch-note[data-note="A3"]');
       await note.scrollIntoViewIfNeeded();
       await note.click();

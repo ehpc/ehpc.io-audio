@@ -1064,7 +1064,7 @@ views with inline uncertainty and raw recognition (390px/1440px), two
 synthetic pitched-lyrics typography views covering Unicode word cells,
 repeated-note melisma and explicitly untimed lines (390px/1440px), two mix
 builder/review cases, and four song-discovery pending/selected cases
-(390px/1440px). These complement, not replace, the **66 functional cases**.
+(390px/1440px). These complement, not replace, the functional browser E2E cases.
 Two additional desktop/mobile geometry cases exercise long transformed-source choices and short notes beside the sticky ruler/word lanes at maximum zoom, using a small purpose-built fixture without inference.
 The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
