@@ -16,7 +16,7 @@ import modal
 from separator.lyrics_reference import ReferenceMetadata
 from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.processing import ProcessingResult, analysis_transport, run_processing
-from separator.stems import SeparationResult, run_separation
+from separator.stems import SeparationResult, cached_pitch_vocals, run_separation
 
 app = modal.App("audio-separator-v2")
 
@@ -143,6 +143,22 @@ def _source_audio(audio_bytes: bytes, filename: str) -> Iterator[tuple[Path, Pat
         input_path = tmp / filename
         input_path.write_bytes(audio_bytes)
         yield tmp, input_path
+
+
+@app.function(
+    image=image,
+    # Native library fingerprints differ between CPU and GPU containers.
+    # Match the producer runtime without loading or running a separation model.
+    gpu=GPU,
+    cpu=2,
+    memory=2048,
+    volumes={MODEL_CACHE: model_volume.with_mount_options(read_only=True)},
+    timeout=120,
+)
+def recover_pitch_vocals(audio_bytes: bytes) -> bytes | None:
+    """Exact cache read in the producer runtime; no inference or cache writes."""
+    model_volume.reload()
+    return cached_pitch_vocals(audio_bytes, MODEL_CACHE, STEM_CACHE)
 
 
 @app.function(

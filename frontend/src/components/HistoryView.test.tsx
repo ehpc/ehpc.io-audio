@@ -40,6 +40,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     error_message: null,
     created_at: 1700000000,
     has_original: true,
+    has_pitch_vocals: false,
     ...overrides,
   };
 }

@@ -384,7 +384,7 @@ for (const viewport of [mobile, desktop]) {
     await expect(view).toBeVisible();
     const text = view.getByRole('region', { name: 'Aligned pitch and lyric text' });
     await expect(text).toContainText('C#4 C#4 D#4');
-    await expect(text).toContainText('[??:??] ? ? ? Unconfirmed closing words');
+    await expect(text).toContainText('? ? ? [??:??] Unconfirmed closing words');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => document.fonts.ready);
     await compare(view, info, `pitched-lyrics-${viewport.width}-word-cells.png`);

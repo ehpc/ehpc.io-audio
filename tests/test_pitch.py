@@ -2,13 +2,19 @@ import asyncio
 import json
 import math
 import pickle
+import shutil
+import zipfile
 from dataclasses import asdict
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
 
 from backend import db, modal_client, queue
+from separator import cache_versions, stems
+from separator.artifact_cache import cache_key, digest
 from separator.lyrics import TranscriptWord
 from separator.options import MixSpec, SeparationOptions
 from separator.pitch import (
@@ -21,6 +27,10 @@ from separator.pitch import (
     transform_analysis,
 )
 from separator.processing import ProcessingResult
+
+_NATIVE_TRANSFORM = all(
+    shutil.which(tool) is not None for tool in ("ffmpeg", "rubberband")
+)
 
 
 def test_voicing_gates_rests_and_octave_glitches_do_not_invent_notes() -> None:
@@ -180,6 +190,223 @@ def test_pitch_lifecycle_download_history_retry_and_session_isolation(
     assert client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
     assert client.post(f"/api/jobs/{job_id}/retry").status_code == 200
     assert client.get("/api/jobs/current").json()["options"]["detect_pitch"] is True
+
+
+@pytest.mark.skipif(not _NATIVE_TRANSFORM, reason="FFmpeg and Rubber Band required")
+def test_pitch_only_job_serves_its_private_vocal_reference_to_its_owner(
+    client: TestClient, other_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    analysis = PitchAnalysis(
+        2, 2, [PitchTrack("vocals", [PitchNote(0.2, 0.8, 69, 440, 0.9)])]
+    )
+    encoded = pitch_to_json(analysis)
+    source_bytes = tone_wav((440,), duration_s=2)
+    private_audio = source_bytes
+    response = client.post(
+        "/api/jobs",
+        files={"file": ("song.wav", source_bytes, "audio/wav")},
+        data={
+            "detect_pitch": "true",
+            "pitch_semitones": "12",
+            "tempo_percent": "125",
+        },
+    )
+    job_id = response.json()["id"]
+    monkeypatch.setattr(queue, "detect_key", lambda *args: None)
+    monkeypatch.setattr(
+        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-pitch")
+    )
+    monkeypatch.setattr(
+        modal_client,
+        "poll",
+        lambda *args: ProcessingResult(
+            {}, pitch_json=encoded, pitch_vocals=private_audio
+        ),
+    )
+    job = db.get_job(job_id)
+    assert job is not None
+    asyncio.run(queue._run_job(job))
+
+    payload = client.get(f"/api/jobs/{job_id}").json()
+    assert payload["status"] == "done"
+    assert [entry["label"] for entry in payload["manifest"]] == ["song"]
+    assert payload["has_pitch_vocals"] is True
+    assert client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
+    reference = client.get(f"/api/jobs/{job_id}/pitch-reference/vocals")
+    assert reference.status_code == 200
+    duration, frequency = mp3_measurements(reference.content)
+    assert duration == pytest.approx(2 / 1.25, abs=0.12)
+    assert frequency == pytest.approx(880, rel=0.02)
+    assert reference.headers["content-type"].startswith("audio/")
+    assert (
+        other_client.get(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code
+        == 404
+    )
+
+
+@pytest.mark.skipif(not _NATIVE_TRANSFORM, reason="FFmpeg and Rubber Band required")
+def test_legacy_pitch_vocal_recovery_reuses_only_an_exact_cached_stem(
+    client: TestClient,
+    other_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    analysis = PitchAnalysis(
+        2, 2, [PitchTrack("vocals", [PitchNote(0.2, 0.8, 69, 440, 0.9)])]
+    )
+    encoded = pitch_to_json(analysis)
+    source_bytes = tone_wav((440,), duration_s=2)
+
+    def submit_legacy_pitch_job() -> int:
+        response = client.post(
+            "/api/jobs",
+            files={"file": ("song.wav", source_bytes, "audio/wav")},
+            data={
+                "detect_pitch": "true",
+                "pitch_semitones": "12",
+                "tempo_percent": "125",
+            },
+        )
+        job_id = response.json()["id"]
+        job = db.get_job(job_id)
+        assert job is not None
+        asyncio.run(queue._run_job(job))
+        return job_id
+
+    monkeypatch.setattr(queue, "detect_key", lambda *args: None)
+    producer_calls = 0
+
+    def spawn_pitch(*args: object, **kwargs: object) -> MagicMock:
+        nonlocal producer_calls
+        producer_calls += 1
+        return MagicMock(object_id="fc-pitch")
+
+    monkeypatch.setattr(modal_client, "spawn_with_lyrics", spawn_pitch)
+    monkeypatch.setattr(
+        modal_client, "poll", lambda *args: ProcessingResult({}, pitch_json=encoded)
+    )
+    job_id = submit_legacy_pitch_job()
+    assert producer_calls == 1
+    assert client.get(f"/api/jobs/{job_id}").json()["has_pitch_vocals"] is False
+
+    model_cache = tmp_path / "models"
+    model_path = model_cache / stems.VOCALS_STEM.model
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"cached vocal model")
+    stem_cache = tmp_path / "stems"
+    cache_calls: list[bytes] = []
+
+    async def exact_cached_vocals(source: bytes) -> bytes | None:
+        cache_calls.append(source)
+        return stems.cached_pitch_vocals(source, str(model_cache), str(stem_cache))
+
+    monkeypatch.setattr(modal_client, "cached_pitch_vocals", exact_cached_vocals)
+    assert client.post(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}").json()["has_pitch_vocals"] is False
+    assert cache_calls == [source_bytes]
+
+    identity = stems._stem_identity(digest(source_bytes), stems.VOCALS_STEM)
+    cache_id = cache_key(*identity, cache_versions.file_revision(model_path))
+    archive_path = stem_cache / "versioned" / "outputs" / f"{cache_id}.bin"
+    archive_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("vocals", source_bytes)
+
+    recovered = client.post(f"/api/jobs/{job_id}/pitch-reference/vocals")
+    assert recovered.status_code == 204
+    assert cache_calls == [source_bytes, source_bytes]
+    assert producer_calls == 1
+    payload = client.get(f"/api/jobs/{job_id}").json()
+    assert payload["has_pitch_vocals"] is True
+    assert [entry["label"] for entry in payload["manifest"]] == ["song"]
+    assert client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
+    reference = client.get(f"/api/jobs/{job_id}/pitch-reference/vocals")
+    assert reference.status_code == 200
+    duration, frequency = mp3_measurements(reference.content)
+    assert duration == pytest.approx(2 / 1.25, abs=0.12)
+    assert frequency == pytest.approx(880, rel=0.02)
+    assert client.post(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code == 204
+    assert cache_calls == [source_bytes, source_bytes]
+    assert producer_calls == 1
+
+    model_path.write_bytes(
+        b"changed model revision invalidates this exact cache archive"
+    )
+    changed_model_job_id = submit_legacy_pitch_job()
+    assert producer_calls == 2
+    assert (
+        client.post(
+            f"/api/jobs/{changed_model_job_id}/pitch-reference/vocals"
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/api/jobs/{changed_model_job_id}").json()["has_pitch_vocals"]
+        is False
+    )
+    assert cache_calls == [source_bytes, source_bytes, source_bytes]
+    assert producer_calls == 2
+    assert (
+        other_client.post(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code
+        == 404
+    )
+    assert (
+        other_client.get(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code
+        == 404
+    )
+
+
+@pytest.mark.parametrize("archive_kind", ["corrupt", "missing-vocals"])
+def test_unreadable_cached_vocal_archives_return_http_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    archive_kind: str,
+) -> None:
+    analysis = PitchAnalysis(
+        5, 5, [PitchTrack("vocals", [PitchNote(1, 2, 69, 440, 0.9)])]
+    )
+    encoded = pitch_to_json(analysis)
+    source_bytes = b"original-upload-for-cache-key"
+    response = client.post(
+        "/api/jobs",
+        files={"file": ("song.wav", source_bytes, "audio/wav")},
+        data={"detect_pitch": "true"},
+    )
+    job_id = response.json()["id"]
+    monkeypatch.setattr(queue, "detect_key", lambda *args: None)
+    monkeypatch.setattr(
+        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-pitch")
+    )
+    monkeypatch.setattr(
+        modal_client, "poll", lambda *args: ProcessingResult({}, pitch_json=encoded)
+    )
+    job = db.get_job(job_id)
+    assert job is not None
+    asyncio.run(queue._run_job(job))
+
+    model_cache = tmp_path / "models"
+    model_path = model_cache / stems.VOCALS_STEM.model
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"present cached checkpoint")
+    stem_cache = tmp_path / "stems"
+    identity = stems._stem_identity(digest(source_bytes), stems.VOCALS_STEM)
+    cache_id = cache_key(*identity, cache_versions.file_revision(model_path))
+    archive_path = stem_cache / "versioned" / "outputs" / f"{cache_id}.bin"
+    archive_path.parent.mkdir(parents=True)
+    if archive_kind == "corrupt":
+        archive_path.write_bytes(b"not a ZIP archive")
+    else:
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("other-output", b"not vocal audio")
+
+    async def read_exact_cache(audio_bytes: bytes) -> bytes | None:
+        return stems.cached_pitch_vocals(audio_bytes, str(model_cache), str(stem_cache))
+
+    monkeypatch.setattr(modal_client, "cached_pitch_vocals", read_exact_cache)
+    recovery = client.post(f"/api/jobs/{job_id}/pitch-reference/vocals")
+    assert recovery.status_code == 503
+    assert client.get(f"/api/jobs/{job_id}").json()["has_pitch_vocals"] is False
 
 
 def test_missing_analysis_fails_instead_of_fake_success(

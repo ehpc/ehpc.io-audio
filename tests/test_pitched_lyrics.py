@@ -55,18 +55,18 @@ def test_melisma_and_real_repeated_notes_widen_cells_without_changing_lyrics() -
     transcript, analysis = singing()
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
     rows = text.splitlines()
-    start = rows.index("[00:01]")
-    assert rows[start + 1] == "C#4 C#4 D#4  ?"
-    assert rows[start + 2].split() == ["Cœur", "поёт"]
-    assert display_width(rows[start + 1].split("  ?")[0]) + 2 == display_width(
-        rows[start + 2].split("поёт")[0]
+    start = next(index for index, row in enumerate(rows) if row.startswith("[00:01] "))
+    assert rows[start - 1] == "        C#4 C#4 D#4  ?"
+    assert rows[start].split()[1:] == ["Cœur", "поёт"]
+    assert display_width(rows[start - 1].split("  ?")[0]) + 2 == display_width(
+        rows[start].split("поёт")[0]
     )
     assert "A#4" not in text
     assert "[Verse]" in text
     assert analysis.tracks[0].notes[0].start_s == 1.6
     assert analysis.words[0].start_s == 1.6
     assert "[00:02]" not in text
-    assert "[00:01]\n?     ?\nCœur  поёт\n" in pitched_lyrics_text(
+    assert "        ?     ?\n[00:01] Cœur  поёт\n" in pitched_lyrics_text(
         transcript, analysis, analysis.tracks[1]
     )
 
@@ -81,9 +81,6 @@ def test_pitched_txt_head_is_identity_and_transposed_tonality() -> None:
         output_key="D minor",
     )
     assert text.startswith("Cœur.wav\nTonality: D minor\n")
-    assert "[Lyrics with pitches" not in text
-    assert "NOT re-measured" not in text
-    assert "NOT a rest" not in text
     plain = pitched_lyrics_text(
         transcript, analysis, analysis.tracks[0], title="Cœur.wav"
     )
@@ -154,7 +151,7 @@ def test_canonical_order_disputed_repeats_and_unconfirmed_lines_are_not_guessed(
         < text.index("glow  glow  stars")
         < text.index("Untimed  ending")
     )
-    assert "[00:01]\n?     ?     D4\nglow  glow  stars\n" in text
+    assert "        ?     ?     D4\n[00:01] glow  glow  stars\n" in text
     assert text.count("[??:??]") == 2
     assert "Reference line" not in text and "UNCONFIRMED" not in text
     assert "variant" not in text
@@ -180,7 +177,7 @@ def test_incomplete_repeated_word_alignment_is_ambiguous_even_without_metadata()
         100,
         [TranscriptWord(1, 2, "go"), TranscriptWord(3, 4, "home")],
     )
-    assert "[00:01]\n?   ?   D4\ngo  go  home\n" in pitched_lyrics_text(
+    assert "        ?   ?   D4\n[00:01] go  go  home\n" in pitched_lyrics_text(
         transcript, analysis, analysis.tracks[0]
     )
 
@@ -201,7 +198,7 @@ def test_unicode_column_padding_preserves_combining_cyrillic_and_wide_cells() ->
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
     assert display_width("e\u0301") == display_width("é") == 1
     assert display_width("星光") == 4
-    assert "[00:01]\n?  ?     C4\ne\u0301  星光  мир\n" in text
+    assert "        ?  ?     C4\n[00:01] e\u0301  星光  мир\n" in text
 
 
 def test_reference_positions_survive_repeated_tokens_and_extras_sort() -> None:
@@ -246,11 +243,11 @@ def test_reference_positions_survive_repeated_tokens_and_extras_sort() -> None:
         transcript.words,
     )
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert "[00:01]\n?     C4    D4\nglow  glow  stars\n" in text
+    assert "        ?     C4    D4\n[00:01] glow  glow  stars\n" in text
     assert "B3" not in text
     legacy = Transcript(words=transcript.words, reference=transcript.reference)
     legacy_text = pitched_lyrics_text(legacy, analysis, analysis.tracks[0])
-    assert "[00:01]\n?     ?     ?\nglow  glow  stars\n" in legacy_text
+    assert "        ?     ?     ?\n[00:01] glow  glow  stars\n" in legacy_text
 
 
 def test_canonical_ids_use_exact_tokenization_for_decomposed_word_cells() -> None:
@@ -295,7 +292,7 @@ def test_canonical_ids_use_exact_tokenization_for_decomposed_word_cells() -> Non
         words,
     )
     rendered = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert "[00:01]\nC4 D4    ?     E4\ncafe\u0301ine  glow  glow\n" in rendered
+    assert "        C4 D4    ?     E4\n[00:01] cafe\u0301ine  glow  glow\n" in rendered
     assert display_width("cafe\u0301ine") == 7
 
 

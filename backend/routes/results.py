@@ -1,11 +1,11 @@
 import asyncio
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from backend import config, db
+from backend import config, db, modal_client
 from backend.metadata import ensure_download_title
 from backend.models import (
     JobRecord,
@@ -15,13 +15,17 @@ from backend.models import (
     header_title,
     lyrics_filename,
     original_filename,
+    pitch_vocals_path,
     pitched_lyrics_filename,
 )
+from backend.pitch_reference import persist_pitch_vocals
 from backend.session import get_session_id
+from separator.artifact_cache import async_locked
 from separator.audio import transposed_key
 from separator.lyrics import transcript_export_text
 from separator.pitch import pitch_from_json, pitch_to_json
-from separator.pitched_lyrics import pitched_lyrics_text
+from separator.pitched_lyrics import pitched_lyrics_document, pitched_lyrics_text
+from separator.pitched_lyrics_odt import MIME_TYPE, pitched_lyrics_odt
 
 router = APIRouter(tags=["results"])
 
@@ -43,6 +47,58 @@ async def get_original(
     return FileResponse(
         path, filename=original_filename(job.title, job_id, path.suffix)
     )
+
+
+@router.get("/jobs/{job_id}/pitch-reference/vocals")
+async def get_pitch_vocals(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> FileResponse:
+    job = await asyncio.to_thread(db.get_job, job_id)
+    if job is None or job.session_id != session_id:
+        raise HTTPException(404, "pitch reference not found")
+    path = pitch_vocals_path(job)
+    if path is None:
+        raise HTTPException(404, "pitch reference not found")
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+@router.post("/jobs/{job_id}/pitch-reference/vocals", status_code=204)
+async def recover_pitch_vocals(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> Response:
+    job = await asyncio.to_thread(db.get_job, job_id)
+    if (
+        job is None
+        or job.session_id != session_id
+        or job.status != JobStatus.DONE
+        or job.pitch_json is None
+    ):
+        raise HTTPException(404, "pitch reference not found")
+    async with async_locked(config.RESULTS_DIR / str(job.id) / ".pitch-vocals.lock"):
+        if pitch_vocals_path(job) is not None:
+            return Response(status_code=204)
+        source_dir = config.UPLOADS_DIR / str(job.id)
+        sources = sorted(path for path in source_dir.glob("*") if path.is_file())
+        if not sources:
+            raise HTTPException(
+                404, "Original audio is unavailable; cached vocals cannot be recovered."
+            )
+        source = await asyncio.to_thread(sources[0].read_bytes)
+        try:
+            vocals = await modal_client.cached_pitch_vocals(source)
+        except Exception as exc:
+            raise HTTPException(
+                503, "Vocal cache lookup is unavailable. Please try again later."
+            ) from exc
+        if not vocals:
+            raise HTTPException(
+                404,
+                "No full vocals match this original and the current model/cache "
+                "identity. The cache may be missing or from an older model. "
+                "Run pitch detection again to create a reference.",
+            )
+        await asyncio.to_thread(persist_pitch_vocals, job, vocals)
+    return Response(status_code=204)
 
 
 @router.get("/jobs/{job_id}/results/{label}")
@@ -155,7 +211,10 @@ async def get_pitch(
 
 @router.get("/jobs/{job_id}/pitched-lyrics/{label}/download")
 async def download_pitched_lyrics(
-    job_id: int, label: str, session_id: Annotated[str, Depends(get_session_id)]
+    job_id: int,
+    label: str,
+    session_id: Annotated[str, Depends(get_session_id)],
+    format: Literal["txt", "odt"] = "txt",
 ) -> Response:
     job = await _lyrics_job(job_id, session_id)
     if not job.options.extract_pitched_lyrics or job.pitch_json is None:
@@ -165,15 +224,23 @@ async def download_pitched_lyrics(
     if track is None:
         raise HTTPException(404, "pitched lyrics not found")
     assert job.transcript is not None
-    name = quote(pitched_lyrics_filename(job.title, job_id, label, job.options))
+    filename = pitched_lyrics_filename(job.title, job_id, label, job.options)
+    options = {
+        "title": header_title(job.title),
+        "output_key": transposed_key(job.original_key, job.options.pitch_semitones),
+    }
+    if format == "odt":
+        content = pitched_lyrics_odt(
+            pitched_lyrics_document(job.transcript, analysis, track, **options)
+        )
+        filename = filename.removesuffix(".txt") + ".odt"
+        media_type = MIME_TYPE
+    else:
+        content = pitched_lyrics_text(job.transcript, analysis, track, **options)
+        media_type = "text/plain; charset=utf-8"
+    name = quote(filename)
     return Response(
-        pitched_lyrics_text(
-            job.transcript,
-            analysis,
-            track,
-            title=header_title(job.title),
-            output_key=transposed_key(job.original_key, job.options.pitch_semitones),
-        ),
-        media_type="text/plain; charset=utf-8",
+        content,
+        media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename*=utf-8''{name}"},
     )

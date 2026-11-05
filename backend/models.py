@@ -2,6 +2,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, JsonValue, PrivateAttr, computed_field, field_serializer
@@ -201,6 +202,7 @@ class JobDTO(BaseModel):
     transcript: TranscriptDTO | None = None
     pitch: PitchAnalysis | None = None
     pitched_lyrics: list[PitchedLyricsTrack] | None = None
+    has_pitch_vocals: bool = False
 
     @field_serializer("pitch")
     def serialize_pitch(self, pitch: PitchAnalysis | None) -> JsonValue:
@@ -213,6 +215,20 @@ def _has_original(job_id: int) -> bool:
     """True once the source audio is on disk (uploads always; URLs after download)."""
     directory = config.UPLOADS_DIR / str(job_id)
     return directory.is_dir() and any(directory.iterdir())
+
+
+def pitch_vocals_path(job: JobRecord) -> Path | None:
+    """Resolve only persisted, output-clock full vocals for a completed timeline."""
+    if job.status != JobStatus.DONE or job.pitch_json is None:
+        return None
+    directory = config.RESULTS_DIR / str(job.id)
+    for entry in job.result_manifest or []:
+        if entry.label == "vocals":
+            path = directory / entry.filename
+            if path.is_file():
+                return path
+    private = directory / ".pitch-vocals.mp3"
+    return private if private.is_file() else None
 
 
 def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
@@ -257,6 +273,7 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
             else None
         ),
         pitch=pitch,
+        has_pitch_vocals=pitch_vocals_path(job) is not None,
         pitched_lyrics=(
             pitched_lyrics_tracks(
                 job.transcript, pitch, title=title, output_key=output_key

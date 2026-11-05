@@ -232,7 +232,7 @@ authorization does not grant additional rights under the model licenses.
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
 | Detect vocal pitch | Musical-note timeline and pitch JSON (output audio clock) |
-| Lyrics with pitches | One aligned pitch-over-word TXT per vocal stem, also shown in Results/History (output audio clock) |
+| Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, also shown in Results/History (output audio clock) |
 | Extract instruments | `instruments` |
 | Remove crowd noise from vocals | `vocals-decrowded` |
 | Remove crowd noise from instrumental | `instruments-decrowded` |
@@ -360,7 +360,8 @@ form retention across completed repeat submissions.
 ## Lyrics with pitches
 
 Choose **Lyrics with pitches** to show detected notes above intact lyric words
-and download the same UTF-8 TXT. This is a separate opt-in output: it reuses the
+and download the same layout as UTF-8 TXT or formatted OpenDocument (`.odt`).
+The ODT can be uploaded/opened in Google Docs. This is a separate opt-in output: it reuses the
 existing Qwen/MMS lyric alignment and CREPE notes, without selecting the plain
 lyrics or pitch-timeline checkboxes, introducing another model, or adding audio exports.
 The no-options download-only/no-GPU default is unchanged.
@@ -372,13 +373,24 @@ The preview counts one pitched TXT for each analyzed stem. Selecting plain
 **Extract lyrics** or **Detect vocal pitch** as well still shows those explicitly
 requested views.
 
-Pitch rows are above lyric rows in fixed-width whole-word cells. A word spanning
-several detected notes keeps the full ordered sequence, including distinct
-repeated notes; cells widen when that sequence is longer than the word. No
-syllable boundaries are invented. The browser uses one horizontally scrolling
-monospace block, so phone wrapping cannot separate the two rows. Accented Latin,
-Cyrillic, combining marks and East Asian wide/full-width lyric characters use
-display-column padding; this is not a general emoji/grapheme terminal renderer.
+Pitch rows are above lyric rows in fixed-width whole-word cells. The timestamp
+is the left prefix of the **lyric row**, not a separate third row; the pitch row
+starts with the same number of display columns in spaces. Unknown `[??:??]`
+and timestamps beyond 99 minutes use their actual prefix widths.
+A word spanning several detected notes keeps the full ordered sequence,
+including distinct repeated notes; cells widen when that sequence is longer
+than the word. No syllable boundaries are invented. All three formats wrap
+long lines together, **between whole-word cells**, at 78 columns, preserving
+each pitch/lyric pair. Continuation pairs retain the same left indent.
+An indivisible word/melisma wider than that remains intact: the browser/TXT
+can scroll, and ODT uses a wider page rather than shrinking the font.
+The browser uses a horizontally scrolling monospace block on small screens.
+Accented Latin, Cyrillic, combining marks and East Asian wide/full-width lyric
+characters use shared display-column padding. The server also supplies the
+unique `wide_characters` for each track; the browser reserves two monospace
+columns for those glyphs even when its CJK fallback font has narrower metrics.
+The canonical text, spaces and word wrapping are unchanged. This is not a
+general emoji/grapheme terminal renderer.
 
 Canonical reference lines, their original order, section headings and untimed
 disputed words remain intact. Newly published reference-aligned words carry a
@@ -391,24 +403,64 @@ matches within its own measured line bounds. `?` means missing/unconfirmed or
 ambiguous alignment, or no detected pitch — **not a musical rest**. Full-vocal
 word alignment does not independently recognize the lyrics of each split voice.
 
-This new TXT uses **output-clock, start-only timestamps**: `125%` tempo divides
+These pitched exports use **output-clock, start-only timestamps**: `125%` tempo divides
 lyric/section onsets by `1.25`. Notes use the output pitch projection, not the song
 key or a fresh measurement of transformed audio. Labels are compact `C#4`, etc.,
 rounded to the nearest semitone for all shifts, like pitch-timeline rectangles.
 Exact requested fractional shifts remain in the download filename; pitch JSON
 retains fractional MIDI/frequency/cents. Ordinary lyric TXT/JSON stay on the
 original clock. Automatic lyric alignment and monophonic note estimates can be wrong.
-The pitched TXT starts with the same `Artist — Track` identity line, followed by
+Each pitched export starts with the same `Artist — Track` identity line, followed by
 `Tonality: <key>` — the detected source key transposed by the requested shift
 (fractional shifts append residual cents), omitted when the source key is unknown.
 
 `JobDTO.pitched_lyrics` supplies the canonical per-stem text to both Results and
-History. The session-protected TXT endpoint is
-`/api/jobs/{id}/pitched-lyrics/{label}/download`; it runs the same formatter, and
-names downloads like
-`Song - lead - lyrics-with-pitches - pitch+1.25st - tempo125pct.txt`.
+History. The session-protected download endpoint is
+`/api/jobs/{id}/pitched-lyrics/{label}/download`; `format=txt` is the default,
+and `?format=odt` selects OpenDocument. Other formats are rejected.
+Both formats use the same owner/stem authorization and shared word-cell renderer,
+with filenames such as
+`Song - lead - lyrics-with-pitches - pitch+1.25st - tempo125pct.txt`
+or the same name ending in `.odt`. Existing stored jobs get the new layout and
+download formats immediately from their stored transcript/pitch analysis;
+no audio processing, model rerun, or algorithm/cache-version change is needed.
 Reference-position provenance is a defaulted top-level transcript addition;
 existing Word/Pitch JSON shapes and schema-2 decoding remain compatible.
+
+### OpenDocument formatting and import
+
+ODT exports use light-gray pitch text (`#aaaaaa`), black lyrics, and **bold
+square-bracketed text**, including timestamps, headings and bracketed lyric
+directions (even when those directions continue across wrapped pairs).
+Each pitch/lyric pair is one paragraph with an explicit line break and
+keep-together pagination; headings keep with the following paragraph.
+Spaces are encoded explicitly rather than relying on an importer's whitespace
+collapsing. The package is standard ODF 1.2, with its uncompressed MIME entry
+first and an XML manifest; no new production dependency is required.
+
+The Western font is 10pt **Courier New**, a
+[Google Docs-supported font](https://developers.google.com/apps-script/reference/document/font-family),
+declared fixed-pitch/modern for fallback. Full-width CJK uses 12pt Noto Sans Mono
+CJK SC to match two 6pt Western columns. LibreOffice was exercised with its
+metric-compatible Liberation Mono substitution: synthetic seven-page documents
+preserve every pitch/lyric pair, combining/Cyrillic/CJK grid positions, gray ink
+and visibly bold brackets. The wide-page long-melisma case is also covered by
+the real-render regression. **Signed-in Google Docs import was not tested**;
+its CJK font substitution and pagination may differ, so inspect wide-script
+alignment after import. No embedded font or guaranteed Google Docs CJK fallback
+is claimed.
+
+Focused regressions:
+
+```sh
+uv run pytest tests/test_pitched_lyrics.py tests/test_pitched_lyrics_odt.py
+# Optional real-render checks require LibreOffice, Courier New (or Liberation
+# Mono), Noto Sans Mono CJK SC, and the temporary inspection dependency:
+uv run --with pymupdf pytest tests/test_pitched_lyrics_odt.py -k libreoffice
+# Existing isolated CPU harness: real browser downloads, no GPU jobs.
+npm --prefix frontend run test:e2e -- --visual pitched-lyrics-odt.spec.ts
+```
+
 
 ## Vocal pitch detection
 
@@ -447,12 +499,55 @@ lyrics are selected.
 Results show time horizontally and chromatic note/octave vertically, with
 detected note rectangles labeled `C#4`, `F3`, etc. Selecting a rectangle seeks
 the native reference player and shows its estimated frequency, residual cents,
-confidence and interval. The reference audio is explicitly named: matching vocal
-output when available, otherwise the transformed full song or unchanged original
-full song. The playhead follows that audio. Phones scroll within the timeline
-instead of squeezing the song to screen width; buttons and a native zoom slider
-provide 40–640 px/s. The initial vertical view centers the typical vocal register,
-while every detected high/low row remains reachable by scrolling.
+confidence and interval. Click or tap the top time ruler to seek without changing
+paused/playing state; horizontal swipes still scroll rather than seek. Ruler
+coordinates follow horizontal scroll and zoom, ignore the sticky note axis, and
+stop at the analysis duration even where the minimum canvas width leaves blank
+space. Focus the ruler for arrow-key one-second steps, Page Up/Down ten-second
+steps, and Home/End. The playhead follows the native player. Phones scroll within
+the timeline instead of squeezing the song to screen width; buttons and a native
+zoom slider provide 40–640 px/s. The initial vertical view centers the typical
+vocal register, while every detected high/low row remains reachable by scrolling.
+
+**Background audio** is independent of the detected **Vocal stem** selector.
+Choose **Full song** (the transformed song when available, otherwise the
+unchanged original) or **Just vocals** (all vocal parts, not necessarily the
+selected detected voice). Other exported detected vocal stems can also be chosen
+explicitly. The initial reference retains the matching exported stem when one
+exists. Switching backgrounds preserves the current output-clock position,
+maps it to the new source's clock, and stops the old source without autoplay.
+Selecting another history job resets its playback and reference state.
+
+New pitch-timeline jobs retain their already-computed full-vocal prerequisite
+as a private listening reference even when **Extract vocals** was not selected.
+It receives the same pitch/tempo audio transform as public outputs, but is not
+added to the download manifest. `JobDTO.has_pitch_vocals` reports actual persisted
+availability; the owner-protected
+`GET /api/jobs/{id}/pitch-reference/vocals` serves either this private file or an
+existing public full-vocal result.
+
+Older pitch-only jobs offer **Recover cached vocals** when their original is
+still stored. The owner-protected `POST` on the same reference endpoint reads
+the exact source/model/checkpoint/runtime-versioned full-vocal cache in a
+Modal function, then applies the existing local audio transform. Cache-only
+recovery allocates the same GPU runtime as the producer solely to preserve its
+native-library cache identity: CPU and GPU containers can resolve different
+FFmpeg dependencies even with the same image and package versions.
+It does **not** load or run the separation model. New jobs already retain their
+private vocal reference and do not need this legacy recovery call.
+It never redownloads the source, loads a neural model, reruns separation,
+ASR or pitch detection, or changes public outputs. A missing source or matching
+cache is reported explicitly; historical incompatible cache identities are not
+guessed. Corrupt/unreadable exact-cache artifacts report a lookup failure rather
+than a misleading cache miss. This recovery requires deploying the new
+`recover_pitch_vocals` Modal function alongside the web changes.
+
+Note tooltips appear immediately on hover, focus or tap: the compact pitch label
+is the first row, with associated lyrics on a second row only when available.
+Word-lane tooltips show only the lyrics, also immediately. Native delayed titles
+are removed; diagnostic details remain in accessible labels and the selection
+panel. Tooltips render outside the scroll clipping area and dismiss on
+scroll/resize or Escape instead of leaving stale floating labels.
 
 **Pitch times and pitches use the output clock/key.** Detection runs once on
 the original, untransformed stem. A tempo of `125%` divides note and word times
@@ -1255,7 +1350,7 @@ where actual aligned reference anchors locate them, with blank lines between
 sections. Genuinely unanchored/ambiguous groups get an unknown-section marker or
 a separate beginning-only estimated timeline, not an invented lyric onset.
 Ordinary lyrics remain on the source clock. The optional **Lyrics with pitches**
-TXT projects its displayed start timestamps onto the output clock, alongside
+TXT/ODT exports project displayed start timestamps onto the output clock, alongside
 pitch output and supported word links. Original audio bytes are never retagged
 or transformed.
 

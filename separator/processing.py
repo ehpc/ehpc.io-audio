@@ -29,6 +29,8 @@ class ProcessingResult:
     # Primitives-only transport: old web workers can unpickle ProcessingResult
     # during GPU-first promotion without importing new nested analysis classes.
     pitch_json: str | None = None
+    # Private timeline reference, never an additional public download output.
+    pitch_vocals: bytes | None = None
 
 
 ANALYSIS_SCHEMA_VERSION = 2
@@ -262,4 +264,9 @@ def run_processing(
         audio={label: stems[label] for label in options.output_labels},
         transcript=transcript,
         pitch_json=pitch_json,
+        pitch_vocals=(
+            stems["vocals"].data
+            if options.detect_pitch and "vocals" not in options.output_labels
+            else None
+        ),
     )

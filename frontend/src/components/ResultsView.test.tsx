@@ -55,6 +55,7 @@ it("shows transposition and tempo while preserving server download names and the
     error_message: null,
     created_at: 1700000000,
     has_original: true,
+    has_pitch_vocals: false,
   };
   render(() => <ResultsView job={job} onReset={vi.fn()} />);
 
@@ -126,6 +127,7 @@ it("renders server song and custom mix names with the requested adjustments exac
     error_message: null,
     created_at: 1700000000,
     has_original: true,
+    has_pitch_vocals: false,
   };
 
   render(() => <ResultsView job={job} onReset={vi.fn()} />);

@@ -60,8 +60,14 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
     for (const segment of job!.transcript!.segments) {
       const seconds = Math.floor(segment.start_s / 1.25);
       const timestamp = `[${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}]`;
-      const lyricIndex = lines.findIndex((line, i) => i >= 2 && lines[i - 2] === timestamp && line.split(/\s+/).join(' ') === segment.text.split(/\s+/).join(' '));
-      expect(lyricIndex, `intact lyric line ${timestamp}`).toBeGreaterThanOrEqual(2);
+      const lyricIndex = lines.findIndex(line => line.startsWith(`${timestamp} `));
+      expect(lyricIndex, `lyric onset ${timestamp}`).toBeGreaterThanOrEqual(1);
+      const expected = segment.text.split(/\s+/);
+      const actual: string[] = [];
+      for (let row = lyricIndex; actual.length < expected.length && row < lines.length; row += 3) {
+        actual.push(...lines[row].slice(timestamp.length + 1).trim().split(/\s+/));
+      }
+      expect(actual).toEqual(expected);
     }
     const melismaIndex = analysis.words.findIndex((word, wordIndex) => analysis.tracks[index].notes.filter(note => note.word_indices.includes(wordIndex)).length >= 2
       && job!.transcript!.segments.some(segment => segment.start_s <= word.start_s * 1.25 && segment.end_s >= word.end_s * 1.25 && segment.text.split(/\s+/).filter(cell => cell.toLowerCase() === word.text.toLowerCase()).length === 1));
@@ -75,7 +81,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(proofs.some(proof => proof.stem === 'vocals')).toBe(true);
   await view.getByRole('combobox', { name: 'Pitched lyrics vocal stem', exact: true }).selectOption('vocals');
   await text.evaluate(element => {
-    const firstOnset = element.textContent!.split('\n').findIndex(line => /^\[\d+:\d{2}\]$/.test(line));
+    const firstOnset = element.textContent!.split('\n').findIndex(line => /^\[\d+:\d{2}\] /.test(line)) - 1;
     element.scrollTop = firstOnset * Number.parseFloat(getComputedStyle(element).lineHeight);
     element.scrollLeft = 0;
   });
@@ -113,17 +119,24 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(await mobileText.evaluate(element => ({ font: getComputedStyle(element).fontSize, wrap: getComputedStyle(element).whiteSpace }))).toEqual({ font: '16px', wrap: 'pre' });
   expect(await mobileText.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
   const firstRows = await mobileText.evaluate(element => {
-    const textNode = element.firstChild!;
     const content = element.textContent!;
-    const onset = content.match(/^\[\d+:\d{2}\]$/m)!;
-    const pitchStart = onset.index! + onset[0].length + 1;
-    const wordStart = content.indexOf('\n', pitchStart) + 1;
-    const pitch = document.createRange();
-    pitch.setStart(textNode, pitchStart);
-    pitch.setEnd(textNode, pitchStart + 1);
-    const word = document.createRange();
-    word.setStart(textNode, wordStart);
-    word.setEnd(textNode, wordStart + 1);
+    const onset = content.match(/^\[\d+:\d{2}\] /m)!;
+    const pitchStart = content.lastIndexOf('\n', onset.index! - 2) + 1 + onset[0].length;
+    const wordStart = onset.index! + onset[0].length;
+    const at = (offset: number) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && offset >= node.textContent!.length) {
+        offset -= node.textContent!.length;
+        node = walker.nextNode();
+      }
+      const range = document.createRange();
+      range.setStart(node!, offset);
+      range.setEnd(node!, offset + 1);
+      return range;
+    };
+    const pitch = at(pitchStart);
+    const word = at(wordStart);
     const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
     element.scrollTop = content.slice(0, onset.index).split('\n').length * lineHeight - lineHeight;
     element.scrollLeft = 0;

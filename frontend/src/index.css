@@ -247,8 +247,9 @@
 .pitch-alignment-notice { padding: 10px 12px; background: hsl(var(--muted)); border-left: 3px solid hsl(var(--primary)); font-size: 13px; line-height: 1.5; }
 .pitch-viewport { max-width: 100%; max-height: 560px; overflow: auto; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); }
 .pitch-viewport:focus-visible, .pitch-note:focus-visible rect { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.pitch-ruler:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: -2px; }
 .pitch-canvas { position: relative; min-width: 100%; }
-.pitch-ruler { position: sticky; top: 0; height: 32px; background: hsl(var(--muted)); z-index: 4; border-bottom: 1px solid hsl(var(--border)); font: 12px ui-monospace, monospace; }
+.pitch-ruler { position: sticky; top: 0; height: 32px; background: hsl(var(--muted)); z-index: 4; border-bottom: 1px solid hsl(var(--border)); font: 12px ui-monospace, monospace; cursor: pointer; user-select: none; }
 .pitch-ruler > span { position: absolute; top: 0; padding: 7px 3px; white-space: nowrap; }
 .pitch-ruler > .pitch-axis-corner { position: sticky; left: 0; display: block; width: 54px; height: 32px; background: hsl(var(--muted)); z-index: 5; }
 .pitch-notes { position: relative; }
@@ -269,6 +270,8 @@
 .pitch-word-selected { background: hsl(var(--accent)); border-color: hsl(var(--primary)); }
 .pitch-word-unlinked { border-style: dashed; color: hsl(var(--muted-foreground)); }
 .pitch-selection { min-height: 44px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.pitch-tooltip { position: fixed; z-index: 50; max-width: min(300px, calc(100vw - 16px)); padding: 6px 10px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--card)); color: hsl(var(--card-foreground)); box-shadow: 0 2px 8px #0003; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; pointer-events: none; }
+.pitch-tooltip-note { font-family: ui-monospace, monospace; font-weight: 700; }
 @media (max-width: 700px) {
   .pitch-controls { align-items: flex-start; }
   .pitch-controls > label:first-child { width: 100%; }

@@ -17,6 +17,7 @@ from backend.models import (
     download_filename,
     job_to_dto,
 )
+from backend.pitch_reference import persist_pitch_vocals
 from backend.source_cache import cached_download
 from backend.source_metadata import reference_metadata
 from separator.artifact_cache import async_locked, digest
@@ -195,6 +196,8 @@ async def _run_job(job: JobRecord) -> None:
             # Persisting applies pitch and tempo together once, as for each stem.
             result = {"song": StemResult(audio_bytes, 0.0), **result}
         manifest = await asyncio.to_thread(_persist_results, job, result)
+        if processed.pitch_vocals is not None:
+            await asyncio.to_thread(persist_pitch_vocals, job, processed.pitch_vocals)
         await asyncio.to_thread(
             db.mark_done, job.id, manifest, processed.transcript, processed.pitch_json
         )

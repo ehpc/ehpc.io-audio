@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { JobDTO } from '../src/api';
@@ -51,8 +52,6 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await expect(view).toBeVisible();
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[0].notes.length);
   await expect(view.locator('.pitch-note text').first()).toHaveText(analysis.tracks[0].notes[0].note);
-  await expect(view.getByText(/not re-measured after processing/)).toBeVisible();
-  await expect(view.getByText(/not exact syllable timing/)).toBeVisible();
   const acquaintanceIndex = analysis.words.findIndex(word => word.text.toLocaleLowerCase() === 'acquaintance');
   const noteIndex = analysis.tracks[0].notes.findIndex(note => note.word_indices.includes(acquaintanceIndex));
   const note = analysis.tracks[0].notes[noteIndex];
@@ -80,7 +79,12 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const linkedCount = analysis.tracks[0].notes.filter(item => item.word_indices.includes(wordIndex)).length;
   await expect(view.locator('.pitch-note-selected')).toHaveCount(linkedCount);
   await expect(view.locator('.pitch-selection')).toContainText(analysis.words[wordIndex].text);
+  const selectedBackgroundUrl = await player.getAttribute('src');
+  await expect(player).toHaveAttribute('src', `/api/jobs/${id}/results/vocals`);
   await view.getByLabel('Pitch vocal stem', { exact: true }).selectOption('lead');
+  await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
+  await expect(player).toHaveAttribute('src', selectedBackgroundUrl!);
+  await view.getByLabel('Pitch background audio', { exact: true }).selectOption('lead');
   await expect(player).toHaveAttribute('src', `/api/jobs/${id}/results/lead`);
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
@@ -125,7 +129,6 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
     fontSize: getComputedStyle(element.querySelector('text')!).fontSize,
   }));
   expect(shortGeometry.rectangle).toBeGreaterThanOrEqual(shortGeometry.label + 2);
-  expect(shortGeometry.fontSize).toBe('12px');
   const nearestTick = Math.round(shortNote.start_s * 4) / 4;
   const rulerLabel = `${Math.floor(nearestTick / 60)}:${(nearestTick % 60).toFixed(2).padStart(5, '0')}`;
   await scroll.scrollIntoViewIfNeeded();
@@ -145,8 +148,14 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await writeFile(info.outputPath('pitch-proof.json'), JSON.stringify({ source_sha256: SOURCE_SHA256, job, linked_word: { text: analysis.words[wordIndex].text, notes: linkedCount }, download_filename: download.suggestedFilename(), shortest_word_note: { note: shortNote, zoom_px_per_second: 640, geometry: shortGeometry, visible_ruler_label: rulerLabel }, screenshots: ['pitch-desktop.png', 'pitch-mobile.png', 'pitch-mobile-short-note-zoom.png'] }, null, 2));
 });
 
-test('pitch-only analysis retains the hidden full-vocal prerequisite without publishing a vocal download', async ({ page }) => {
+test('pitch-only analysis retains the hidden full-vocal prerequisite and recovers its cached private audio without reanalysis', async ({ page, browser }) => {
   test.setTimeout(25 * 60 * 1000);
+  let analysisPostCount = 0;
+  page.on('request', request => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/jobs') {
+      analysisPostCount += 1;
+    }
+  });
   const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-30s.flac'));
   await page.goto('/');
   await page.getByRole('button', { name: 'Upload audio', exact: true }).click();
@@ -168,8 +177,71 @@ test('pitch-only analysis retains the hidden full-vocal prerequisite without pub
   expect(job!.pitch!.word_alignment).toBeNull();
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(view.locator('audio')).toHaveAttribute('src', `/api/jobs/${id}/original`);
-  await expect(view.getByText('Original full song (unchanged, not isolated vocals)', { exact: true })).toBeVisible();
+  await expect(view.getByLabel('Pitch background audio', { exact: true })).toHaveValue('song');
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
   const original = await page.request.get(`/api/jobs/${id}/original`);
   expect(await original.body()).toEqual(source);
+  expect(analysisPostCount).toBe(1);
+  expect(job!.has_pitch_vocals).toBe(true);
+  const modalCallId = () => JSON.parse(execFileSync('uv', [
+    'run', 'python', '-c',
+    'import json,sqlite3,sys; db=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro", uri=True); print(json.dumps(db.execute("SELECT modal_call_id FROM jobs WHERE id=?", (int(sys.argv[2]),)).fetchone()[0]))',
+    resolve(process.env.E2E_DATA_DIR!, 'jobs.db'), String(id),
+  ], { cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8' })) as string | null;
+  const originalCallId = modalCallId();
+  expect(originalCallId).not.toBeNull();
+  const originalPitch = await (await page.request.get(`/api/jobs/${id}/pitch`)).json();
+  const privateReference = await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`);
+  expect(privateReference.status()).toBe(200);
+  expect(privateReference.headers()['content-type']).toContain('audio/mpeg');
+
+  await rm(resolve(
+    process.env.E2E_DATA_DIR!,
+    'results',
+    String(id),
+    '.pitch-vocals.mp3',
+  ));
+  expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
+  await page.reload();
+  const recoveredView = page.getByLabel('Vocal pitch analysis', { exact: true });
+  await expect(recoveredView).toBeVisible();
+  await expect(recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true })).toBeVisible();
+  await expect(recoveredView.locator('audio')).toHaveAttribute('src', `/api/jobs/${id}/original`);
+
+  const recovery = page.waitForResponse(response =>
+    response.url().endsWith(`/api/jobs/${id}/pitch-reference/vocals`)
+      && response.request().method() === 'POST',
+    { timeout: 120_000 },
+  );
+  await recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true }).click();
+  expect((await recovery).status()).toBe(204);
+  await expect(recoveredView.getByLabel('Pitch background audio', { exact: true })).toHaveValue('vocals');
+  expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(200);
+  const recoveredPlayer = recoveredView.locator('audio');
+  await expect(recoveredPlayer).toHaveAttribute('src', `/api/jobs/${id}/pitch-reference/vocals`);
+  await expect.poll(() => recoveredPlayer.evaluate(element => element.paused)).toBe(true);
+  await recoveredPlayer.evaluate(element => element.play());
+  await expect.poll(() => recoveredPlayer.evaluate(element =>
+    element.readyState >= 1
+      && element.duration > 20
+      && element.seekable.length > 0
+      && element.currentTime > 0.2,
+  )).toBe(true);
+  await recoveredPlayer.evaluate(element => element.pause());
+  await expect.poll(() => recoveredPlayer.evaluate(element => element.paused)).toBe(true);
+  await recoveredPlayer.evaluate(element => { element.currentTime = 1; });
+  await expect.poll(() => recoveredPlayer.evaluate(element => element.currentTime)).toBeGreaterThan(0.8);
+
+  const recoveredJob = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
+  expect(recoveredJob.id).toBe(id);
+  expect(recoveredJob.has_pitch_vocals).toBe(true);
+  expect(recoveredJob.pitch).toEqual(job!.pitch);
+  expect(await (await page.request.get(`/api/jobs/${id}/pitch`)).json()).toEqual(originalPitch);
+  expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
+  expect(analysisPostCount).toBe(1);
+  expect(modalCallId()).toBe(originalCallId);
+
+  const outsider = await browser.newPage();
+  expect((await outsider.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
+  await outsider.close();
 });

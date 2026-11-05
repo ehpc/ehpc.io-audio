@@ -1,4 +1,4 @@
-"""Word-cell pitch text; one renderer for browser, history and TXT downloads."""
+"""Shared word-cell layout for browser, history, TXT and OpenDocument exports."""
 
 import re
 import unicodedata
@@ -18,6 +18,52 @@ from separator.pitch import PitchAnalysis, PitchTrack
 class PitchedLyricsTrack:
     label: str
     text: str
+    wide_characters: str
+
+
+LINE_COLUMNS = 78
+
+
+@dataclass(frozen=True)
+class PitchedLyricsBlock:
+    text: str
+    pitch: str | None = None
+    continuation: bool = False
+
+
+def _word_pairs(
+    cells: list[str], pitches: list[str], prefix: str
+) -> list[PitchedLyricsBlock]:
+    indent = " " * display_width(prefix)
+    available = LINE_COLUMNS - display_width(prefix)
+    pairs: list[PitchedLyricsBlock] = []
+    words: list[str] = []
+    notes: list[str] = []
+    used = 0
+
+    def flush() -> None:
+        nonlocal used
+        if words:
+            pairs.append(
+                PitchedLyricsBlock(
+                    (prefix if not pairs else indent) + "  ".join(words).rstrip(),
+                    indent + "  ".join(notes).rstrip(),
+                    continuation=bool(pairs),
+                )
+            )
+            words.clear()
+            notes.clear()
+            used = 0
+
+    for word, pitch in zip(cells, pitches, strict=True):
+        width = max(display_width(word), display_width(pitch))
+        if used and used + 2 + width > available:
+            flush()
+        words.append(word + " " * (width - display_width(word)))
+        notes.append(pitch + " " * (width - display_width(pitch)))
+        used += width + (2 if used else 0)
+    flush()
+    return pairs
 
 
 def display_width(text: str) -> int:
@@ -89,15 +135,16 @@ def _unique_word_cells(cells: list[str], heard: list[str]) -> dict[int, int]:
     return links
 
 
-def pitched_lyrics_text(
+def pitched_lyrics_document(
     transcript: Transcript,
     analysis: PitchAnalysis,
     track: PitchTrack,
     *,
     title: str | None = None,
     output_key: str | None = None,
-) -> str:
+) -> list[PitchedLyricsBlock]:
     rate = analysis.tempo_percent / 100
+    rendered: list[list[PitchedLyricsBlock]] = []
 
     def render(line: LyricDisplayLine) -> str:
         cells = re.findall(r"\S+", _printable(line.text))
@@ -156,23 +203,15 @@ def pitched_lyrics_text(
                 if word_indices.intersection(note.word_indices)
             ]
             pitches.append(" ".join(labels) if labels else "?")
-        widths = [
-            max(display_width(word), display_width(pitch))
-            for word, pitch in zip(cells, pitches, strict=True)
-        ]
-
-        def row(values: list[str]) -> str:
-            return "  ".join(
-                value + " " * (width - display_width(value))
-                for value, width in zip(values, widths, strict=True)
-            ).rstrip()
-
+        # NUL cannot occur in printable word cells. Placeholders let the common
+        # transcript exporter retain sole ownership of metadata/section order.
         prefix = (
             format_timestamp(line.start_s / rate)
             if line.start_s is not None
             else line.prefix
         )
-        return f"[{prefix}]\n{row(pitches)}\n{row(cells)}\n\n"
+        rendered.append(_word_pairs(cells, pitches, f"[{prefix}] "))
+        return f"\0{len(rendered) - 1}\0"
 
     body = transcript_export_text(
         transcript,
@@ -185,7 +224,35 @@ def pitched_lyrics_text(
         transcript.reference is not None and transcript.reference.lines
     ):
         body += "[No lyrics recognized or aligned.]\n"
-    return body
+    blocks: list[PitchedLyricsBlock] = []
+    for index, part in enumerate(re.split(r"\0(\d+)\0", body)):
+        if index % 2:
+            blocks.extend(rendered[int(part)])
+        else:
+            blocks.extend(
+                PitchedLyricsBlock(_printable(line))
+                for line in part.splitlines()
+                if line.strip()
+            )
+    return blocks
+
+
+def pitched_lyrics_text(
+    transcript: Transcript,
+    analysis: PitchAnalysis,
+    track: PitchTrack,
+    *,
+    title: str | None = None,
+    output_key: str | None = None,
+) -> str:
+    return "".join(
+        f"{block.pitch}\n{block.text}\n\n"
+        if block.pitch is not None
+        else f"{block.text}\n"
+        for block in pitched_lyrics_document(
+            transcript, analysis, track, title=title, output_key=output_key
+        )
+    )
 
 
 def pitched_lyrics_tracks(
@@ -195,12 +262,13 @@ def pitched_lyrics_tracks(
     title: str | None = None,
     output_key: str | None = None,
 ) -> list[PitchedLyricsTrack]:
-    return [
-        PitchedLyricsTrack(
-            track.label,
-            pitched_lyrics_text(
-                transcript, analysis, track, title=title, output_key=output_key
-            ),
+    tracks = []
+    for track in analysis.tracks:
+        text = pitched_lyrics_text(
+            transcript, analysis, track, title=title, output_key=output_key
         )
-        for track in analysis.tracks
-    ]
+        # Font-fallback correction uses the very same Unicode width authority
+        # as text padding, rather than introducing browser-side Unicode tables.
+        wide = "".join(sorted(char for char in set(text) if display_width(char) == 2))
+        tracks.append(PitchedLyricsTrack(track.label, text, wide))
+    return tracks

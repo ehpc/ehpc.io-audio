@@ -252,6 +252,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
+        has_pitch_vocals: false,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Submission failed.");

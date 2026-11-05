@@ -78,6 +78,8 @@ export interface CanonicalWordPositionDTO {
 export interface PitchedLyricsTrackDTO {
   label: string;
   text: string;
+  /** Unique two-column codepoints from the server's shared Unicode width rules. */
+  wide_characters: string;
 }
 
 export interface AlignedWordDTO {
@@ -201,6 +203,8 @@ export interface JobDTO {
   /** Absent in historical API payloads predating vocal pitch analysis. */
   pitch?: PitchAnalysisDTO | null;
   pitched_lyrics?: PitchedLyricsTrackDTO[] | null;
+  /** Actual persisted full-vocal reference availability. */
+  has_pitch_vocals: boolean;
   error_message: string | null;
   created_at: number;
   has_original: boolean;
@@ -455,8 +459,17 @@ export function pitchDownloadUrl(id: number): string {
   return `${API_BASE}/jobs/${id}/pitch`;
 }
 
-export function pitchedLyricsDownloadUrl(id: number, label: string): string {
-  return `${API_BASE}/jobs/${id}/pitched-lyrics/${encodeURIComponent(label)}/download`;
+export function pitchVocalsUrl(id: number): string {
+  return `${API_BASE}/jobs/${id}/pitch-reference/vocals`;
+}
+
+export async function recoverPitchVocals(id: number): Promise<void> {
+  const response = await fetch(pitchVocalsUrl(id), { method: "POST", credentials: "include" });
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+export function pitchedLyricsDownloadUrl(id: number, label: string, format: "txt" | "odt" = "txt"): string {
+  return `${API_BASE}/jobs/${id}/pitched-lyrics/${encodeURIComponent(label)}/download${format === "odt" ? "?format=odt" : ""}`;
 }
 
 export function resultUrl(id: number, label: string): string {

@@ -44,6 +44,10 @@ def spawn_with_lyrics(
     )
 
 
+async def cached_pitch_vocals(audio_bytes: bytes) -> bytes | None:
+    return await _get_function("recover_pitch_vocals").remote.aio(audio_bytes)
+
+
 async def spawn_song_search(query: str) -> str:
     call = await _get_function("search_song").spawn.aio(query)
     return call.object_id
