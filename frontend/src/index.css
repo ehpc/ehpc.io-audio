@@ -237,6 +237,7 @@
 .pitch-view { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .pitch-heading, .pitch-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .pitch-controls label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.pitch-controls > label { min-width: 0; max-width: 100%; }
 .pitch-controls select { min-height: 44px; max-width: 100%; padding: 8px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--background)); }
 .pitch-zoom { display: flex; align-items: center; gap: 12px; }
 .pitch-zoom button { width: 44px; min-height: 44px; font-size: 22px; }

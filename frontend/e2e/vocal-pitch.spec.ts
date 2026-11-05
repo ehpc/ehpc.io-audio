@@ -105,6 +105,9 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await mobilePage.goto(process.env.E2E_BASE_URL!);
   const mobileView = mobilePage.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(mobileView).toBeVisible();
+  // Compare against the configured device width, not an overflow-expanded innerWidth.
+  expect(await mobilePage.evaluate(() => window.innerWidth)).toBe(mobilePage.viewportSize()!.width);
+  expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobilePage.viewportSize()!.width);
   const scroll = mobileView.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
   expect(await scroll.evaluate(element => element.scrollWidth > element.clientWidth * 10)).toBe(true);
   await scroll.evaluate(element => { element.scrollLeft = 1000; });
@@ -112,10 +115,11 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const widthBefore = await mobileView.locator('.pitch-canvas').evaluate(element => element.clientWidth);
   await mobileView.getByRole('button', { name: 'Zoom in melody' }).click();
   expect(await mobileView.locator('.pitch-canvas').evaluate(element => element.clientWidth)).toBeGreaterThan(widthBefore);
-  expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobilePage.viewportSize()!.width);
   await mobileView.screenshot({ path: info.outputPath('pitch-mobile.png') });
   await mobileView.getByRole('slider', { name: 'Melody zoom', exact: true }).press('End');
   await expect(mobileView.getByRole('slider', { name: 'Melody zoom', exact: true })).toHaveValue('640');
+  expect(await mobilePage.evaluate(() => window.innerWidth)).toBe(mobilePage.viewportSize()!.width);
   const shortestIndex = analysis.tracks[0].notes.reduce((best, item, index, all) =>
     item.word_indices.includes(acquaintanceIndex) && item.end_s - item.start_s < all[best].end_s - all[best].start_s ? index : best, noteIndex);
   const shortNote = analysis.tracks[0].notes[shortestIndex];
@@ -133,7 +137,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const rulerLabel = `${Math.floor(nearestTick / 60)}:${(nearestTick % 60).toFixed(2).padStart(5, '0')}`;
   await scroll.scrollIntoViewIfNeeded();
   await expect(mobileView.locator('.pitch-ruler').getByText(rulerLabel, { exact: true })).toBeInViewport();
-  expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobilePage.viewportSize()!.width);
   await mobileView.screenshot({ path: info.outputPath('pitch-mobile-short-note-zoom.png') });
   await mobilePage.reload();
   await expect(mobilePage.getByLabel('Vocal pitch analysis', { exact: true })).toBeVisible();

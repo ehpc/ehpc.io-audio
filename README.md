@@ -517,6 +517,7 @@ explicitly. The initial reference retains the matching exported stem when one
 exists. Switching backgrounds preserves the current output-clock position,
 maps it to the new source's clock, and stops the old source without autoplay.
 Selecting another history job resets its playback and reference state.
+Source-picker rows shrink within mobile cards, so long transformed-stem labels cannot widen the device viewport or displace note tap targets.
 
 New pitch-timeline jobs retain their already-computed full-vocal prerequisite
 as a private listening reference even when **Extract vocals** was not selected.
@@ -1053,7 +1054,7 @@ using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
 Updating Playwright requires updating the Docker image version/digest and reviewing
 all regenerated baselines together.
 
-The **25 visual cases** compare committed PNGs in
+The **25 screenshot cases** compare committed PNGs in
 `frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
 screens, two 1440px/2560px desktop workspaces, eight tightly cropped focused
 pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
@@ -1064,6 +1065,7 @@ synthetic pitched-lyrics typography views covering Unicode word cells,
 repeated-note melisma and explicitly untimed lines (390px/1440px), two mix
 builder/review cases, and four song-discovery pending/selected cases
 (390px/1440px). These complement, not replace, the **66 functional cases**.
+Two additional desktop/mobile geometry cases exercise long transformed-source choices and short notes beside the sticky ruler/word lanes at maximum zoom, using a small purpose-built fixture without inference.
 The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
 

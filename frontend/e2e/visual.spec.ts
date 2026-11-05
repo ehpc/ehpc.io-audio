@@ -206,7 +206,9 @@ value=json.load(sys.stdin)
 job=db.get_job(int(sys.argv[1]))
 assert job is not None
 source=(config.UPLOADS_DIR / str(job.id) / job.source_value).read_bytes()
-manifest=_persist_results(job,dict(song=StemResult(source,0)))
+assert config.QUEUE_CONCURRENCY == 0
+# Geometry fixtures reuse the original recording for each player, not inference.
+manifest=_persist_results(job,{label:StemResult(source,0) for label in value.get('playback_labels',['song'])})
 db.mark_done(job.id,manifest,transcript_from_json(json.dumps(value['transcript'])),
     pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 `;
@@ -388,5 +390,96 @@ for (const viewport of [mobile, desktop]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.evaluate(() => document.fonts.ready);
     await compare(view, info, `pitched-lyrics-${viewport.width}-word-cells.png`);
+  });
+}
+
+for (const viewport of [mobile, desktop]) {
+  test.describe(`full-range pitch controls ${viewport.width}`, () => {
+    test.use({ viewport, isMobile: viewport.width <= 700, hasTouch: viewport.width <= 700 });
+    test('keeps transformed source choices within the device and notes tappable beside sticky lanes', async ({ page }, info) => {
+      await page.goto('/');
+      const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
+      const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8'));
+      // Purpose-built geometry: the failing full-song range, 64ms note and long
+      // timeline, with every transformed reference choice. This is not inference.
+      const geometryNotes = [
+        { start_s: 1, end_s: 1.1, midi: 36, word_indices: [] },
+        { start_s: 13.476, end_s: 13.54, midi: 57, word_indices: [0] },
+        { start_s: 100, end_s: 100.1, midi: 73, word_indices: [] },
+      ].map(note => ({ ...note, frequency_hz: 440 * 2 ** ((note.midi - 69) / 12), confidence: 0.9 }));
+      fixture.pitch.tracks = ['vocals', 'lead', 'backing'].map(label => ({ label, notes: label === 'vocals' ? geometryNotes : [] }));
+      fixture.pitch.words = [fixture.pitch.words.find((word: { text: string }) => word.text === 'acquaintance')];
+      fixture.playback_labels = ['song', 'vocals', 'lead', 'backing'];
+      const response = await page.request.post('/api/jobs', { multipart: {
+        file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+        detect_pitch: 'true', extract_vocals: 'true', extract_lyrics: 'true', lead_backing: 'true',
+        pitch_semitones: '1.25', tempo_percent: '125',
+      } });
+      expect(response.ok()).toBe(true);
+      const id = (await response.json()).id as number;
+      execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
+        cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(fixture),
+        env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+      await page.reload();
+      const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+      await expect(view).toBeVisible();
+      const assertDeviceWidth = async () => {
+        expect(await page.evaluate(() => innerWidth)).toBe(viewport.width);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+        const bounds = await view.getByLabel('Pitch background audio', { exact: true }).boundingBox();
+        expect(bounds!.x).toBeGreaterThanOrEqual(0);
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
+      };
+      await assertDeviceWidth();
+      await expect(view.getByLabel('Pitch background audio', { exact: true }).locator('option')).toHaveText([
+        'Full song', 'Just vocals', 'lead (pitch +1.25 st, tempo 125%)', 'backing (pitch +1.25 st, tempo 125%)',
+      ]);
+      const scroll = view.locator('.pitch-viewport');
+      await scroll.evaluate(element => { element.scrollLeft = 1000; });
+      await view.getByRole('slider', { name: 'Melody zoom', exact: true }).press('End');
+      await assertDeviceWidth();
+      await expect(view.locator('.pitch-svg')).toHaveAttribute('height', '1008');
+      expect(Number(await view.locator('.pitch-svg').getAttribute('width'))).toBeGreaterThan(70_000);
+      const note = view.locator('.pitch-note[data-note="A3"]');
+      await note.scrollIntoViewIfNeeded();
+      await note.click();
+      await expect(view.locator('.pitch-selection')).toContainText('A3');
+      // Expose the whole scrollport before placing notes at its two edges.
+      await scroll.scrollIntoViewIfNeeded();
+      for (const boundary of ['ruler', 'words']) {
+        await note.evaluate((element, edge) => {
+          const scroller = element.closest('.pitch-viewport')!;
+          const bounds = element.getBoundingClientRect();
+          const lane = scroller.querySelector(`.pitch-${edge}`)!.getBoundingClientRect();
+          scroller.scrollTop += edge === 'ruler' ? bounds.top - lane.bottom - 4 : bounds.bottom - lane.top + 4;
+        }, boundary);
+        const geometry = await note.evaluate(element => {
+          const box = element.getBoundingClientRect();
+          const scroller = element.closest('.pitch-viewport')!;
+          return {
+            top: box.top, bottom: box.bottom,
+            rulerBottom: scroller.querySelector('.pitch-ruler')!.getBoundingClientRect().bottom,
+            wordsTop: scroller.querySelector('.pitch-words')!.getBoundingClientRect().top,
+            hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest('.pitch-note') === element,
+          };
+        });
+        expect(geometry.top).toBeGreaterThanOrEqual(geometry.rulerBottom);
+        expect(geometry.bottom).toBeLessThanOrEqual(geometry.wordsTop);
+        expect(geometry.top).toBeGreaterThanOrEqual(0);
+        expect(geometry.bottom).toBeLessThanOrEqual(viewport.height);
+        expect(geometry.hit).toBe(true);
+        if (viewport.width <= 700) await note.tap();
+        else await note.click();
+        await expect(view.locator('.pitch-selection')).toContainText('A3');
+        await assertDeviceWidth();
+        await writeFile(info.outputPath(`${boundary}-geometry.json`), JSON.stringify(geometry));
+      }
+      await view.locator('.pitch-word').click();
+      await expect(view.locator('.pitch-selection')).toContainText('acquaintance');
+      await view.getByRole('slider', { name: 'Pitch timeline position' }).press('Home');
+      await expect(view.getByRole('slider', { name: 'Pitch timeline position' })).toHaveAttribute('aria-valuenow', '0');
+      await page.screenshot({ path: info.outputPath('responsive-controls.png') });
+    });
   });
 }
