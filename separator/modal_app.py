@@ -1,9 +1,9 @@
 """
 Modal app definition for GPU-accelerated vocal/instrument separation.
 
-Deploy with `modal deploy separator/modal_app.py`; the backend looks up the
-deployed `separate` function by name (see backend/modal_client.py) rather
-than importing this module directly.
+Deploy with `modal deploy --env ehpc-audio separator/modal_app.py`.
+The backend looks up deployed functions by name and explicit environment
+(see backend/modal_client.py), rather than importing this module directly.
 """
 
 import tempfile
@@ -20,7 +20,8 @@ from separator.stems import SeparationResult, run_separation
 
 app = modal.App("audio-separator-v2")
 
-model_volume = modal.Volume.from_name("audio-separator-models", create_if_missing=True)
+MODEL_VOLUME_NAME = "audio-separator-models"
+model_volume = modal.Volume.from_name(MODEL_VOLUME_NAME, create_if_missing=True)
 MODEL_CACHE = "/model-cache"
 # Per-stem output cache, keyed by sha256(input) + model filename. audio-separator is
 # deterministic given input + model, so cached output directories can be reused
@@ -109,7 +110,6 @@ song_search_volume = modal.Volume.from_name(
     secrets=[
         modal.Secret.from_name(
             "audio-openrouter",
-            environment_name="ehpc-audio",
             required_keys=["OPENROUTER_API_KEY"],
         )
     ],

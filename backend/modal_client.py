@@ -14,7 +14,9 @@ LYRICS_FUNCTION_NAME = "separate_with_lyrics"
 
 @cache
 def _get_function(name: str) -> modal.Function:
-    return modal.Function.from_name(config.MODAL_APP_NAME, name)
+    return modal.Function.from_name(
+        config.MODAL_APP_NAME, name, environment_name=config.MODAL_ENVIRONMENT
+    )
 
 
 def spawn(

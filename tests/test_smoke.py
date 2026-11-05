@@ -127,7 +127,9 @@ def test_deployed_container_can_import_separator_package() -> None:
     # with `ModuleNotFoundError: No module named 'separator'` until the image
     # included the package. If healthcheck returns, the container imported it.
     # Opt-in (marker `smoke`); needs Modal auth + a prior `make deploy-modal`.
-    fn = modal.Function.from_name(config.MODAL_APP_NAME, "healthcheck")
+    fn = modal.Function.from_name(
+        config.MODAL_APP_NAME, "healthcheck", environment_name=config.MODAL_ENVIRONMENT
+    )
     assert fn.remote() == "ok"
 
 
@@ -166,7 +168,11 @@ def test_deployed_function_separates_audio(
     The browser suite additionally exercises the HTTP/queue/native boundaries.
     Version-matching artifacts are reusable; this test never bypasses the cache.
     """
-    fn = modal.Function.from_name(config.MODAL_APP_NAME, config.MODAL_FUNCTION_NAME)
+    fn = modal.Function.from_name(
+        config.MODAL_APP_NAME,
+        config.MODAL_FUNCTION_NAME,
+        environment_name=config.MODAL_ENVIRONMENT,
+    )
     result: SeparationResult = fn.remote(
         voiced_wav,
         "smoke-voiced-music.wav",

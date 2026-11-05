@@ -10,6 +10,8 @@ import pytest
 from audio_samples import tone_wav
 from cache_rpc import isolated_cache
 
+from backend import config
+
 pytestmark = pytest.mark.smoke
 
 
@@ -20,7 +22,7 @@ def test_private_volume_commit_reload_and_cancelled_waiter(tmp_path):
         .apt_install("ffmpeg")
         .add_local_python_source("separator", "cache_rpc")
     )
-    with modal.Volume.ephemeral() as volume:
+    with modal.Volume.ephemeral(environment_name=config.MODAL_ENVIRONMENT) as volume:
         functions = [
             app.function(
                 image=image,
@@ -30,7 +32,7 @@ def test_private_volume_commit_reload_and_cancelled_waiter(tmp_path):
             )(isolated_cache)
             for phase in ("fresh", "restart", "version", "repeat")
         ]
-        with modal.enable_output(), app.run():
+        with modal.enable_output(), app.run(environment_name=config.MODAL_ENVIRONMENT):
             evidence = [
                 json.loads(
                     function.remote(volume, tone_wav((440,), 0.5), version, prohibit)

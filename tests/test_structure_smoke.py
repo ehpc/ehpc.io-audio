@@ -15,6 +15,7 @@ import modal
 import pytest
 from lyrics_fixture import full_sung_song
 
+from backend import config
 from separator.lyrics import transcript_from_json, transcript_text
 from separator.modal_app import ASR_PYTHON, GPU, STRUCTURE_PYTHON, TIMEOUT, image
 
@@ -25,7 +26,9 @@ def test_owned_noncommercial_full_song_structure_and_short_tail() -> None:
     source = full_sung_song()
     app = modal.App("lyrics-structure-noncommercial-smoke")
     volume = modal.Volume.from_name(
-        "lyrics-structure-noncommercial-models", create_if_missing=True
+        "lyrics-structure-noncommercial-models",
+        environment_name=config.MODAL_ENVIRONMENT,
+        create_if_missing=True,
     )
     script = f"""
 import json
@@ -58,7 +61,7 @@ print('STRUCTURE_REAL_RESULT ' + json.dumps(dict(
     short_tail=json.loads(Path('/tmp/short-tail.json').read_text()),
 )))
 """
-    with app.run():
+    with app.run(environment_name=config.MODAL_ENVIRONMENT):
         sandbox = modal.Sandbox.create(
             "sleep",
             str(TIMEOUT * 2),

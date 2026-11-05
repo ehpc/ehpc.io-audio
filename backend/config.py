@@ -14,6 +14,7 @@ MODAL_CALL_POLL_TIMEOUT_S = float(os.environ.get("MODAL_CALL_POLL_TIMEOUT_S", "5
 DOWNLOAD_MAX_ATTEMPTS = int(os.environ.get("DOWNLOAD_MAX_ATTEMPTS", "3"))
 DOWNLOAD_RETRY_BACKOFF_S = float(os.environ.get("DOWNLOAD_RETRY_BACKOFF_S", "10"))
 
+MODAL_ENVIRONMENT = os.environ.get("MODAL_ENVIRONMENT", "").strip() or "ehpc-audio"
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "audio-separator-v2")
 MODAL_FUNCTION_NAME = os.environ.get("MODAL_FUNCTION_NAME", "separate")
 

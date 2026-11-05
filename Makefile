@@ -6,6 +6,10 @@ SHELL := $(shell which bash)
 UV_PROJECT_ENVIRONMENT ?= $(HOME)/.cache/vocals-tools/venv
 export UV_PROJECT_ENVIRONMENT
 
+# Keep SDK lookups and CLI deployment in the same explicit environment.
+MODAL_ENVIRONMENT ?= ehpc-audio
+export MODAL_ENVIRONMENT
+
 .PHONY: init lint test test-frontend test-e2e smoke dev deploy-modal update-yt-dlp dropbox-ignore
 
 init:
@@ -51,4 +55,5 @@ dev:
 	wait
 
 deploy-modal:
-	uv run modal deploy separator/modal_app.py
+	test -n "$(MODAL_ENVIRONMENT)"
+	uv run modal deploy separator/modal_app.py --env "$(MODAL_ENVIRONMENT)"

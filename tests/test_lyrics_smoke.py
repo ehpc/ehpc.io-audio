@@ -15,14 +15,17 @@ from separator.modal_app import (
     ASR_PYTHON,
     GPU,
     MODEL_CACHE,
+    MODEL_VOLUME_NAME,
     TIMEOUT,
     image,
-    model_volume,
 )
 from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
 from separator.processing import ProcessingResult
 
 pytestmark = [pytest.mark.smoke, pytest.mark.timeout(TIMEOUT + 300)]
+model_volume = modal.Volume.from_name(
+    MODEL_VOLUME_NAME, environment_name=config.MODAL_ENVIRONMENT
+)
 
 
 def test_deployed_lyrics_recognizes_reference_speech() -> None:
@@ -46,7 +49,11 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
             ).stdout
         )["format"]["duration"]
     )
-    function = modal.Function.from_name(config.MODAL_APP_NAME, LYRICS_FUNCTION_NAME)
+    function = modal.Function.from_name(
+        config.MODAL_APP_NAME,
+        LYRICS_FUNCTION_NAME,
+        environment_name=config.MODAL_ENVIRONMENT,
+    )
     result: ProcessingResult = function.remote(
         source,
         "jfk-reference.flac",
@@ -85,7 +92,11 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
 
 
 def test_deployed_lyrics_retains_later_sung_verse() -> None:
-    function = modal.Function.from_name(config.MODAL_APP_NAME, LYRICS_FUNCTION_NAME)
+    function = modal.Function.from_name(
+        config.MODAL_APP_NAME,
+        LYRICS_FUNCTION_NAME,
+        environment_name=config.MODAL_ENVIRONMENT,
+    )
     result: ProcessingResult = function.remote(
         sung_excerpt(),
         "public-domain-singing.flac",
@@ -151,7 +162,9 @@ print(json.dumps(dict(
         "python",
         "-c",
         script,
-        app=modal.App.lookup(config.MODAL_APP_NAME),
+        app=modal.App.lookup(
+            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
+        ),
         image=image,
         gpu=GPU,
         volumes={MODEL_CACHE: model_volume},
@@ -180,7 +193,9 @@ def test_gpu_asr_preserves_language_and_clock_after_long_silent_intro() -> None:
     sandbox = modal.Sandbox.create(
         "sleep",
         str(TIMEOUT),
-        app=modal.App.lookup(config.MODAL_APP_NAME),
+        app=modal.App.lookup(
+            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
+        ),
         image=image,
         gpu=GPU,
         volumes={MODEL_CACHE: model_volume},

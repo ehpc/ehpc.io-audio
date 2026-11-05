@@ -31,7 +31,10 @@ visitor sees their live position.
 - **`separator/`** — pure domain logic (stem-model configs, the actual
   separation pipeline, URL download, and CPU audio analysis/postprocessing)
   plus `modal_app.py`, which defines Modal GPU functions for separation and
-  optional lyric/pitch analysis. It owns the CUDA images and GPU-only dependencies.
+  optional lyric/pitch analysis, and CPU song discovery. All four functions
+  (`healthcheck`, `separate`, `separate_with_lyrics`, `search_song`) live in
+  `ehpc` workspace / `ehpc-audio` environment / `audio-separator-v2` app.
+  It owns the CUDA images and GPU-only dependencies.
 - **`backend/`** — the always-on FastAPI app. It downloads/reads the source and
   detects its key with libkeyfinder. Download-only jobs and whole-song pitch/tempo
   changes run locally, without calling Modal.
@@ -56,8 +59,8 @@ visitor sees their live position.
 ### Persistent artifact reuse
 
 Reusable work is never bypassed by a request flag (`no_cache` was removed in
-options schema 3). The production application namespace remains
-`audio-separator-v2`. Independent producer versions live in
+options schema 3). The production app name remains `audio-separator-v2`;
+its environment is `ehpc-audio`. Independent producer versions live in
 `separator/cache_versions.py`; changing UI, documentation, a mix name, pitch, or
 tempo does not invalidate recognition, alignment, source pitch, or raw stems.
 Relevant native executable/package revisions and model identities participate
@@ -146,8 +149,8 @@ retries, alternate-model fallbacks or local text-model loaders.
 Before deployment, create the dedicated **`audio-openrouter` Modal Secret** in
 the **`ehpc-audio` environment** of the existing `ehpc` workspace using the
 [Modal Dashboard](https://modal.com/secrets), containing **`OPENROUTER_API_KEY`**
-from the application's authorized OpenRouter account. The existing app stays
-in `main`; the search function explicitly references this cross-environment secret.
+from the application's authorized OpenRouter account. The app, its volumes,
+and this secret resolve in the same `ehpc-audio` deployment environment.
 Never paste the key into chat, commit it, or reuse coding-assistant credentials.
 The secret is attached only to the search function; no web-container/provider
 key or frontend configuration is needed. Account credits and provider access
@@ -681,9 +684,10 @@ credentials configured:
 ```sh
 npm --prefix frontend ci
 npx --prefix frontend playwright install --with-deps chromium
+export MODAL_ENVIRONMENT=ehpc-audio
 export E2E_MODAL_APP_NAME="audio-separator-e2e-$(date +%s)"
-trap 'uv run modal app stop -y "$E2E_MODAL_APP_NAME" || true' EXIT
-uv run modal deploy separator/modal_app.py --name "$E2E_MODAL_APP_NAME"
+trap 'uv run modal app stop --env "$MODAL_ENVIRONMENT" -y "$E2E_MODAL_APP_NAME" || true' EXIT
+uv run modal deploy --env "$MODAL_ENVIRONMENT" separator/modal_app.py --name "$E2E_MODAL_APP_NAME"
 MODAL_APP_NAME="$E2E_MODAL_APP_NAME" make smoke
 make test-e2e
 ```
@@ -1039,6 +1043,7 @@ recordings are included or fetched.
 |---|---|---|
 | `DATA_DIR` | `/data` | Root for the sqlite DB, uploads, and results |
 | `QUEUE_CONCURRENCY` | `1` | Max separations running on Modal at once |
+| `MODAL_ENVIRONMENT` | `ehpc-audio` | Explicit environment for every backend RPC lookup; a nonblank value overrides the default, while missing/blank/whitespace values use the default, never an ambient profile's `main` |
 | `MODAL_APP_NAME` | `audio-separator-v2` | Deployed Modal app name to look up |
 | `MODAL_FUNCTION_NAME` | `separate` | Deployed Modal function name to look up |
 | `COOKIE_SECRET` | *(insecure dev default)* | Signs the session cookie — **must** be set to a stable secret in prod; rotating it logs everyone out |
@@ -1053,29 +1058,46 @@ recordings are included or fetched.
    docker push ghcr.io/ehpc/ehpc.io-audio:prod
    ```
 
-2. **Deploy the updated Modal GPU function before releasing matching backend/UI
+2. **Deploy the updated Modal app before releasing matching backend/UI
    changes** from a machine with Modal credentials:
 
    ```sh
    make deploy-modal
    ```
 
-   This release uses the versioned **`audio-separator-v2`** app for options
-   protocol 2. CI promotion and `make deploy-modal` target that namespace, not
-   the existing `audio-separator` deployment. Old web instances continue using
-   the old app while the new GPU app is validated; releasing the matching web
-   image switches its default lookup to v2. Do not override the new backend to
-   the old app, replace the old app in place, or stop it while old web jobs need
-   it. No runtime old-option aliases are provided. Lyrics/pitch analysis transport
-   remains independently versioned at schema 2 and its data shape is unchanged.
-   Back up the database and drain old web jobs before the web cutover; stored
-   options migrate once, while completed manifests/audio/analysis stay intact.
-   A web rollback requires the matching pre-migration database backup.
+   CI promotion and `make deploy-modal` deploy **`audio-separator-v2`** into
+   **`ehpc-audio`**. The backend passes its configured environment explicitly
+   on every named function lookup, independently of the active Modal profile.
+   `MODAL_ENVIRONMENT` also scopes CLI commands and isolated SDK smoke tests;
+   the browser harness inherits it without a second default. App resource
+   declarations resolve volumes and `audio-openrouter` in the deployment's
+   environment. An explicit environment override must contain the corresponding
+   app, volumes and secret; there is no fallback to `main`.
+
+   For the namespace-only move from `main`, first preserve/copy both
+   `audio-separator-models` and `audio-song-discovery` into `ehpc-audio` and
+   verify the transferred files before promoting workers or web clients.
+   Also preserve/copy `lyrics-structure-noncommercial-models` before target CI:
+   this is a **test-only CI model cache**, not another production feature
+   deployment, and retaining it avoids downloading its roughly 12.7 GB again.
+   Retain the source volumes as well; the protected legacy app shares the
+   source model cache.
+   Keep volume names, mount paths, model/artifact bytes and producer keys
+   unchanged: an environment move is not an algorithm change and must not
+   silently replace validated caches with empty volumes. Verify target health
+   and cache reuse before switching the web image. Preserve its `/data`
+   database/uploads/results and stable session secret; no database migration,
+   job/options rewrite or cache-version bump is required for this move.
+   Keep **`main/audio-separator-v2`** operational until existing jobs drain
+   and migrated web clients are verified; only then retire that old instance.
+   The unrelated legacy **`main/audio-separator`** app is protected and is
+   never part of this migration. Options remain schema 3 and lyrics/pitch
+   transport remains independently schema 2.
 
    Redeploy the matching v2 worker after changes to `separator/stems.py`,
    `separator/options.py`, or the Modal image. The GPU runtime uses Python 3.13,
    CUDA 12.6.3/cuDNN on Ubuntu 24.04, FFmpeg 6+, `audio-separator[gpu]==0.44.1`
-   and `librosa==0.11.0`. New audio RPC calls supply `options_schema=2`;
+   and `librosa==0.11.0`. New audio RPC calls supply `options_schema=3`;
    incompatible versions fail explicitly. Use the ephemeral mixer smoke above
    for verification without overwriting either production deployment.
 

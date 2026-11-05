@@ -18,12 +18,15 @@ from separator.modal_app import (
     ASR_PYTHON,
     GPU,
     MODEL_CACHE,
+    MODEL_VOLUME_NAME,
     TIMEOUT,
     image,
-    model_volume,
 )
 
 pytestmark = [pytest.mark.smoke, pytest.mark.timeout(TIMEOUT + 300)]
+model_volume = modal.Volume.from_name(
+    MODEL_VOLUME_NAME, environment_name=config.MODAL_ENVIRONMENT
+)
 
 
 def test_real_reference_repeats_wrong_variant_and_genuinely_omitted_verse() -> None:
@@ -114,7 +117,9 @@ print('REAL_REFERENCE_NEGATIVE_CONTROLS_PASS')
     sandbox = modal.Sandbox.create(
         "sleep",
         str(TIMEOUT),
-        app=modal.App.lookup(config.MODAL_APP_NAME),
+        app=modal.App.lookup(
+            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
+        ),
         image=image,
         gpu=GPU,
         volumes={MODEL_CACHE: model_volume},

@@ -67,14 +67,17 @@ def test_ephemeral_gpu_queue_delivers_arbitrary_mixes(
     evidence.mkdir(parents=True, exist_ok=True)
     name = f"stem-mixer-proof-{uuid.uuid4().hex[:12]}"
     remote_app = modal.App(name)
-    with modal.Volume.ephemeral() as volume:
+    with modal.Volume.ephemeral(environment_name=config.MODAL_ENVIRONMENT) as volume:
         function = remote_app.function(
             image=image.add_local_python_source("mixer_rpc"),
             gpu=GPU,
             timeout=TIMEOUT,
             volumes={"/private-models": volume},
         )(isolated_separate)
-        with modal.enable_output(), remote_app.run():
+        with (
+            modal.enable_output(),
+            remote_app.run(environment_name=config.MODAL_ENVIRONMENT),
+        ):
             monkeypatch.setattr(modal_client, "_get_function", lambda name: function)
             monkeypatch.setattr(config, "QUEUE_CONCURRENCY", 1)
             monkeypatch.setattr(config, "QUEUE_POLL_INTERVAL_S", 0.1)

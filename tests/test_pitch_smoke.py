@@ -26,7 +26,9 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
     source = full_sung_song()
     started = time.monotonic()
     result: ProcessingResult = modal.Function.from_name(
-        config.MODAL_APP_NAME, LYRICS_FUNCTION_NAME
+        config.MODAL_APP_NAME,
+        LYRICS_FUNCTION_NAME,
+        environment_name=config.MODAL_ENVIRONMENT,
     ).remote(
         source,
         "auld-lang-syne-full.ogg",
@@ -154,7 +156,9 @@ print('PITCH_CALIBRATED ' + json.dumps(dict(
         "python",
         "-c",
         script,
-        app=modal.App.lookup(config.MODAL_APP_NAME),
+        app=modal.App.lookup(
+            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
+        ),
         image=image,
         gpu=GPU,
         timeout=300,
