@@ -23,6 +23,7 @@ type CatalogSearch = Callable[[str], CatalogCandidates]
 QUERY_MAX_LENGTH = 500  # A spoken paragraph, not lyrics/documents; bounds model input.
 CANDIDATE_LIMIT = 8
 SEARCH_TTL = 900
+SEARCH_RESULT_TTL = 86400
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -40,6 +41,19 @@ def normalize_query(query: str) -> str:
     if not query:
         raise ValueError("Enter an artist, song title, or lyric clue.")
     return query
+
+
+def _producer_identity() -> tuple[str, ...]:
+    return (
+        cache_versions.SONG_SEARCH,
+        cache_versions.SONG_MODEL,
+        OPENROUTER_URL,
+        cache_versions.package_revision("requests"),
+    )
+
+
+def query_cache_key(query: str) -> str:
+    return cache_key(*_producer_identity(), normalize_query(query))
 
 
 def _object(text: str) -> dict[str, Any]:
@@ -229,13 +243,7 @@ def discover(
     query = normalize_query(query)
 
     def inference(messages, validate):
-        key = cache_key(
-            cache_versions.SONG_SEARCH,
-            cache_versions.SONG_MODEL,
-            OPENROUTER_URL,
-            cache_versions.package_revision("requests"),
-            messages,
-        )
+        key = cache_key(*_producer_identity(), messages)
 
         def produce():
             text = complete(messages)

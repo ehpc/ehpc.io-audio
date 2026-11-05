@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -194,8 +195,8 @@ def remote(monkeypatch):
     return state
 
 
-def start(client):
-    response = client.post("/api/song-search", json={"query": "  Desired\nsong  "})
+def start(client, query="  Desired\nsong  "):
+    response = client.post("/api/song-search", json={"query": query})
     assert response.status_code == 202, response.text
     assert response.json()["status"] == "pending"
     return "/api/song-search/" + response.json()["search_id"]
@@ -314,3 +315,180 @@ def test_discovery_schema_and_results_preserve_existing_jobs(client, remote):
             "SELECT * FROM jobs WHERE id = ?", (job["id"],)
         ).fetchone()
     assert before == after
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    value = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(db, "time", SimpleNamespace(time=lambda: value.now))
+    return value
+
+
+def test_query_cache_survives_reopen_and_shares_result_not_session_handle(
+    client, other_client, remote, clock
+):
+    remote["result"] = {"status": "done", "song": SONG}
+    original = start(client, "  Björk\n東京  ")
+    assert client.get(original).json() == remote["result"]
+    db.init_db()
+    clock.now += 1000  # Original handle expires, but its successful query does not.
+    remote["result"] = RuntimeError("cached query must not contact a supplier")
+    cached = start(other_client, "Björk \t 東京")
+    assert cached != original
+    assert other_client.get(cached).json() == {"status": "done", "song": SONG}
+    assert client.get(cached).status_code == 404
+    assert client.get(original).status_code == 404
+    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []
+
+
+def test_query_cache_expires_exactly_one_day_after_first_success_not_last_hit(
+    client, remote, clock
+):
+    original = start(client)
+    clock.now += 899.25
+    remote["result"] = {"status": "done", "song": SONG}
+    assert client.get(original).json() == remote["result"]
+    completed_at = clock.now
+    clock.now = completed_at + 86399.75
+    cached = start(client)
+    assert client.get(cached).json() == remote["result"]
+    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    clock.now = completed_at + 86400
+    updated = {"status": "done", "song": dict(SONG, title="Updated catalog title")}
+    remote["result"] = updated
+    refreshed = start(client)
+    assert client.get(refreshed).json() == updated
+    assert len(remote["starts"]) == len(remote["polls"]) == 2
+    # An already issued handle is immutable, even when the query cache expires.
+    assert client.get(cached).json() == {"status": "done", "song": SONG}
+
+
+@pytest.mark.parametrize("change", ["query", "producer", "model", "dependency"])
+def test_query_cache_does_not_hide_changed_inputs_or_producer(
+    client, remote, clock, monkeypatch, change
+):
+    remote["result"] = {"status": "done", "song": SONG}
+    assert client.get(start(client)).json() == remote["result"]
+    query = "Desired song"
+    if change == "query":
+        query = "Other artist"
+    elif change == "producer":
+        monkeypatch.setattr(cache_versions, "SONG_SEARCH", "new-search-algorithm")
+    elif change == "model":
+        monkeypatch.setattr(cache_versions, "SONG_MODEL", "new-search-model")
+    else:
+        monkeypatch.setattr(cache_versions, "package_revision", lambda name: "changed")
+    updated = {"status": "done", "song": dict(SONG, title="New producer selection")}
+    remote["result"] = updated
+    assert client.get(start(client, query)).json() == updated
+    assert len(remote["starts"]) == len(remote["polls"]) == 2
+
+
+@pytest.mark.parametrize("abandoned", [False, True])
+def test_pending_or_abandoned_search_is_not_a_successful_query_cache(
+    client, remote, clock, abandoned
+):
+    original = start(client)
+    if not abandoned:
+        assert client.get(original).json() == {"status": "pending"}
+    second = start(client)
+    assert client.get(second).json() == {"status": "pending"}
+    assert len(remote["starts"]) == 2
+    clock.now += 900
+    polls = len(remote["polls"])
+    assert client.get(original).status_code == client.get(second).status_code == 404
+    assert len(remote["polls"]) == polls
+    remote["result"] = {"status": "done", "song": SONG}
+    assert client.get(start(client)).json() == remote["result"]
+    assert len(remote["starts"]) == 3
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [
+        {"status": "failed", "code": "no_match", "detail": "No matching song."},
+        {"status": "done", "song": dict(SONG, url="https://evil.test")},
+        RuntimeError("private infrastructure detail"),
+    ],
+)
+def test_failed_query_is_not_cached_as_a_success(client, remote, clock, failed):
+    remote["result"] = failed
+    assert client.get(start(client)).status_code >= 400
+    remote["result"] = {"status": "done", "song": SONG}
+    assert client.get(start(client)).json() == remote["result"]
+    assert len(remote["starts"]) == len(remote["polls"]) == 2
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        "not json",
+        json.dumps({"status": "done", "song": dict(SONG, url="https://evil.test")}),
+        json.dumps({"status": "failed", "code": "no_match", "detail": "No song."}),
+    ],
+)
+def test_invalid_cached_match_is_rejected_without_fallback_or_remote_work(
+    client, remote, clock, corrupt
+):
+    remote["result"] = {"status": "done", "song": SONG}
+    assert client.get(start(client)).status_code == 200
+    with sqlite3.connect(config.DB_PATH) as connection:
+        connection.execute("UPDATE song_searches SET result_json = ?", (corrupt,))
+    response = client.post("/api/song-search", json={"query": "Desired song"})
+    assert response.status_code == 502
+    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM song_searches").fetchone()[0] == 1
+        )
+
+
+def test_query_cache_migration_preserves_legacy_rows_and_private_handle_behavior(
+    client, other_client, remote, clock
+):
+    remote["result"] = {"status": "done", "song": SONG}
+    original = start(client)
+    assert client.get(original).json() == remote["result"]
+    with sqlite3.connect(config.DB_PATH) as connection:
+        original_row = connection.execute(
+            "SELECT id, session_id, modal_call_id, result_json, created_at "
+            "FROM song_searches"
+        ).fetchone()
+        expired_row = (
+            "expired-pending-search",
+            original_row[1],
+            "fc-old-call",
+            None,
+            int(clock.now) - 900,
+        )
+        before = [original_row, expired_row]
+        connection.execute("DROP TABLE song_searches")
+        connection.execute(
+            "CREATE TABLE song_searches (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,"
+            " modal_call_id TEXT NOT NULL, result_json TEXT,"
+            " created_at INTEGER NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO song_searches VALUES (?, ?, ?, ?, ?)", before
+        )
+    db.init_db()
+    db.init_db()
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert (
+            connection.execute(
+                "SELECT id, session_id, modal_call_id, result_json, created_at "
+                "FROM song_searches ORDER BY rowid"
+            ).fetchall()
+            == before
+        )
+        assert connection.execute(
+            "SELECT query_key, successful_at FROM song_searches"
+        ).fetchall() == [(None, None), (None, None)]
+    assert client.get(original).json() == remote["result"]
+    assert other_client.get(original).status_code == 404
+    assert client.get("/api/song-search/expired-pending-search").status_code == 404
+    updated = {"status": "done", "song": dict(SONG, title="Fresh nonlegacy selection")}
+    remote["result"] = updated
+    assert client.get(start(client)).json() == updated
+    assert len(remote["starts"]) == len(remote["polls"]) == 2

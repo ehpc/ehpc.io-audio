@@ -273,6 +273,20 @@
 .pitch-selection { min-height: 44px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .pitch-tooltip { position: fixed; z-index: 50; max-width: min(300px, calc(100vw - 16px)); padding: 6px 10px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--card)); color: hsl(var(--card-foreground)); box-shadow: 0 2px 8px #0003; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; pointer-events: none; }
 .pitch-tooltip-note { font-family: ui-monospace, monospace; font-weight: 700; }
+.pitch-footer { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 12px; border-top: 1px solid hsl(var(--border)); }
+.pitch-footer audio { display: block; }
+.pitch-follow-status { min-height: 1.5em; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.pitch-skip-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
+.pitch-skip-controls button { min-width: 64px; min-height: 44px; }
+.timeline-karaoke { width: 100%; min-width: 0; box-sizing: border-box; height: calc(4.5em + 20px); padding: 10px; overflow-y: auto; overflow-x: hidden; font-size: clamp(1rem, 2.5vw, 1.25rem); border-radius: 6px; background: hsl(var(--muted)); }
+.timeline-karaoke:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.timeline-karaoke-line { margin: 0; min-height: 4.5em; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; animation: karaoke-enter .18s ease-out; }
+.timeline-karaoke-hint, .timeline-karaoke-word[data-state="untimed"] { color: hsl(var(--muted-foreground)); }
+.timeline-karaoke-word { display: inline; }
+.timeline-karaoke-word[data-state="complete"] { color: hsl(var(--primary)); }
+.timeline-karaoke-word[data-state="active"] { background: linear-gradient(to right, hsl(var(--primary)) var(--karaoke-progress), hsl(var(--foreground)) var(--karaoke-progress)); background-clip: text; -webkit-background-clip: text; color: transparent; text-decoration: underline; text-decoration-color: hsl(var(--primary)); text-underline-offset: .2em; }
+@keyframes karaoke-enter { from { opacity: .7; transform: translateY(.12em); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .timeline-karaoke-line { animation: none; } }
 @media (max-width: 700px) {
   .pitch-controls { align-items: flex-start; }
   .pitch-controls > label:first-child { width: 100%; }

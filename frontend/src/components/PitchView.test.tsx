@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { JobDTO, PitchAnalysisDTO } from "~/api";
 import PitchView from "./PitchView";
 import TranscriptView from "./TranscriptView";
@@ -33,6 +33,51 @@ function job(): JobDTO {
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
 });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+function scrollPlayer(source = job()) {
+  const rendered = render(() => <PitchView job={source} />);
+  const audio = document.querySelector<HTMLAudioElement>("audio")!;
+  const viewport = screen.getByRole("region", { name: "Scrollable vocal melody timeline" });
+  const state = { paused: false };
+  Object.defineProperties(audio, {
+    paused: { configurable: true, get: () => state.paused },
+    readyState: { configurable: true, value: 4 },
+  });
+  Object.defineProperties(viewport, {
+    clientWidth: { configurable: true, value: 300 },
+    clientHeight: { configurable: true, value: 240 },
+    scrollWidth: { configurable: true, value: 50_000 },
+    scrollHeight: { configurable: true, value: 1000 },
+    onscrollend: { configurable: true, value: null },
+  });
+  fireEvent.input(screen.getByRole("slider", { name: "Melody zoom" }), { target: { value: "100" } });
+  const time = (seconds: number) => { audio.currentTime = seconds; fireEvent.timeUpdate(audio); };
+  const scroll = (left: number, top = viewport.scrollTop) => {
+    viewport.scrollLeft = left;
+    viewport.scrollTop = top;
+    fireEvent.scroll(viewport);
+  };
+  const wheel = (left: number, top = viewport.scrollTop) => {
+    fireEvent.wheel(viewport, { deltaX: left - viewport.scrollLeft, deltaY: top - viewport.scrollTop });
+    scroll(left, top);
+  };
+  const end = () => fireEvent(viewport, new Event("scrollend", { bubbles: true }));
+  const browsing = () => Boolean(document.querySelector(".pitch-follow-status")?.textContent?.trim());
+  return { ...rendered, audio, viewport, state, time, scroll, wheel, end, browsing };
+}
+
+function animationFrames() {
+  let next = 0;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callbacks.set(++next, callback); return next; });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => { callbacks.delete(id); });
+  return () => {
+    const pending = [...callbacks.values()];
+    callbacks.clear();
+    for (const callback of pending) callback(0);
+  };
+}
 
 it("uses detected time/pitch geometry, linked melisma, zoom and real player seeking without inventing syllables", () => {
   render(() => <PitchView job={job()} />);
@@ -76,7 +121,7 @@ it("maps original reference playback to output time and shows honest empty-stem 
   expect(screen.getByText("Original full song (unchanged, not isolated vocals)")).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "backing" } });
   expect(document.querySelectorAll(".pitch-note")).toHaveLength(0);
-  expect(screen.getByRole("status")).toHaveTextContent("No confident voiced notes detected");
+  expect(document.querySelector(".pitch-view > [role=status]")).toHaveTextContent("No confident voiced notes detected");
   expect(document.querySelector(".pitch-selection")).toHaveTextContent("Select a note");
 });
 
@@ -297,6 +342,28 @@ it("shows immediate pitch-and-lyrics note tooltips and lyrics-only word tooltips
   fireEvent.blur(word);
   expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 });
+
+it.each(["note", "word"])("restores a %s tooltip when scrolling leaves the pointer within its target", kind => {
+  render(() => <PitchView job={job()} />);
+  const target = kind === "note"
+    ? document.querySelector<SVGGElement>(".pitch-note")!
+    : screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" });
+  fireEvent.pointerEnter(target);
+  fireEvent.scroll(window);
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  fireEvent(target, Object.assign(new Event("pointermove", { bubbles: true }), { pointerType: "touch" }));
+  expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  fireEvent.click(target);
+  expect(screen.getByRole("tooltip")).toHaveTextContent("world");
+  for (const pointerType of ["mouse", "pen"]) {
+    fireEvent.scroll(window);
+    fireEvent(target, Object.assign(new Event("pointermove", { bubbles: true }), { pointerType }));
+    expect(screen.getByRole("tooltip")).toBeVisible();
+  }
+  expect(screen.getByRole("tooltip")).toBeVisible();
+  expect(screen.getByRole("tooltip")).toHaveTextContent("world");
+  if (kind === "note") expect(screen.getByRole("tooltip")).toHaveTextContent("C#4");
+});
 it("does not invent lyrics for an unlinked note", () => {
   render(() => <PitchView job={job()} />);
   const note = document.querySelectorAll<SVGGElement>(".pitch-note")[2];
@@ -305,4 +372,241 @@ it("does not invent lyrics for an unlinked note", () => {
   expect(tooltip.querySelector(".pitch-tooltip-note")).toHaveTextContent("E4");
   expect(tooltip.querySelector(".pitch-tooltip-lyrics")).not.toBeInTheDocument();
   expect(tooltip).not.toHaveTextContent(/world|approximate|confidence/i);
+});
+
+it("does not confuse automatic scrolling with browsing, and resumes only after a manual return", () => {
+  const player = scrollPlayer();
+  player.time(5);
+  const automatic = player.viewport.scrollLeft;
+  player.scroll(automatic);
+  expect(player.browsing()).toBe(false);
+  player.time(9);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(automatic);
+  player.wheel(2000);
+  player.end();
+  expect(player.browsing()).toBe(true);
+  player.time(20.5); // The moving playhead enters the stationary browsed window.
+  expect(player.viewport.scrollLeft).toBe(2000);
+  player.time(24); // And leaves it again, without a user return.
+  expect(player.viewport.scrollLeft).toBe(2000);
+  player.wheel(2300);
+  expect(player.browsing()).toBe(true);
+  player.end();
+  expect(player.browsing()).toBe(false);
+  player.time(28);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(2300);
+});
+
+it.each(["no motion", "pinch", "prevented"])("does not strand following after %s wheel input", kind => {
+  const player = scrollPlayer();
+  player.time(5);
+  const initial = player.viewport.scrollLeft;
+  const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaX: 0.01, ctrlKey: kind === "pinch" });
+  if (kind === "prevented") wheel.preventDefault();
+  fireEvent(player.viewport, wheel);
+  if (kind !== "no motion") player.scroll(initial + 10); // Browser layout adjustment, not a claimed pan.
+  player.time(9);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(initial + 10);
+  expect(player.browsing()).toBe(false);
+  player.wheel(3000);
+  player.time(10);
+  expect(player.viewport.scrollLeft).toBe(3000);
+});
+
+it("excludes the sticky note axis when recognizing a manual return", () => {
+  const player = scrollPlayer();
+  player.time(5);
+  player.wheel(700);
+  player.end();
+  player.wheel(520); // x=554 is inside the viewport, but behind its 54px axis.
+  player.end();
+  expect(player.browsing()).toBe(true);
+  player.time(5.1);
+  expect(player.viewport.scrollLeft).toBe(520);
+  player.wheel(490);
+  player.end();
+  expect(player.browsing()).toBe(false);
+});
+
+it("retains a genuine return while playback advances beyond a high-zoom view before the gesture ends", () => {
+  const player = scrollPlayer();
+  fireEvent.input(screen.getByRole("slider", { name: "Melody zoom" }), { target: { value: "640" } });
+  player.time(5);
+  fireEvent.pointerDown(player.viewport, { pointerId: 1 });
+  player.scroll(4000);
+  player.scroll(3200);
+  player.time(6);
+  player.end();
+  expect(player.browsing()).toBe(true);
+  expect(player.viewport.scrollLeft).toBe(3200);
+  fireEvent.pointerUp(window, { pointerId: 1 });
+  expect(player.browsing()).toBe(false);
+  player.time(6.1);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(3200);
+});
+
+it("revokes a pending return if the user pans away again before releasing the pointer", () => {
+  const player = scrollPlayer();
+  player.time(5);
+  fireEvent.pointerDown(player.viewport, { pointerId: 1 });
+  player.scroll(2000);
+  player.scroll(470);
+  player.scroll(2100);
+  player.end();
+  fireEvent.pointerUp(window, { pointerId: 1 });
+  player.time(6);
+  expect(player.browsing()).toBe(true);
+  expect(player.viewport.scrollLeft).toBe(2100);
+});
+
+it("suspends on vertical browsing and preserves suspension through pause, seek, source, zoom and preference changes", () => {
+  const player = scrollPlayer();
+  player.state.paused = true;
+  player.time(5);
+  player.wheel(player.viewport.scrollLeft, player.viewport.scrollTop + 40);
+  player.end();
+  expect(player.browsing()).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Forward 5 seconds" }));
+  fireEvent.change(screen.getByLabelText("Pitch background audio"), { target: { value: "song" } });
+  fireEvent.loadedMetadata(player.audio);
+  fireEvent.timeUpdate(player.audio);
+  fireEvent.input(screen.getByRole("slider", { name: "Melody zoom" }), { target: { value: "200" } });
+  player.scroll(player.viewport.scrollLeft);
+  const stopped = player.viewport.scrollLeft;
+  const preference = screen.getByRole("checkbox", { name: "Follow playback" });
+  fireEvent.click(preference);
+  fireEvent.click(preference);
+  player.state.paused = false;
+  player.time(30);
+  expect(player.browsing()).toBe(true);
+  expect(player.viewport.scrollLeft).toBe(stopped);
+  fireEvent.click(preference); // An explicit opt-out survives a manual return.
+  player.wheel(10_000);
+  player.end();
+  player.wheel(4600);
+  player.end();
+  player.time(40);
+  expect(preference).not.toBeChecked();
+  expect(player.viewport.scrollLeft).toBe(4600);
+});
+
+it("waits for touch and keyboard gestures to finish before honoring their return", () => {
+  const player = scrollPlayer();
+  player.time(5);
+  player.wheel(2000);
+  player.end();
+  fireEvent.pointerDown(player.viewport, { pointerId: 1, pointerType: "touch" });
+  fireEvent.touchStart(player.viewport, { touches: [{ identifier: 1 }] });
+  player.scroll(470);
+  fireEvent.pointerCancel(window, { pointerId: 1, pointerType: "touch" });
+  player.end();
+  expect(player.browsing()).toBe(true);
+  fireEvent.touchEnd(window, { touches: [] });
+  expect(player.browsing()).toBe(false);
+  player.wheel(2000);
+  player.end();
+  fireEvent.keyDown(player.viewport, { key: "ArrowLeft" });
+  player.scroll(470);
+  player.end();
+  expect(player.browsing()).toBe(true);
+  fireEvent.keyUp(window, { key: "ArrowLeft" });
+  expect(player.browsing()).toBe(false);
+});
+
+it("settles legacy scrolling across paint frames and immediately suspends again on late momentum", () => {
+  const frame = animationFrames();
+  const player = scrollPlayer();
+  const removed: [object, PropertyDescriptor][] = [];
+  for (let owner: object | null = player.viewport; owner; owner = Object.getPrototypeOf(owner)) {
+    const descriptor = Object.getOwnPropertyDescriptor(owner, "onscrollend");
+    if (descriptor) {
+      removed.push([owner, descriptor]);
+      Reflect.deleteProperty(owner, "onscrollend");
+    }
+  }
+  try {
+    player.time(5);
+    player.wheel(2000);
+    player.wheel(470);
+    frame();
+    player.scroll(480);
+    frame();
+    player.scroll(480, player.viewport.scrollTop + 10);
+    frame();
+    expect(player.browsing()).toBe(true);
+    player.time(20);
+    frame();
+    expect(player.browsing()).toBe(false);
+    player.scroll(460); // Late native inertia, without another wheel event.
+    player.time(21);
+    expect(player.browsing()).toBe(true);
+    expect(player.viewport.scrollLeft).toBe(460);
+  } finally {
+    for (const [owner, descriptor] of removed) Object.defineProperty(owner, "onscrollend", descriptor);
+  }
+});
+
+it("advances karaoke and output position between timeupdate events using the actual original-media clock", () => {
+  const frame = animationFrames();
+  const source = job();
+  source.manifest = [];
+  source.has_pitch_vocals = false;
+  const player = scrollPlayer(source);
+  fireEvent.play(player.audio);
+  player.audio.currentTime = 1.875;
+  frame();
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "1.5");
+  expect(screen.getByRole("region", { name: "Current karaoke line" }).querySelector('[aria-current="true"]')).toHaveTextContent("world");
+  player.audio.currentTime = 2.5;
+  frame();
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "2");
+  player.unmount();
+  frame();
+});
+
+it.each(["pause", "ended", "emptied", "error"])("stops the frame clock on the native %s event", event => {
+  const frame = animationFrames();
+  const player = scrollPlayer();
+  fireEvent.play(player.audio);
+  player.audio.currentTime = 1.5;
+  frame();
+  fireEvent(player.audio, new Event(event));
+  player.audio.currentTime = 3;
+  frame();
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "1.5");
+  if (event === "error") expect(screen.getByRole("alert")).toBeVisible();
+});
+
+it("skips five output seconds across original/private clocks, clamps endpoints and preserves playback state and source", () => {
+  const source = job();
+  source.manifest = [];
+  const player = scrollPlayer(source);
+  player.state.paused = true;
+  player.audio.volume = 0.4;
+  const back = screen.getByRole("button", { name: "Back 5 seconds" });
+  const forward = screen.getByRole("button", { name: "Forward 5 seconds" });
+  fireEvent.click(back);
+  expect(player.audio.currentTime).toBe(0);
+  fireEvent.click(forward);
+  expect(player.audio.currentTime).toBe(6.25);
+  expect(player.audio.paused).toBe(true);
+  const selector = screen.getByLabelText("Pitch background audio");
+  fireEvent.change(selector, { target: { value: "vocals" } });
+  fireEvent.click(forward); // While the source's metadata/seek is pending.
+  fireEvent.loadedMetadata(player.audio);
+  expect(player.audio.currentTime).toBe(10);
+  expect(player.audio.getAttribute("src")).toBe("/api/jobs/7/pitch-reference/vocals");
+  player.state.paused = false;
+  fireEvent.click(back);
+  fireEvent.seeked(player.audio);
+  expect(player.audio.currentTime).toBe(5);
+  expect(player.audio.paused).toBe(false);
+  expect(player.audio.volume).toBe(0.4);
+  player.time(68);
+  fireEvent.click(forward);
+  expect(player.audio.currentTime).toBe(pitch.duration_s);
+  fireEvent.change(selector, { target: { value: "song" } });
+  fireEvent.loadedMetadata(player.audio);
+  fireEvent.click(forward);
+  expect(player.audio.currentTime).toBe(pitch.source_duration_s);
 });

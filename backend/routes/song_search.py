@@ -8,7 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from backend import db, modal_client
 from backend.session import get_session_id
-from separator.song_search import QUERY_MAX_LENGTH, SEARCH_TTL, normalize_query
+from separator.song_search import (
+    QUERY_MAX_LENGTH,
+    SEARCH_RESULT_TTL,
+    SEARCH_TTL,
+    normalize_query,
+    query_cache_key,
+)
 
 router = APIRouter(tags=["song-search"])
 _ERRORS = {
@@ -60,6 +66,26 @@ async def start_search(
     body: SongSearchRequest,
     session_id: Annotated[str, Depends(get_session_id)],
 ) -> SearchStarted:
+    search_id = uuid.uuid4().hex
+    query_key = query_cache_key(body.query)
+    cached = await asyncio.to_thread(
+        db.get_cached_song_search, query_key, SEARCH_RESULT_TTL
+    )
+    if cached is not None:
+        try:
+            result = SearchDone.model_validate_json(cached["result_json"])
+        except ValidationError as exc:
+            raise HTTPException(502, "Song finder returned invalid output.") from exc
+        await asyncio.to_thread(
+            db.create_song_search,
+            search_id,
+            session_id,
+            cached["modal_call_id"],
+            query_key,
+            result=result.model_dump(),
+            successful_at=cached["successful_at"],
+        )
+        return SearchStarted(search_id=search_id)
     try:
         call_id = await asyncio.wait_for(
             modal_client.spawn_song_search(body.query), timeout=15
@@ -68,8 +94,9 @@ async def start_search(
         raise HTTPException(
             503, "Song finder is unavailable. Try again later."
         ) from exc
-    search_id = uuid.uuid4().hex
-    await asyncio.to_thread(db.create_song_search, search_id, session_id, call_id)
+    await asyncio.to_thread(
+        db.create_song_search, search_id, session_id, call_id, query_key
+    )
     return SearchStarted(search_id=search_id)
 
 

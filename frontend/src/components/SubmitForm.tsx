@@ -88,6 +88,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     });
   };
   const findSong = async () => {
+    if (searching()) return;
     invalidateSearch();
     setVoiceRevision(value => value + 1);
     setError(null);
@@ -296,7 +297,11 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                 <TextField value={query()} onChange={editQuery} class="source-field">
                   <Label for="song-query">Describe a song</Label>
                   <TextFieldInput id="song-query" type="text" placeholder="Song, artist, or a description…" maxlength={500}
-                    autocomplete="off" onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); }} />
+                    autocomplete="off" onKeyDown={event => {
+                      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
+                      event.preventDefault();
+                      if (!event.repeat) void findSong();
+                    }} />
                 </TextField>
                 <VoiceQuery resetToken={voiceRevision()} onStart={invalidateSearch} onTranscript={editQuery} />
                 <Button type="button" class="song-search-button" disabled={searching()} onClick={() => { void findSong(); }}>Search</Button>

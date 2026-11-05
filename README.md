@@ -109,8 +109,9 @@ baseline alignment but may require fresh reference-dependent acoustic alignment.
 ### Text-assisted YouTube Music discovery
 
 `POST /api/song-search` accepts `{"query":"artist, title, or lyric clue"}` and
-returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after spawning
-remote work, not after provider inference. `GET /api/song-search/{search_id}` returns
+returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after reusing a
+cached successful match or spawning remote work, not after provider inference.
+`GET /api/song-search/{search_id}` returns
 `{"status":"pending"}` or `{"status":"done","song":{"title":"…","artists":["…"],
 "url":"https://music.youtube.com/watch?v=…","duration_seconds":214}}`.
 Duration may be `null`. Poll every two seconds; polls retrieve the existing call
@@ -124,12 +125,32 @@ URL feeds the existing source/key-preview workflow; processing still requires
 the normal explicit submission.
 
 The additive, idempotent SQLite `song_searches` table stores opaque random IDs,
-session ownership, Modal call ID, creation time and terminal JSON results/errors;
-it does not store the query. Existing `jobs`, options, manifests and artifacts
-are unchanged. Handles expire after 15 minutes and require the originating
-signed session cookie, including after process restart. Foreign, unknown and
-expired handles return 404 without contacting Modal. No match is 404; ambiguity
-is 422; malformed model/catalog output is 502; remote unavailability is 503.
+session ownership, Modal call ID, creation time and terminal JSON results/errors.
+Its nullable `query_key` and `successful_at` columns and
+`idx_song_search_query_success` index reuse this same table for successful
+query-result caching; no raw query text is stored. Migration preserves existing
+rows and old column values, leaving both new columns NULL on legacy rows.
+Existing `jobs`, options, manifests and artifacts are unchanged.
+
+Successful matches are shared across requests for **24 hours (86,400 seconds)**
+from their **first validated successful persistence**, not from search start or
+the most recent cache hit. Keys use the existing whitespace-normalized query
+(case and Unicode text preserved), discovery producer version, model, OpenRouter
+endpoint and HTTP dependency revision. A hit creates a new session-owned handle
+with the original success timestamp and validated match, without contacting
+Modal, OpenRouter or YouTube Music. Cached copies do not extend freshness.
+At exactly 86,400 seconds, or after a query/producer identity change, a new search
+is required. Pending, failed and abandoned/unpolled searches are not successful
+query-cache entries; malformed cached matches fail explicitly rather than
+falling back to a song or remote retry. Concurrent cold misses retain the existing
+independent-search behavior.
+
+Separately, **all handles still expire after 15 minutes (900 seconds)** from
+creation and require the originating signed session cookie, including after
+process restart. This short lifetime and the pending-search guard are not
+extended by the one-day result cache. Foreign, unknown and expired handles return
+404 without contacting Modal. No match is 404; ambiguity is 422; malformed
+model/catalog output is 502; remote unavailability is 503.
 Errors use the usual `{"detail":"…"}` envelope. Completed polls read durable
 terminal state; closing the browser stops polling but does not cancel remote work.
 
@@ -160,10 +181,10 @@ failures return a safe 503 error. HTTP requests have 5-second connect and
 are not exposed in public errors. Search clues and candidate metadata are sent
 to OpenRouter and its selected model provider, but not browser/session IDs,
 audio bytes, job history or application credentials in prompt content.
-The model extracts supplied clues into search text (validated not to invent
-artist/title words), then selects strictly from fresh public YouTube Music
-**song** candidates via `ytmusicapi==1.11.5`. Lyric clues go to catalog search
-as lyrics, not a model's guessed artist. Catalog HTTP
+On a query-result cache miss, the model extracts supplied clues into search text
+(validated not to invent artist/title words), then selects strictly from fresh
+public YouTube Music **song** candidates via `ytmusicapi==1.11.5`. Lyric clues go
+to catalog search as lyrics, not a model's guessed artist. Catalog HTTP
 connect/read timeouts are 5/15 seconds; the remote function is capped at 180
 seconds. User and catalog text are untrusted prompt data. The model cannot
 supply URLs, metadata or uncatalogued IDs; invalid selections/abstentions fail
@@ -174,9 +195,10 @@ inference artifacts. Keys include the explicit model, OpenRouter endpoint,
 HTTP dependency revision, inference/prompt version and complete prompt/candidate
 inputs. Provider calls happen only on cache misses. The new producer identity
 does not reuse previous local-model inference; unused historical model files
-are left untouched, not deleted. Catalog searches themselves are always fresh,
-so mutable catalog results are not frozen indefinitely; candidate changes
-invalidate only selection inference. Discovery never invalidates audio caches.
+are left untouched, not deleted. Catalog searches are fresh whenever the one-day
+query-result cache misses or expires, so mutable catalog results are not frozen
+indefinitely; changed candidates invalidate only selection inference. Discovery
+never invalidates audio caches.
 
 ## Choosing outputs
 
@@ -307,8 +329,9 @@ Arrow keys, Home and End navigate the tab bar.
 
 The source selector offers **From URL**, **Upload audio**, and **Find song**.
 In Find song, enter a title, artist, or description (up to 500 characters), then
-select **Search**. Typing and pressing Enter in the query do not start a search
-or submit audio. While the search is pending, the form shows
+select **Search** or press **Enter** in the query. Typing alone does not search;
+Enter never submits audio and is ignored during an active search or IME composition.
+While the search is pending, the form shows
 **Finding on YouTube Music…**. The returned
 title, artists, and **Verify on YouTube Music** link let you check the match.
 Its canonical URL immediately feeds the existing key preview, but a processing
@@ -321,8 +344,8 @@ in place. Submission retains the selected match and query just like other source
 
 Where `SpeechRecognition` or Safari's prefixed `webkitSpeechRecognition` is
 available, a microphone button offers user-initiated dictation. It fills the
-query only: select **Search** afterward. The button switches to **Stop voice
-input** while listening, and permission, network, and no-speech failures leave
+query only: select **Search** or press **Enter** afterward. The button switches
+to **Stop voice input** while listening, and permission, network, and no-speech failures leave
 typing/retry available. Leaving the source or editing the query aborts dictation;
 late callbacks cannot replace newer text. Use HTTPS (or localhost) and grant
 microphone permission. Recognition may use the browser vendor's online service;
@@ -508,6 +531,31 @@ steps, and Home/End. The playhead follows the native player. Phones scroll withi
 the timeline instead of squeezing the song to screen width; buttons and a native
 zoom slider provide 40–640 px/s. The initial vertical view centers the typical
 vocal register, while every detected high/low row remains reachable by scrolling.
+
+The native play/pause and volume controls sit below the graph and selection
+details, with **−5 s / +5 s** buttons beneath them. Skips use five **output-timeline**
+seconds, clamp to zero/the analysis end, and preserve playing/paused state,
+volume, background source and selected stem. The unchanged original uses its
+tempo-converted source clock; transformed backgrounds use the output clock.
+
+With **Follow playback** enabled, manually panning by wheel, touch, scrollbar or
+keyboard pauses auto-follow while you browse. Only a manual horizontal return
+that brings the current playhead back into the visible note region resumes it,
+after the gesture finishes; the sticky note axis does not count as visible time.
+The clock moving into a stationary browsed view, seeking, skipping, source
+changes and restarting playback do not resume following. Turning Follow off is
+an explicit opt-out; turning it back on does not clear an existing browsing
+pause. Browsers without native scroll-end events use a best-effort
+stationary-frame fallback for gesture completion.
+
+A karaoke reader above the player previews the next supported lyric line up
+to one second early without replacing a line still being sung. Known words
+fill progressively using their published timings and the same output clock;
+untimed words within a supported line stay neutral. No syllable timings are
+invented. Pitch-only or ASR-gap words can appear as short individual cues, which
+remain legible immediately. Long lines wrap in a keyboard-scrollable reader
+whose focus survives cue changes; reduced-motion preferences disable the entry
+animation.
 
 **Background audio** is independent of the detected **Vocal stem** selector.
 Choose **Full song** (the transformed song when available, otherwise the

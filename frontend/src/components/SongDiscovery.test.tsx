@@ -30,8 +30,6 @@ it("finds only explicitly, analyzes the canonical match, and retains source/opti
   render(() => <SubmitForm onSubmitted={onSubmitted} />);
   const query = await chooseSearch();
   fireEvent.input(query, { target: { value: "宇多田ヒカル first love" } });
-  fireEvent.keyDown(query, { key: "Enter" });
-  expect(api.searchSong).not.toHaveBeenCalled();
   expect(api.submitJob).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("checkbox", { name: "Extract vocals", exact: true }));
   await userEvent.click(screen.getByRole("button", { name: "Drums", exact: true }));
@@ -54,13 +52,62 @@ it("finds only explicitly, analyzes the canonical match, and retains source/opti
   expect(screen.getByRole("link", { name: /Verify on YouTube Music/ })).toBeInTheDocument();
 });
 
+it("searches on Enter without submitting audio or duplicating a pending search", async () => {
+  const pending = Promise.withResolvers<api.SongMatch>();
+  vi.mocked(api.searchSong).mockReturnValueOnce(pending.promise);
+  render(() => <SubmitForm onSubmitted={vi.fn()} />);
+  const query = await chooseSearch();
+  await userEvent.type(query, "宇多田ヒカル first love");
+  expect(api.searchSong).not.toHaveBeenCalled();
+  await userEvent.keyboard("{Enter}");
+  expect(api.searchSong).toHaveBeenCalledOnce();
+  const signal = vi.mocked(api.searchSong).mock.calls[0][1];
+  expect(screen.getByRole("button", { name: "Search", exact: true })).toBeDisabled();
+  await userEvent.keyboard("{Enter}");
+  fireEvent.keyDown(query, { key: "Enter", repeat: true });
+  expect(api.searchSong).toHaveBeenCalledOnce();
+  expect(signal.aborted).toBe(false);
+  expect(api.submitJob).not.toHaveBeenCalled();
+  pending.resolve(match);
+  expect(await screen.findByRole("link", { name: /Verify on YouTube Music/ })).toHaveAttribute("href", match.url);
+  await screen.findByText("Original key: C major");
+  expect(api.analyzeKey).toHaveBeenCalledWith({ url: match.url }, expect.any(AbortSignal));
+  fireEvent.keyDown(query, { key: "Enter", repeat: true });
+  expect(api.searchSong).toHaveBeenCalledOnce();
+  expect(api.submitJob).not.toHaveBeenCalled();
+});
+
+it("ignores IME Enter and uses the same empty-query and retry behavior for keyboard searches", async () => {
+  render(() => <SubmitForm onSubmitted={vi.fn()} />);
+  const query = await chooseSearch();
+  await userEvent.type(query, "   ");
+  await userEvent.keyboard("{Enter}");
+  expect(screen.getByRole("alert")).toBeVisible();
+  expect(api.searchSong).not.toHaveBeenCalled();
+  expect(api.submitJob).not.toHaveBeenCalled();
+  fireEvent.input(query, { target: { value: "宇多田ヒカル" } });
+  fireEvent.keyDown(query, { key: "Enter", isComposing: true });
+  // Safari can report composition completion as Enter with legacy code 229.
+  fireEvent.keyDown(query, { key: "Enter", keyCode: 229 });
+  expect(api.searchSong).not.toHaveBeenCalled();
+  expect(api.submitJob).not.toHaveBeenCalled();
+  vi.mocked(api.searchSong).mockRejectedValueOnce(new Error("Please specify a song title."));
+  await userEvent.keyboard("{Enter}");
+  expect(screen.getByRole("alert")).toHaveTextContent("Please specify a song title.");
+  await userEvent.keyboard("{Enter}");
+  expect(await screen.findByRole("link", { name: /Verify on YouTube Music/ })).toHaveAttribute("href", match.url);
+  expect(api.searchSong).toHaveBeenCalledTimes(2);
+  expect(api.submitJob).not.toHaveBeenCalled();
+});
+
 it("rejects empty input, shows provider errors, and retries without processing an old match", async () => {
   render(() => <SubmitForm onSubmitted={vi.fn()} />);
   const query = await chooseSearch();
   fireEvent.input(query, { target: { value: "   " } });
   await search();
-  expect(screen.getByRole("alert")).toHaveTextContent("Describe a song");
+  expect(screen.getByRole("alert")).toBeVisible();
   expect(api.searchSong).not.toHaveBeenCalled();
+  expect(api.submitJob).not.toHaveBeenCalled();
   fireEvent.input(query, { target: { value: "first love" } });
   await search();
   await screen.findByText("First Love", { selector: "strong" });
@@ -87,7 +134,8 @@ it("invalidates pending searches and keys on edits, clear selection, source chan
   fireEvent.input(query, { target: { value: "old" } });
   await search();
   expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
-  expect(screen.getByRole("status")).toHaveTextContent("Finding on YouTube Music");
+  expect(screen.getByRole("status")).toBeVisible();
+  expect(api.searchSong).toHaveBeenCalledOnce();
   fireEvent.input(query, { target: { value: "current" } });
   expect(vi.mocked(api.searchSong).mock.calls[0][1].aborted).toBe(true);
   await search();

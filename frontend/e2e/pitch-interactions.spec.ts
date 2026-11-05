@@ -1,8 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
-test.use({ hasTouch: true });
+import { expect, test, type Locator } from '@playwright/test';
 
 const seedPitchOnlyJob = String.raw`
 import json,subprocess,sys
@@ -19,9 +18,10 @@ db.mark_done(job.id,[],None,pitch_to_json(pitch_from_json(json.dumps(value['pitc
 `;
 
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
-  test(`pitch ruler, private vocal playback, and immediate lyric tooltips (${viewport.width}px)`, async ({ page }) => {
+  test.describe(`native timeline ${viewport.width}px`, () => {
+  test.use({ viewport, isMobile: viewport.width <= 700, hasTouch: true });
+  test('ruler, footer transport, manual browsing, and immediate tooltips', async ({ page }, info) => {
     test.setTimeout(120_000);
-    await page.setViewportSize(viewport);
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8');
@@ -41,6 +41,13 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(view).toBeVisible();
     const player = view.locator('audio');
     const sourceSelector = view.getByRole('combobox', { name: 'Pitch background audio' });
+    const back = view.getByRole('button', { name: 'Back 5 seconds', exact: true });
+    const forward = view.getByRole('button', { name: 'Forward 5 seconds', exact: true });
+    const activate = async (button: Locator) => viewport.width <= 700 ? button.tap() : button.click();
+    const graphBounds = (await view.locator('.pitch-viewport').boundingBox())!;
+    const playerBounds = (await player.boundingBox())!;
+    expect(playerBounds.y).toBeGreaterThanOrEqual(graphBounds.y + graphBounds.height);
+    await player.evaluate(element => { element.volume = 0.4; });
     const ruler = view.getByRole('slider', { name: 'Pitch timeline position' });
     await view.getByRole('slider', { name: 'Melody zoom' }).fill('40');
     const tapRulerAtFiveSeconds = async () => {
@@ -71,6 +78,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await player.evaluate(element => element.play());
     await expect.poll(() => player.evaluate(element => !element.paused)).toBe(true);
     await expect.poll(() => competingAudio.evaluate(audio => audio.paused)).toBe(true);
+    await activate(forward);
+    expect(await player.evaluate(element => !element.paused)).toBe(true);
+    expect(await competingAudio.evaluate(element => element.paused)).toBe(true);
     await tapRulerAtFiveSeconds();
     const songSeek = await player.evaluate(element => {
       const state = { time: element.currentTime, playing: !element.paused };
@@ -90,6 +100,11 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect.poll(() => player.evaluate(element => Math.abs(element.currentTime - 5) < 0.1)).toBe(true);
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeGreaterThan(195);
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeLessThan(205);
+    await activate(forward);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(10, 1);
+    await activate(back);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(5, 1);
+    expect(await player.evaluate(element => element.paused)).toBe(true);
 
     await sourceSelector.selectOption('song');
     await expect(player).toHaveAttribute('src', `/api/jobs/${id}/original`);
@@ -99,6 +114,13 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect.poll(() => player.evaluate(element => Math.abs(element.currentTime - 6.25) < 0.1)).toBe(true);
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeGreaterThan(195);
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeLessThan(205);
+    await activate(back);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(0, 1);
+    await activate(back);
+    expect(await player.evaluate(element => element.currentTime)).toBe(0);
+    await activate(forward);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(6.25, 1);
+    expect(await player.evaluate(element => element.paused && element.volume === 0.4)).toBe(true);
 
     const note = view.locator('.pitch-note').first();
 
@@ -119,5 +141,144 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(wordTooltip).toBeVisible();
     await expect(wordTooltip).toHaveText('Should');
     await expect(wordTooltip).not.toContainText(/F4|confidence|approximate|0:10|model/i);
+
+    // Real playback must not immediately undo a user's horizontal browsing.
+    await view.getByRole('slider', { name: 'Melody zoom', exact: true }).fill('640');
+    const scroll = view.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
+    const touch = viewport.width <= 700 ? await page.context().newCDPSession(page) : null;
+    const afterPanSettles = async (input: () => Promise<void>) => {
+      const settled = await scroll.evaluateHandle(element => {
+        const state = { done: false, origin: element.scrollLeft };
+        let armed = false;
+        let moved = false;
+        const begin = () => { armed = true; state.origin = element.scrollLeft; };
+        const changed = () => { if (armed && element.scrollLeft !== state.origin) moved = true; };
+        const end = () => { if (moved) { state.done = true; stop(); } };
+        const stop = () => {
+          element.removeEventListener('pointerdown', begin);
+          element.removeEventListener('wheel', begin);
+          element.removeEventListener('scroll', changed);
+          element.removeEventListener('scrollend', end);
+        };
+        element.addEventListener('pointerdown', begin);
+        element.addEventListener('wheel', begin);
+        element.addEventListener('scroll', changed);
+        element.addEventListener('scrollend', end);
+        return { state, stop };
+      });
+      try {
+        await input();
+        await expect.poll(() => settled.evaluate(value => value.state.done)).toBe(true);
+      } finally {
+        await settled.evaluate(value => value.stop());
+        await settled.dispose();
+      }
+    };
+    const pan = async (distance: number) => {
+      await scroll.scrollIntoViewIfNeeded();
+      if (touch) {
+        const box = (await scroll.boundingBox())!;
+        const target = await scroll.evaluate((element, delta) => element.scrollLeft + delta, distance);
+        for (;;) {
+          const remaining = target - await scroll.evaluate(element => element.scrollLeft);
+          if (Math.abs(remaining) < 40) break;
+          const stroke = Math.sign(remaining) * Math.min(Math.abs(remaining), box.width - 102);
+          const start = stroke > 0 ? box.x + box.width - 24 : box.x + 78;
+          const y = box.y + box.height / 2;
+          await afterPanSettles(async () => {
+            await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: start, y, id: 1 }] });
+            const origin = await scroll.evaluate(element => element.scrollLeft);
+            for (let step = 1; step <= 8; step++) {
+              await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: start - stroke * step / 8, y, id: 1 }] });
+              await page.evaluate(() => {
+                const { promise, resolve } = Promise.withResolvers<void>();
+                requestAnimationFrame(() => resolve());
+                return promise;
+              });
+            }
+            // A deliberate stationary finger before release avoids flinging.
+            await page.waitForTimeout(150);
+            const current = await scroll.evaluate(element => element.scrollLeft);
+            await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+            expect(Math.sign(stroke) * (current - origin)).toBeGreaterThan(0);
+          });
+        }
+      } else {
+        await scroll.hover();
+        await afterPanSettles(() => page.mouse.wheel(distance, 0));
+      }
+    };
+    await player.evaluate(async element => { element.currentTime = 6.25; await element.play(); });
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(6.3);
+    await scroll.scrollIntoViewIfNeeded();
+    const beforePan = await scroll.evaluate(element => element.scrollLeft);
+    await pan(1200);
+    await expect.poll(() => scroll.evaluate(element => element.scrollLeft)).toBeGreaterThan(beforePan + 800);
+    // Establish the cursor strictly before a browsed window, even if it outran
+    // several narrow-screen swipes while playing.
+    await player.evaluate(element => element.pause());
+    const nativeBefore = await player.evaluate(element => element.currentTime);
+    const ahead = nativeBefore / 1.25 * 640 + 640;
+    await pan(ahead - await scroll.evaluate(element => element.scrollLeft));
+    const manuallyChosen = await scroll.evaluate(element => element.scrollLeft);
+    const axisWidth = await view.locator('.pitch-axis').evaluate(element => element.getBoundingClientRect().width);
+    const enterNative = manuallyChosen / 640 * 1.25;
+    const leaveNative = (manuallyChosen + await scroll.evaluate(element => element.clientWidth) - axisWidth) / 640 * 1.25;
+    expect(nativeBefore).toBeLessThan(enterNative);
+    await player.evaluate(element => element.play());
+    let nativeEntered = 0;
+    await expect.poll(async () => {
+      const current = await player.evaluate(element => element.currentTime);
+      if (current >= enterNative && current < leaveNative) nativeEntered = current;
+      return nativeEntered;
+    }, { intervals: [25] }).toBeGreaterThan(0);
+    expect(Math.abs(await scroll.evaluate(element => element.scrollLeft) - manuallyChosen)).toBeLessThan(2);
+    await expect.poll(() => player.evaluate(element => element.currentTime), { timeout: 10_000 }).toBeGreaterThan(leaveNative + 0.3);
+    await player.evaluate(element => element.pause());
+    const afterPlayback = await scroll.evaluate(element => element.scrollLeft);
+    await info.attach('native-browsing-passage', { body: Buffer.from(JSON.stringify({
+      viewport, nativeBefore, enterNative, nativeEntered, leaveNative,
+      nativePassed: await player.evaluate(element => element.currentTime), manuallyChosen, afterPlayback,
+    })), contentType: 'application/json' });
+    expect(Math.abs(afterPlayback - manuallyChosen)).toBeLessThan(2);
+    // Paused panning and subsequent playback/skip actions cannot opt back in.
+    await pan(-600);
+    await expect.poll(() => scroll.evaluate(element => element.scrollLeft)).toBeLessThan(manuallyChosen - 500);
+    const pausedChoice = await scroll.evaluate(element => element.scrollLeft);
+    await player.evaluate(element => element.play());
+    await activate(forward);
+    expect(await player.evaluate(element => !element.paused && element.volume === 0.4)).toBe(true);
+    expect(await competingAudio.evaluate(element => element.paused)).toBe(true);
+    expect(await scroll.evaluate(element => element.scrollLeft)).toBe(pausedChoice);
+    await player.evaluate(element => element.pause());
+    const currentOutput = await player.evaluate(element => element.currentTime / 1.25);
+    const returnTo = currentOutput * 640 - (await scroll.evaluate(element => element.clientWidth) - 54) / 2;
+    await pan(returnTo - pausedChoice);
+    const returned = await scroll.evaluate(element => element.scrollLeft);
+    await player.evaluate(element => element.play());
+    await expect.poll(() => scroll.evaluate(element => element.scrollLeft), { timeout: 10_000 }).toBeGreaterThan(returned + 50);
+    await view.getByRole('checkbox', { name: 'Follow playback' }).uncheck();
+    const optedOut = await scroll.evaluate(element => element.scrollLeft);
+    await activate(forward);
+    expect(await scroll.evaluate(element => element.scrollLeft)).toBe(optedOut);
+    await player.evaluate(element => element.pause());
+    // The upper clamp is the analysis end, converted to original-media time.
+    await ruler.press('End');
+    await activate(forward);
+    const analysis = JSON.parse(fixture).pitch;
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(analysis.duration_s * 1.25, 1);
+    expect(await player.evaluate(element => element.paused)).toBe(true);
+    expect(await sourceSelector.inputValue()).toBe('song');
+    expect(await view.getByLabel('Pitch vocal stem', { exact: true }).inputValue()).toBe('vocals');
+    for (const button of [back, forward]) {
+      const box = (await button.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.width).toBeGreaterThanOrEqual(44);
+    }
+    expect(await page.evaluate(() => innerWidth)).toBe(viewport.width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+    await view.locator('.pitch-footer').screenshot({ path: info.outputPath('timeline-footer.png') });
+    await touch?.detach();
+  });
   });
 }

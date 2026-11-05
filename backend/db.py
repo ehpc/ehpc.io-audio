@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS song_searches (
     session_id TEXT NOT NULL,
     modal_call_id TEXT NOT NULL,
     result_json TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    query_key TEXT,
+    successful_at REAL
 );
 """
 
@@ -66,6 +68,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN transcript_json TEXT")
     if "pitch_json" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN pitch_json TEXT")
+    search_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(song_searches)")
+    }
+    if "query_key" not in search_columns:
+        conn.execute("ALTER TABLE song_searches ADD COLUMN query_key TEXT")
+    if "successful_at" not in search_columns:
+        conn.execute("ALTER TABLE song_searches ADD COLUMN successful_at REAL")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_song_search_query_success "
+        "ON song_searches(query_key, successful_at DESC)"
+    )
     # Prior to explicit extraction, every job always requested both base stems.
     # Persist that intent once so history and retries retain the old behavior.
     for row in conn.execute("SELECT id, options_json FROM jobs").fetchall():
@@ -116,13 +129,41 @@ def health_check() -> None:
         conn.execute("SELECT 1")
 
 
-def create_song_search(search_id: str, session_id: str, call_id: str) -> None:
+def create_song_search(
+    search_id: str,
+    session_id: str,
+    call_id: str,
+    query_key: str,
+    *,
+    result: dict | None = None,
+    successful_at: float | None = None,
+) -> None:
     with _session() as conn:
         conn.execute(
-            "INSERT INTO song_searches (id, session_id, modal_call_id, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (search_id, session_id, call_id, int(time.time())),
+            "INSERT INTO song_searches "
+            "(id, session_id, modal_call_id, created_at, query_key, "
+            "result_json, successful_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                search_id,
+                session_id,
+                call_id,
+                int(time.time()),
+                query_key,
+                json.dumps(result) if result is not None else None,
+                successful_at,
+            ),
         )
+
+
+def get_cached_song_search(query_key: str, max_age: int) -> dict | None:
+    with _session() as conn:
+        row = conn.execute(
+            "SELECT modal_call_id, result_json, successful_at FROM song_searches "
+            "WHERE query_key = ? AND successful_at > ? "
+            "ORDER BY successful_at DESC LIMIT 1",
+            (query_key, time.time() - max_age),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
 
 def get_song_search(search_id: str, session_id: str, max_age: int) -> dict | None:
@@ -138,9 +179,13 @@ def get_song_search(search_id: str, session_id: str, max_age: int) -> dict | Non
 def finish_song_search(search_id: str, result: dict) -> None:
     with _session() as conn:
         conn.execute(
-            "UPDATE song_searches SET result_json = ? "
+            "UPDATE song_searches SET result_json = ?, successful_at = ? "
             "WHERE id = ? AND result_json IS NULL",
-            (json.dumps(result), search_id),
+            (
+                json.dumps(result),
+                time.time() if result.get("status") == "done" else None,
+                search_id,
+            ),
         )
 
 

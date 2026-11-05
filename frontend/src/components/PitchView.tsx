@@ -4,6 +4,7 @@ import type { JobDTO, PitchNoteDTO } from "~/api";
 import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, recoverPitchVocals, resultUrl } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
 import { Button } from "~/components/button";
+import TimelineKaraoke from "./TimelineKaraoke";
 
 const ROW_HEIGHT = 24;
 const AXIS_WIDTH = 54;
@@ -42,6 +43,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [selectedNote, setSelectedNote] = createSignal<PitchNoteDTO | null>(null);
   const [selectedWord, setSelectedWord] = createSignal<number | null>(null);
   const [follow, setFollow] = createSignal(true);
+  const [browsing, setBrowsing] = createSignal(false);
+  const [playbackError, setPlaybackError] = createSignal("");
   const [recoveredVocals, setRecoveredVocals] = createSignal(false);
   const [recoveringVocals, setRecoveringVocals] = createSignal(false);
   const [recoveryError, setRecoveryError] = createSignal("");
@@ -50,6 +53,119 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const dismissTooltip = () => setTooltip(null);
   let audio!: HTMLAudioElement;
   let viewport!: HTMLDivElement;
+  let lastScrollLeft = 0;
+  let lastScrollTop = 0;
+  let programmedScroll: { left: number; top: number } | undefined;
+  let userScroll = false;
+  let legacyScroll = false;
+  let userScrolled = false;
+  let returnedToPlayhead = false;
+  let scrollSettled = false;
+  let activePointer: number | null = null;
+  let touching = false;
+  const heldScrollKeys = new Set<string>();
+  let settlingFrame: number | undefined;
+  let playbackFrame: number | undefined;
+  const gestureActive = () => activePointer !== null || touching || heldScrollKeys.size > 0;
+  const hasNativeScrollEnd = () => "onscrollend" in viewport;
+  const cancelSettling = () => {
+    if (settlingFrame !== undefined) cancelAnimationFrame(settlingFrame);
+    settlingFrame = undefined;
+  };
+  const finishUserScroll = () => {
+    if (gestureActive()) return;
+    // Remember the user's return, even if playback has since left the view.
+    // Only subsequent manual panning away can revoke that return.
+    if (returnedToPlayhead) setBrowsing(false);
+    userScroll = false;
+    userScrolled = false;
+    returnedToPlayhead = false;
+    scrollSettled = false;
+    cancelSettling();
+  };
+  const settleLegacyScroll = () => {
+    if (!viewport || hasNativeScrollEnd() || gestureActive() || !userScroll) return;
+    cancelSettling();
+    let left = viewport.scrollLeft;
+    let top = viewport.scrollTop;
+    let paintedStill = false;
+    const sample = () => {
+      settlingFrame = undefined;
+      if (gestureActive() || !userScroll) return;
+      const still = left === viewport.scrollLeft && top === viewport.scrollTop;
+      if (still && paintedStill) {
+        finishUserScroll();
+        return;
+      }
+      paintedStill = still;
+      left = viewport.scrollLeft;
+      top = viewport.scrollTop;
+      settlingFrame = requestAnimationFrame(sample);
+    };
+    settlingFrame = requestAnimationFrame(sample);
+  };
+  const armUserScroll = () => {
+    userScroll = true;
+    legacyScroll = !hasNativeScrollEnd();
+    scrollSettled = false;
+    cancelSettling();
+  };
+  const releaseGesture = () => {
+    if (gestureActive()) return;
+    if (!userScrolled || scrollSettled) finishUserScroll();
+    else settleLegacyScroll();
+  };
+  const moveViewport = (left: number, top = viewport.scrollTop) => {
+    returnedToPlayhead = false;
+    viewport.scrollLeft = Math.max(0, left);
+    viewport.scrollTop = Math.max(0, top);
+    lastScrollLeft = viewport.scrollLeft;
+    lastScrollTop = viewport.scrollTop;
+    programmedScroll = { left: lastScrollLeft, top: lastScrollTop };
+  };
+  const onTimelineScroll = () => {
+    const left = viewport.scrollLeft;
+    const top = viewport.scrollTop;
+    const previousLeft = lastScrollLeft;
+    const previousTop = lastScrollTop;
+    lastScrollLeft = left;
+    lastScrollTop = top;
+    const programmed = programmedScroll;
+    programmedScroll = undefined;
+    if (programmed?.left === left && programmed.top === top) return;
+    if (left === previousLeft && top === previousTop) return;
+    // Legacy browsers can deliver inertia after a briefly stationary frame.
+    // Keep recognizing that gesture; our own scroll writes are excluded above.
+    if (!userScroll && legacyScroll) userScroll = true;
+    if (!userScroll) return;
+    userScrolled = true;
+    scrollSettled = false;
+    setBrowsing(true);
+    if (left !== previousLeft) {
+      const x = AXIS_WIDTH + position() * zoom();
+      const visibleAt = (offset: number) => x >= offset + AXIS_WIDTH && x < offset + viewport.clientWidth;
+      const distanceAt = (offset: number) => Math.max(offset + AXIS_WIDTH - x, x - offset - viewport.clientWidth, 0);
+      const wasVisible = visibleAt(previousLeft);
+      const isVisible = visibleAt(left);
+      if (!wasVisible && isVisible) returnedToPlayhead = true;
+      else if (!isVisible && (wasVisible || distanceAt(left) > distanceAt(previousLeft))) returnedToPlayhead = false;
+    }
+    settleLegacyScroll();
+  };
+  const stopPlaybackClock = () => {
+    if (playbackFrame !== undefined) cancelAnimationFrame(playbackFrame);
+    playbackFrame = undefined;
+  };
+  const startPlaybackClock = () => {
+    stopPlaybackClock();
+    const frame = () => {
+      playbackFrame = undefined;
+      if (audio.paused || audio.ended || audio.error) return;
+      updatePosition();
+      playbackFrame = requestAnimationFrame(frame);
+    };
+    playbackFrame = requestAnimationFrame(frame);
+  };
   const showTooltip = (target: Element, key: object, lyrics: string, note?: string) => {
     const rect = target.getBoundingClientRect();
     const visible = viewport.getBoundingClientRect();
@@ -71,9 +187,45 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   onMount(() => {
     window.addEventListener("scroll", dismissTooltip, true);
     window.addEventListener("resize", dismissTooltip);
+    const pointerEnded = (event: PointerEvent) => {
+      if (event.pointerId !== activePointer) return;
+      activePointer = null;
+      // Touch panning cancels the pointer before the finger and inertia finish.
+      if (event.type !== "pointercancel") releaseGesture();
+      else settleLegacyScroll();
+    };
+    const touchEnded = (event: TouchEvent) => {
+      if (event.touches.length === 0) {
+        touching = false;
+        releaseGesture();
+      }
+    };
+    const keyEnded = (event: KeyboardEvent) => {
+      heldScrollKeys.delete(event.key);
+      releaseGesture();
+    };
+    const scrollEnded = (event: Event) => {
+      if (event.target !== viewport || !userScroll || !userScrolled) return;
+      scrollSettled = true;
+      finishUserScroll();
+    };
+    window.addEventListener("pointerup", pointerEnded);
+    window.addEventListener("pointercancel", pointerEnded);
+    window.addEventListener("touchend", touchEnded, { passive: true });
+    window.addEventListener("touchcancel", touchEnded, { passive: true });
+    window.addEventListener("keyup", keyEnded);
+    window.addEventListener("scrollend", scrollEnded, true);
     onCleanup(() => {
       window.removeEventListener("scroll", dismissTooltip, true);
       window.removeEventListener("resize", dismissTooltip);
+      window.removeEventListener("pointerup", pointerEnded);
+      window.removeEventListener("pointercancel", pointerEnded);
+      window.removeEventListener("touchend", touchEnded);
+      window.removeEventListener("touchcancel", touchEnded);
+      window.removeEventListener("keyup", keyEnded);
+      window.removeEventListener("scrollend", scrollEnded, true);
+      cancelSettling();
+      stopPlaybackClock();
     });
   });
   const track = createMemo(() => analysis().tracks.find(item => item.label === trackLabel()) ?? analysis().tracks[0]);
@@ -169,7 +321,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     const old = zoom();
     const center = viewport ? (viewport.scrollLeft + viewport.clientWidth / 2 - AXIS_WIDTH) / old : 0;
     setZoom(next);
-    if (viewport) viewport.scrollLeft = Math.max(0, center * next - viewport.clientWidth / 2 + AXIS_WIDTH);
+    if (viewport) moveViewport(center * next - viewport.clientWidth / 2 + AXIS_WIDTH);
   };
   createEffect(() => {
     // Native source changes stop the old audio without autoplay; the existing
@@ -179,6 +331,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       const next = pendingSourcePosition ?? position();
       pendingSourcePosition = next > 0 ? next : null;
       if (audio) {
+        stopPlaybackClock();
+        setPlaybackError("");
         audio.load();
         audio.currentTime = toAudioTime(next);
       }
@@ -198,7 +352,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     const middle = pitches[Math.floor(pitches.length / 2)];
     const rowCenter = 32 + (rows()[0] - middle + 0.5) * ROW_HEIGHT;
     const availableHeight = viewport.clientHeight - (analysis().word_alignment || analysis().words.length > 0 ? 64 : 0);
-    viewport.scrollTop = Math.max(0, rowCenter - availableHeight / 2);
+    moveViewport(viewport.scrollLeft, rowCenter - availableHeight / 2);
   });
   const updatePosition = () => {
     // Loading a different source briefly reports zero before its metadata and
@@ -209,10 +363,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       pendingSourcePosition = null;
     }
     setPosition(next);
-    if (follow() && !audio.paused && viewport) {
+    // Armed input alone is not movement (for example a subpixel wheel delta).
+    // Observe pending physical movement before any auto-follow write.
+    if (viewport) onTimelineScroll();
+    if (follow() && !browsing() && !gestureActive() && !(userScroll && userScrolled) && !audio.paused && viewport) {
       const x = AXIS_WIDTH + next * zoom();
       if (x > viewport.scrollLeft + viewport.clientWidth - 40 || x < viewport.scrollLeft + AXIS_WIDTH) {
-        viewport.scrollLeft = Math.max(0, x - AXIS_WIDTH - 30);
+        moveViewport(x - AXIS_WIDTH - 30);
       }
     }
   };
@@ -262,13 +419,6 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       <Show when={sourceClock() && analysis().tempo_percent !== 100}>
         <p class="text-xs text-muted-foreground">Original-speed playback uses its original clock, mapped to the output timeline. Select Just vocals for matching transformed playback when available.</p>
       </Show>
-      <audio ref={audio} aria-label={`Pitch reference: ${referenceLabel()}`} controls preload="none" class="w-full" src={referenceUrl()}
-        onLoadedMetadata={() => {
-          if (pendingSourcePosition !== null) {
-            audio.currentTime = toAudioTime(pendingSourcePosition);
-          }
-        }}
-        onTimeUpdate={updatePosition} onSeeked={updatePosition} />
       <p class="text-xs text-muted-foreground">Swipe or scroll horizontally; zoom for short notes. Tap the time ruler to seek, or tap a note to seek and inspect it. Focus the ruler and use arrow keys (1 second), Page Up/Down (10 seconds), or Home/End. Playback position: {timeLabel(position())} (output time).</p>
       <Show when={analysis().word_alignment || analysis().words.length > 0}>
         <p class="pitch-alignment-notice">{`${analysis().word_alignment === "torchaudio/MMS_FA" ? "Approximate MMS acoustic word alignment from full vocals, not exact syllable timing; reference-aligned words are not verified lyrics. Uncorroborated provider words have no word links. Acoustic alignment scores are not calibrated correctness probabilities." : analysis().word_alignment === "whisper-approximate" ? "Approximate Whisper word alignment from full vocals, not exact syllable timing or independent recognition of split voices." : "Stored approximate word timings; the alignment model is unspecified, not inferred from these values."} Words below the notes may be wrong or misaligned. Select a word to highlight its linked notes; one word can span several notes (melisma).`}</p>
@@ -280,7 +430,28 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <p class="text-xs text-muted-foreground">Request lyrics together with pitch to add approximate sung-word associations.</p>
       </Show>
       <Show when={notes().length > 0} fallback={<p role="status" class="text-sm text-muted-foreground">No confident voiced notes detected in this stem.</p>}>
-        <div ref={viewport} class="pitch-viewport" tabIndex={0} role="region" aria-label="Scrollable vocal melody timeline">
+        <div ref={viewport} class="pitch-viewport" tabIndex={0} role="region" aria-label="Scrollable vocal melody timeline"
+          onScroll={onTimelineScroll}
+          onPointerDown={event => { activePointer = event.pointerId; armUserScroll(); }}
+          onTouchStart={() => { touching = true; armUserScroll(); }}
+          onWheel={event => {
+            if (event.ctrlKey || event.defaultPrevented) {
+              if (!userScrolled && !gestureActive()) userScroll = false;
+              return;
+            }
+            const dx = event.shiftKey ? event.deltaY : event.deltaX;
+            const dy = event.shiftKey ? 0 : event.deltaY;
+            if ((dx < 0 && viewport.scrollLeft > 0) || (dx > 0 && viewport.scrollLeft < viewport.scrollWidth - viewport.clientWidth)
+              || (dy < 0 && viewport.scrollTop > 0) || (dy > 0 && viewport.scrollTop < viewport.scrollHeight - viewport.clientHeight)) armUserScroll();
+          }}
+          onKeyDown={event => {
+            if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(event.key)
+              || (event.key === " " && event.target === viewport)) {
+              heldScrollKeys.add(event.key);
+              armUserScroll();
+            }
+          }}>
           <div class="pitch-canvas" style={{ width: `${width() + AXIS_WIDTH}px` }}>
             <div class="pitch-ruler" style={{ width: `${width() + AXIS_WIDTH}px` }}
               role="slider" tabIndex={0} aria-label="Pitch timeline position" aria-orientation="horizontal"
@@ -312,6 +483,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
                     aria-label={noteDescription(note)} data-note={note.note} data-start={note.start_s} data-end={note.end_s}
                     aria-describedby={tooltip()?.key === note ? tooltipId : undefined}
                     onPointerEnter={event => showNoteTooltip(event.currentTarget, note)} onPointerLeave={dismissTooltip}
+                    onPointerMove={event => { if ((event.pointerType === "mouse" || event.pointerType === "pen") && tooltip()?.key !== note) showNoteTooltip(event.currentTarget, note); }}
                     onFocus={event => showNoteTooltip(event.currentTarget, note)} onBlur={dismissTooltip}
                     onClick={event => { selectNote(note); showNoteTooltip(event.currentTarget, note); }}
                     onKeyDown={event => {
@@ -336,6 +508,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
                     aria-label={`${word.origin === "asr-extra" ? "ASR-only extra: " : ""}${word.text}, approximate word timing; ${linked().length} linked notes`}
                     aria-describedby={tooltip()?.key === word ? tooltipId : undefined}
                     onPointerEnter={event => showTooltip(event.currentTarget, word, word.text)} onPointerLeave={dismissTooltip}
+                    onPointerMove={event => { if ((event.pointerType === "mouse" || event.pointerType === "pen") && tooltip()?.key !== word) showTooltip(event.currentTarget, word, word.text); }}
                     onFocus={event => showTooltip(event.currentTarget, word, word.text)} onBlur={dismissTooltip}
                     onKeyDown={event => { if (event.key === "Escape") dismissTooltip(); }}
                     onClick={event => {
@@ -364,6 +537,26 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         </>}</Show>
         <Show when={selectedWord() !== null}><span>“{analysis().words[selectedWord()!].text}” · {notes().filter(note => note.word_indices.includes(selectedWord()!)).length} linked notes (approximate full-vocal word alignment).</span></Show>
       </div>
+      <footer class="pitch-footer">
+        <TimelineKaraoke job={props.job} position={position()} />
+        <p class="pitch-follow-status" role="status">
+          <Show when={follow() && browsing()}>Auto-follow paused while browsing. Scroll back to the playhead to resume.</Show>
+        </p>
+        <Show when={playbackError()}><p role="alert" class="text-sm text-destructive">{playbackError()}</p></Show>
+        <audio ref={audio} aria-label={`Pitch reference: ${referenceLabel()}`} controls preload="none" class="w-full" src={referenceUrl()}
+          onPlay={startPlaybackClock} onPause={stopPlaybackClock} onEnded={stopPlaybackClock}
+          onEmptied={() => { stopPlaybackClock(); setPlaybackError(""); }}
+          onError={() => { stopPlaybackClock(); setPlaybackError(audio.error?.message || "This reference audio could not be played."); }}
+          onLoadedMetadata={() => {
+            setPlaybackError("");
+            if (pendingSourcePosition !== null) audio.currentTime = toAudioTime(pendingSourcePosition);
+          }}
+          onTimeUpdate={updatePosition} onSeeked={updatePosition} />
+        <div class="pitch-skip-controls" role="group" aria-label="Skip playback">
+          <Button type="button" variant="outline" aria-label="Back 5 seconds" onClick={() => seek(position() - 5)}>−5 s</Button>
+          <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => seek(position() + 5)}>+5 s</Button>
+        </div>
+      </footer>
     </section>
   );
 };

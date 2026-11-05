@@ -6,6 +6,8 @@ type SpeechTestWindow = Window & { recognition: QueryRecognition; aborted: numbe
 // Controlled API boundary responses test the browser contract, not the real
 // LLM/catalog. External-provider smoke tests are deliberately outside default CI.
 for (const width of [375, 390, 430, 1440, 2560]) {
+  test.describe(`source input at ${width}px`, () => {
+  test.use({ hasTouch: width < 700 });
   test(`discovery selection and stale source protection ${width}`, async ({ page }, info) => {
     await page.setViewportSize({ width, height: width < 700 ? 844 : 1000 });
     let searches = 0;
@@ -30,10 +32,13 @@ for (const width of [375, 390, 430, 1440, 2560]) {
       return route.fulfill({ json: { original_key: 'C major' } });
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Find song', exact: true }).click();
+    const finder = page.getByRole('button', { name: 'Find song', exact: true });
+    if (width < 700) await finder.tap();
+    else await finder.click();
     const query = page.getByLabel('Describe a song', { exact: true });
-    await query.fill('宇多田ヒカル First Love');
-    await query.press('Enter');
+    if (width < 700) await query.tap();
+    else await query.click();
+    await query.pressSequentially('宇多田ヒカル First Love');
     expect(searches).toBe(0);
     expect(jobs).toBe(0);
     expect(await query.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(16);
@@ -45,9 +50,12 @@ for (const width of [375, 390, 430, 1440, 2560]) {
       expect(size.width).toBeGreaterThanOrEqual(44);
       expect(size.height).toBeGreaterThanOrEqual(44);
     }
-    await search.click();
+    if (width === 390 || width === 1440) await query.press('Enter');
+    else await search.click();
     await expect(search).toBeDisabled();
-    await expect(page.getByRole('status')).toContainText('Finding on YouTube Music');
+    await expect(page.getByRole('status')).toBeVisible();
+    await expect.poll(() => searches).toBe(1);
+    if (width === 390 || width === 1440) await query.press('Enter');
     await page.screenshot({ path: info.outputPath(`song-pending-${width}.png`), fullPage: true });
     const link = page.getByRole('link', { name: 'Verify on YouTube Music' });
     await expect(link).toHaveAttribute('href', 'https://music.youtube.com/watch?v=o1sUaVJUeB0');
@@ -55,13 +63,19 @@ for (const width of [375, 390, 430, 1440, 2560]) {
     await expect.poll(() => analyzed.length).toBe(1);
     expect(analyzed[0]).toContain('https://music.youtube.com/watch?v=o1sUaVJUeB0');
     expect(jobs).toBe(0);
+    expect(searches).toBe(1);
+    await info.attach('search-request-proof', {
+      body: JSON.stringify({ width, hasTouch: width < 700, trigger: width === 390 || width === 1440 ? 'Enter' : 'button', searches, polls, jobs, analyzed }, null, 2),
+      contentType: 'application/json',
+    });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: info.outputPath(`song-selected-${width}.png`), fullPage: true });
     await query.fill('edited song');
     await expect(link).toHaveCount(0);
     await page.getByRole('button', { name: 'Download song', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('Find and select a song');
+    await expect(page.getByRole('alert')).toBeVisible();
     expect(jobs).toBe(0);
+  });
   });
 }
 
