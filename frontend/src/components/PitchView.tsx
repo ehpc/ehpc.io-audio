@@ -66,6 +66,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const heldScrollKeys = new Set<string>();
   let settlingFrame: number | undefined;
   let playbackFrame: number | undefined;
+  let playAttempt = 0;
   const gestureActive = () => activePointer !== null || touching || heldScrollKeys.size > 0;
   const hasNativeScrollEnd = () => "onscrollend" in viewport;
   const cancelSettling = () => {
@@ -158,6 +159,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
   const startPlaybackClock = () => {
     stopPlaybackClock();
+    setPlaybackError("");
     const frame = () => {
       playbackFrame = undefined;
       if (audio.paused || audio.ended || audio.error) return;
@@ -216,6 +218,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     window.addEventListener("keyup", keyEnded);
     window.addEventListener("scrollend", scrollEnded, true);
     onCleanup(() => {
+      playAttempt++;
       window.removeEventListener("scroll", dismissTooltip, true);
       window.removeEventListener("resize", dismissTooltip);
       window.removeEventListener("pointerup", pointerEnded);
@@ -301,7 +304,28 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (event.clientX < viewport.getBoundingClientRect().left + viewport.clientLeft + AXIS_WIDTH) return;
     seek((event.clientX - event.currentTarget.getBoundingClientRect().left - AXIS_WIDTH) / zoom());
   };
+  const togglePlaybackKey = (event: KeyboardEvent): boolean => {
+    if (event.key !== " " || event.target !== event.currentTarget || event.defaultPrevented
+      || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return true;
+    const attempt = ++playAttempt;
+    if (!audio.paused) audio.pause();
+    else {
+      setPlaybackError("");
+      void audio.play().catch((error: unknown) => {
+        if (attempt !== playAttempt) return;
+        // Native pause/load can interrupt a pending play without a media failure.
+        if (error instanceof DOMException && error.name === "AbortError" && audio.paused) return;
+        setPlaybackError(error instanceof Error || error instanceof DOMException
+          ? error.message : "This reference audio could not be played.");
+      });
+    }
+    return true;
+  };
   const seekRulerKey = (event: KeyboardEvent) => {
+    if (togglePlaybackKey(event)) return;
     const next = event.key === "Home" ? 0 : event.key === "End" ? analysis().duration_s
       : event.key === "ArrowRight" || event.key === "ArrowUp" ? position() + 1
         : event.key === "ArrowLeft" || event.key === "ArrowDown" ? position() - 1
@@ -331,6 +355,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       const next = pendingSourcePosition ?? position();
       pendingSourcePosition = next > 0 ? next : null;
       if (audio) {
+        playAttempt++;
         stopPlaybackClock();
         setPlaybackError("");
         audio.load();
@@ -430,7 +455,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <p class="text-xs text-muted-foreground">Request lyrics together with pitch to add approximate sung-word associations.</p>
       </Show>
       <Show when={notes().length > 0} fallback={<p role="status" class="text-sm text-muted-foreground">No confident voiced notes detected in this stem.</p>}>
-        <div ref={viewport} class="pitch-viewport" tabIndex={0} role="region" aria-label="Scrollable vocal melody timeline"
+        <div ref={viewport} class="pitch-viewport" tabIndex={0} role="region" aria-label="Scrollable vocal melody timeline" aria-keyshortcuts="Space"
           onScroll={onTimelineScroll}
           onPointerDown={event => { activePointer = event.pointerId; armUserScroll(); }}
           onTouchStart={() => { touching = true; armUserScroll(); }}
@@ -445,16 +470,16 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
               || (dy < 0 && viewport.scrollTop > 0) || (dy > 0 && viewport.scrollTop < viewport.scrollHeight - viewport.clientHeight)) armUserScroll();
           }}
           onKeyDown={event => {
-            if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
-            if (event.key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(event.key)
-              || (event.key === " " && event.target === viewport)) {
+            if (togglePlaybackKey(event)) return;
+            if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return;
+            if (event.key.startsWith("Arrow") || ["PageUp", "PageDown", "Home", "End"].includes(event.key)) {
               heldScrollKeys.add(event.key);
               armUserScroll();
             }
           }}>
           <div class="pitch-canvas" style={{ width: `${width() + AXIS_WIDTH}px` }}>
             <div class="pitch-ruler" style={{ width: `${width() + AXIS_WIDTH}px` }}
-              role="slider" tabIndex={0} aria-label="Pitch timeline position" aria-orientation="horizontal"
+              role="slider" tabIndex={0} aria-label="Pitch timeline position" aria-orientation="horizontal" aria-keyshortcuts="Space"
               aria-valuemin={0} aria-valuemax={analysis().duration_s} aria-valuenow={position()}
               aria-valuetext={`${timeLabel(position())} output time`}
               onClick={seekRuler} onKeyDown={seekRulerKey}
@@ -548,7 +573,6 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           onEmptied={() => { stopPlaybackClock(); setPlaybackError(""); }}
           onError={() => { stopPlaybackClock(); setPlaybackError(audio.error?.message || "This reference audio could not be played."); }}
           onLoadedMetadata={() => {
-            setPlaybackError("");
             if (pendingSourcePosition !== null) audio.currentTime = toAudioTime(pendingSourcePosition);
           }}
           onTimeUpdate={updatePosition} onSeeked={updatePosition} />

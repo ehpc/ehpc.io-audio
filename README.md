@@ -538,6 +538,12 @@ seconds, clamp to zero/the analysis end, and preserve playing/paused state,
 volume, background source and selected stem. The unchanged original uses its
 tempo-converted source clock; transformed backgrounds use the output clock.
 
+With focus on the timeline's scroll region or time ruler, **Space** toggles that
+same native player without scrolling the page; holding Space does not repeatedly
+toggle playback. It does not clear a browsing pause. Focused notes and word
+buttons retain their selection actions, and other controls retain their own
+keyboard behavior.
+
 With **Follow playback** enabled, manually panning by wheel, touch, scrollbar or
 keyboard pauses auto-follow while you browse. Only a manual horizontal return
 that brings the current playhead back into the visible note region resumes it,

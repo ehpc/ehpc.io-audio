@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { JobDTO, PitchAnalysisDTO } from "~/api";
@@ -78,6 +79,117 @@ function animationFrames() {
     for (const callback of pending) callback(0);
   };
 }
+
+function keyboardPlayer() {
+  const player = scrollPlayer();
+  player.state.paused = true;
+  const play = vi.spyOn(player.audio, "play").mockImplementation(() => {
+    player.state.paused = false;
+    fireEvent.play(player.audio);
+    return Promise.resolve();
+  });
+  vi.spyOn(player.audio, "pause").mockImplementation(() => {
+    player.state.paused = true;
+    fireEvent.pause(player.audio);
+  });
+  return { ...player, play };
+}
+
+it.each(["viewport", "ruler"])("toggles native playback with focused %s Space without repeating or arming browsing", targetName => {
+  const frame = animationFrames();
+  const player = keyboardPlayer();
+  const target = targetName === "viewport" ? player.viewport : screen.getByRole("slider", { name: "Pitch timeline position" });
+  fireEvent.keyDown(target, { key: " " });
+  expect(player.audio.paused).toBe(false);
+  fireEvent.keyDown(target, { key: " ", repeat: true });
+  expect(player.audio.paused).toBe(false);
+  player.audio.currentTime = 5;
+  frame();
+  expect(player.viewport.scrollLeft).toBeGreaterThan(0);
+  fireEvent.keyUp(target, { key: " " });
+  fireEvent.keyDown(target, { key: " " });
+  expect(player.audio.paused).toBe(true);
+  player.audio.currentTime = 6;
+  frame();
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "5");
+});
+
+it("keeps a browsed view fixed when Space restarts and pauses playback", () => {
+  const frame = animationFrames();
+  const player = keyboardPlayer();
+  player.time(5);
+  player.wheel(3000);
+  player.end();
+  fireEvent.keyDown(player.viewport, { key: " " });
+  expect(player.audio.paused).toBe(false);
+  player.audio.currentTime = 9;
+  frame();
+  expect(player.viewport.scrollLeft).toBe(3000);
+  fireEvent.keyUp(player.viewport, { key: " " });
+  fireEvent.keyDown(player.viewport, { key: " " });
+  expect(player.audio.paused).toBe(true);
+  expect(player.viewport.scrollLeft).toBe(3000);
+});
+
+it("leaves note/word Space activation and composing or modified Space to their existing owners", async () => {
+  const player = keyboardPlayer();
+  for (const target of [player.viewport, screen.getByRole("slider", { name: "Pitch timeline position" })]) {
+    for (const modifier of [{ isComposing: true }, { keyCode: 229 }, { ctrlKey: true }, { metaKey: true }, { altKey: true }]) {
+      const event = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true, ...modifier });
+      fireEvent(target, event);
+      expect(player.audio.paused).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+    }
+  }
+  const note = document.querySelectorAll<SVGGElement>(".pitch-note")[1];
+  fireEvent.keyDown(note, { key: " " });
+  expect(player.audio.currentTime).toBe(2);
+  expect(player.audio.paused).toBe(true);
+  expect(document.querySelector(".pitch-selection")).toHaveTextContent("D#4");
+  const word = screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" });
+  word.focus();
+  await userEvent.keyboard("[Space]");
+  expect(player.audio.currentTime).toBe(1);
+  expect(player.audio.paused).toBe(true);
+  expect(document.querySelector(".pitch-selection")).toHaveTextContent("world");
+});
+
+it.each(["keyboard pause", "external pause", "restart", "source change"])("does not report interrupted pending playback after %s", async interruption => {
+  const player = keyboardPlayer();
+  const pending = Promise.withResolvers<void>();
+  player.play.mockImplementationOnce(() => { player.state.paused = false; fireEvent.play(player.audio); return pending.promise; });
+  vi.spyOn(player.audio, "load").mockImplementation(() => { player.state.paused = true; fireEvent.emptied(player.audio); });
+  fireEvent.keyDown(player.viewport, { key: " " });
+  expect(player.audio.paused).toBe(false);
+  if (interruption === "keyboard pause" || interruption === "restart") {
+    fireEvent.keyUp(player.viewport, { key: " " });
+    fireEvent.keyDown(player.viewport, { key: " " });
+    if (interruption === "restart") {
+      fireEvent.keyUp(player.viewport, { key: " " });
+      fireEvent.keyDown(player.viewport, { key: " " });
+    }
+  } else if (interruption === "external pause") player.audio.pause();
+  else fireEvent.change(screen.getByLabelText("Pitch background audio"), { target: { value: "song" } });
+  pending.reject(new DOMException("The old playback attempt ended.", interruption === "source change" ? "NotSupportedError" : "AbortError"));
+  await pending.promise.catch(() => {});
+  expect(player.audio.paused).toBe(interruption !== "restart");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it.each(["NotAllowedError", "NotSupportedError"])("shows a current %s until playback actually restarts", async name => {
+  const player = keyboardPlayer();
+  const message = `Media refused playback: ${name}`;
+  player.play.mockRejectedValueOnce(new DOMException(message, name));
+  fireEvent.keyDown(player.viewport, { key: " " });
+  expect(await screen.findByRole("alert")).toHaveTextContent(message);
+  expect(player.audio.paused).toBe(true);
+  fireEvent.loadedMetadata(player.audio);
+  expect(screen.getByRole("alert")).toBeVisible();
+  fireEvent.keyUp(player.viewport, { key: " " });
+  fireEvent.keyDown(player.viewport, { key: " " });
+  expect(player.audio.paused).toBe(false);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
 
 it("uses detected time/pitch geometry, linked melisma, zoom and real player seeking without inventing syllables", () => {
   render(() => <PitchView job={job()} />);

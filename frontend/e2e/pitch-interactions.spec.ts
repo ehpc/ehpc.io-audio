@@ -40,6 +40,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const view = page.getByLabel('Vocal pitch analysis', { exact: true });
     await expect(view).toBeVisible();
     const player = view.locator('audio');
+    const scroll = view.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
     const sourceSelector = view.getByRole('combobox', { name: 'Pitch background audio' });
     const back = view.getByRole('button', { name: 'Back 5 seconds', exact: true });
     const forward = view.getByRole('button', { name: 'Forward 5 seconds', exact: true });
@@ -75,7 +76,23 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       && audio.duration > 10 && audio.seekable.length > 0)).toBe(true);
     await competingAudio.evaluate(audio => audio.play());
     await expect.poll(() => competingAudio.evaluate(audio => !audio.paused)).toBe(true);
-    await player.evaluate(element => element.play());
+    for (const target of [scroll, ruler]) {
+      await scroll.scrollIntoViewIfNeeded();
+      await target.focus();
+      const before = await scroll.evaluate(element => ({ page: scrollY, top: element.scrollTop, left: element.scrollLeft }));
+      const start = await player.evaluate(element => element.currentTime);
+      await page.keyboard.down('Space');
+      await expect.poll(() => player.evaluate(element => !element.paused)).toBe(true);
+      await expect.poll(() => competingAudio.evaluate(element => element.paused)).toBe(true);
+      await page.keyboard.down('Space'); // Browser-generated repeat=true.
+      await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(start + 0.3);
+      await page.keyboard.up('Space');
+      await target.press('Space');
+      await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
+      expect(await scroll.evaluate(element => ({ page: scrollY, top: element.scrollTop, left: element.scrollLeft }))).toEqual(before);
+    }
+    await scroll.focus();
+    await scroll.press('Space');
     await expect.poll(() => player.evaluate(element => !element.paused)).toBe(true);
     await expect.poll(() => competingAudio.evaluate(audio => audio.paused)).toBe(true);
     await activate(forward);
@@ -141,10 +158,17 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(wordTooltip).toBeVisible();
     await expect(wordTooltip).toHaveText('Should');
     await expect(wordTooltip).not.toContainText(/F4|confidence|approximate|0:10|model/i);
+    await note.focus();
+    await note.press('Space');
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(Number(await note.getAttribute('data-start')) * 1.25, 1);
+    expect(await player.evaluate(element => element.paused)).toBe(true);
+    await word.focus();
+    await word.press('Space');
+    await expect(view.locator('.pitch-selection')).toContainText('Should');
+    expect(await player.evaluate(element => element.paused)).toBe(true);
 
     // Real playback must not immediately undo a user's horizontal browsing.
     await view.getByRole('slider', { name: 'Melody zoom', exact: true }).fill('640');
-    const scroll = view.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
     const touch = viewport.width <= 700 ? await page.context().newCDPSession(page) : null;
     const afterPanSettles = async (input: () => Promise<void>) => {
       const settled = await scroll.evaluateHandle(element => {
@@ -245,12 +269,16 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await pan(-600);
     await expect.poll(() => scroll.evaluate(element => element.scrollLeft)).toBeLessThan(manuallyChosen - 500);
     const pausedChoice = await scroll.evaluate(element => element.scrollLeft);
-    await player.evaluate(element => element.play());
+    await scroll.focus();
+    await scroll.press('Space');
+    await expect.poll(() => player.evaluate(element => !element.paused)).toBe(true);
     await activate(forward);
     expect(await player.evaluate(element => !element.paused && element.volume === 0.4)).toBe(true);
     expect(await competingAudio.evaluate(element => element.paused)).toBe(true);
     expect(await scroll.evaluate(element => element.scrollLeft)).toBe(pausedChoice);
-    await player.evaluate(element => element.pause());
+    await scroll.focus();
+    await scroll.press('Space');
+    await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
     const currentOutput = await player.evaluate(element => element.currentTime / 1.25);
     const returnTo = currentOutput * 640 - (await scroll.evaluate(element => element.clientWidth) - 54) / 2;
     await pan(returnTo - pausedChoice);
