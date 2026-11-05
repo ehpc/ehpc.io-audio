@@ -80,7 +80,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await expect(view.locator('.pitch-note-selected')).toHaveCount(linkedCount);
   await expect(view.locator('.pitch-selection')).toContainText(analysis.words[wordIndex].text);
   const selectedBackgroundUrl = await player.getAttribute('src');
-  await expect(player).toHaveAttribute('src', `/api/jobs/${id}/results/vocals`);
+  await expect(player).toHaveAttribute('src', `/api/jobs/${id}/pitch-reference/vocals`);
   await view.getByLabel('Pitch vocal stem', { exact: true }).selectOption('lead');
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect(player).toHaveAttribute('src', selectedBackgroundUrl!);
