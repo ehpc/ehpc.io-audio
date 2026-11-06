@@ -88,12 +88,12 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   await view.screenshot({ path: info.outputPath('pitched-lyrics-1440.png') });
   // New output does not add players; selected tracks retain exclusive playback.
   const original = page.locator('audio').first();
-  const vocal = page.locator(`audio[src="/api/jobs/${id}/results/vocals"]`);
+  const vocal = page.locator(`a[download][href="/api/jobs/${id}/results/vocals"]`).first().locator('..').locator('audio');
   await original.evaluate(element => element.play());
   await vocal.evaluate(element => element.play());
   await expect.poll(() => original.evaluate(element => element.paused)).toBe(true);
   await vocal.evaluate(element => element.pause());
-  const song = page.locator(`audio[src="/api/jobs/${id}/results/song"]`);
+  const song = page.locator(`a[download][href="/api/jobs/${id}/results/song"]`).first().locator('..').locator('audio');
   await song.evaluate(element => { element.preload = 'metadata'; element.load(); });
   await expect.poll(() => song.evaluate(element => element.duration)).toBeGreaterThan(0);
   const durationProof = {

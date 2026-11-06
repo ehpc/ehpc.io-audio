@@ -61,7 +61,7 @@ it("shows the requested pitched output without surfacing hidden analysis as extr
   expect(screen.getByRole("region", { name: "Aligned pitch and lyric text" }).textContent).toBe(job.pitched_lyrics![0].text);
   expect(screen.queryByRole("heading", { name: "Vocal pitch timeline" })).toBeNull();
   expect(screen.queryByText("not the pitched renderer")).toBeNull();
-  expect([...document.querySelectorAll("audio")].map(audio => audio.getAttribute("src"))).toEqual(["/api/jobs/9/original"]);
+  expect(document.querySelectorAll("audio")).toHaveLength(1);
 });
 
 it("also shows both legacy views when they were explicitly requested", () => {

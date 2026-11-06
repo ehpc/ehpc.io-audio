@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show, untrack, type Component } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { JobDTO, PitchNoteDTO } from "~/api";
-import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, recoverPitchVocals, resultUrl } from "~/api";
+import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, recoverPitchVocals, resultUrl } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
 import { Button } from "~/components/button";
 import TimelineKaraoke from "./TimelineKaraoke";
@@ -258,10 +258,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       ? initialTrack : hasSong() ? "song" : hasVocals() ? "vocals" : "song",
   );
   const sourceClock = () => reference() === "song" && !hasOutput("song");
-  const referenceUrl = () => reference() === "song"
-    ? hasOutput("song") ? resultUrl(props.job.id, "song") : props.job.has_original ? originalUrl(props.job.id) : undefined
-    : reference() === "vocals" ? pitchVocalsUrl(props.job.id)
-      : resultUrl(props.job.id, reference());
+  const referenceUrl = () => {
+    const url = reference() === "song"
+      ? hasOutput("song") ? resultUrl(props.job.id, "song") : props.job.has_original ? originalUrl(props.job.id) : undefined
+      : reference() === "vocals" ? pitchVocalsUrl(props.job.id)
+        : resultUrl(props.job.id, reference());
+    return url ? playbackUrl(url) : undefined;
+  };
   const referenceLabel = () => reference() === "song"
     ? hasOutput("song") ? "Transformed full song (not isolated vocals)" : "Original full song (unchanged, not isolated vocals)"
     : reference() === "vocals" ? `Just vocals (all vocal parts) · ${displayOutputLabel("vocals", props.job.options)}`

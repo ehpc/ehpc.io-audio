@@ -9,6 +9,7 @@ const longLine = 'A lighthouse watches over quiet boats while silver clouds drif
 const rapidWords = ['Bright', 'small', 'sparks', 'rise', 'then', 'fall', 'soft', 'rain'];
 let original: Buffer;
 let transformed: Buffer;
+let transformedPlayback: Buffer;
 
 test.beforeAll(() => {
   const source = resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg');
@@ -17,6 +18,19 @@ test.beforeAll(() => {
   transformed = execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-i', 'pipe:0',
     '-af', 'atempo=1.25', '-codec:a', 'libmp3lame', '-f', 'mp3', 'pipe:1'],
   { input: original, maxBuffer: 16 * 1024 * 1024 });
+  transformedPlayback = execFileSync('uv', ['run', 'python', '-c', String.raw`
+import sys
+from pathlib import Path
+from backend.playback import listening_path
+root=Path(sys.argv[1])
+source=root / 'karaoke-listening-source.mp3'
+source.write_bytes(sys.stdin.buffer.read())
+result=listening_path(source,root / 'karaoke-listening-cache')
+assert result is not None
+sys.stdout.buffer.write(result.read_bytes())
+`, process.env.E2E_FIXTURE_DIR!], {
+    cwd: process.env.E2E_REPO_ROOT!, input: transformed, maxBuffer: 16 * 1024 * 1024,
+  });
 });
 
 function aligned(text: string, start: number, end: number): AlignedWordDTO {
@@ -71,18 +85,20 @@ function karaokeJob(): JobDTO {
 async function mountFixture(page: Page) {
   const job = karaokeJob();
   await page.route('**/api/jobs**', async route => {
-    const path = new URL(route.request().url()).pathname;
+    const url = new URL(route.request().url());
+    const path = url.pathname;
     expect(route.request().method(), 'this UI fixture must never submit an analysis job').toBe('GET');
     if (path === '/api/jobs/current' || path === `/api/jobs/${job.id}`) return route.fulfill({ json: job });
     if (path === '/api/jobs') return route.fulfill({ json: [] });
     const isOriginal = path === `/api/jobs/${job.id}/original`;
     if (isOriginal || path.startsWith(`/api/jobs/${job.id}/results/`) || path === `/api/jobs/${job.id}/pitch-reference/vocals`) {
-      const bytes = isOriginal ? original : transformed;
+      const listening = !isOriginal && url.searchParams.get('playback') === '1';
+      const bytes = isOriginal ? original : listening ? transformedPlayback : transformed;
       const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '');
       const start = range ? Number(range[1]) : 0;
       const end = range?.[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
       return route.fulfill({ status: range ? 206 : 200, body: bytes.subarray(start, end + 1),
-        contentType: isOriginal ? 'audio/ogg' : 'audio/mpeg', headers: {
+        contentType: isOriginal ? 'audio/ogg' : listening ? 'audio/mp4' : 'audio/mpeg', headers: {
           'Accept-Ranges': 'bytes', ...(range ? { 'Content-Range': `bytes ${start}-${end}/${bytes.length}` } : {}),
         } });
     }

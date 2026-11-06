@@ -1,6 +1,6 @@
 import { For, Show, type Component } from "solid-js";
 import type { JobDTO, StemManifestEntry } from "~/api";
-import { jobLabel, originalUrl, resultUrl } from "~/api";
+import { jobLabel, originalUrl, playbackUrl, resultUrl } from "~/api";
 import { displayOutputLabel, manifestOutputLabel } from "~/lib/expectedStems";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
@@ -43,7 +43,7 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
                 controls
                 preload="none"
                 class="w-full"
-                src={originalUrl(props.job.id)}
+                src={playbackUrl(originalUrl(props.job.id))}
               />
               <a
                 href={originalUrl(props.job.id)}
@@ -75,7 +75,7 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
                   controls
                   preload="none"
                   class="w-full"
-                  src={resultUrl(props.job.id, stem.label)}
+                  src={playbackUrl(resultUrl(props.job.id, stem.label))}
                 />
                 <a
                   href={resultUrl(props.job.id, stem.label)}

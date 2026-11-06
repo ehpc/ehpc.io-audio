@@ -66,7 +66,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const playhead = Number(await view.locator('.pitch-playhead').getAttribute('x1')) / 100;
   expect(Math.abs(playhead - await player.evaluate(element => element.currentTime))).toBeLessThan(0.6);
   // The new native player participates in the central playback guard too.
-  const original = page.locator(`audio[src="/api/jobs/${id}/original"]`).first();
+  const original = page.getByRole('link', { name: 'Download original', exact: true }).locator('..').locator('audio');
   await original.evaluate(element => element.play());
   await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
   await original.evaluate(element => element.pause());
@@ -80,14 +80,16 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await expect(view.locator('.pitch-note-selected')).toHaveCount(linkedCount);
   await expect(view.locator('.pitch-selection')).toContainText(analysis.words[wordIndex].text);
   const selectedBackgroundUrl = await player.getAttribute('src');
-  await expect(player).toHaveAttribute('src', `/api/jobs/${id}/pitch-reference/vocals`);
   await view.getByLabel('Pitch vocal stem', { exact: true }).selectOption('lead');
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect(player).toHaveAttribute('src', selectedBackgroundUrl!);
   await view.getByLabel('Pitch background audio', { exact: true }).selectOption('lead');
-  await expect(player).toHaveAttribute('src', `/api/jobs/${id}/results/lead`);
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
+  await player.evaluate(audio => audio.play());
+  const leadStartedAt = await player.evaluate(audio => audio.currentTime);
+  await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(leadStartedAt + 0.2);
+  await player.evaluate(audio => audio.pause());
   await view.screenshot({ path: info.outputPath('pitch-desktop.png') });
   const downloaded = await page.request.get(`/api/jobs/${id}/pitch`);
   expect(await downloaded.json()).toEqual(analysis);
@@ -180,7 +182,6 @@ test('pitch-only analysis retains the hidden full-vocal prerequisite and recover
   expect(job!.pitch!.tracks[0].notes.some(note => note.start_s < 4.5 && note.end_s > 2.5)).toBe(true);
   expect(job!.pitch!.word_alignment).toBeNull();
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
-  await expect(view.locator('audio')).toHaveAttribute('src', `/api/jobs/${id}/original`);
   await expect(view.getByLabel('Pitch background audio', { exact: true })).toHaveValue('song');
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
   const original = await page.request.get(`/api/jobs/${id}/original`);
@@ -210,7 +211,6 @@ test('pitch-only analysis retains the hidden full-vocal prerequisite and recover
   const recoveredView = page.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(recoveredView).toBeVisible();
   await expect(recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true })).toBeVisible();
-  await expect(recoveredView.locator('audio')).toHaveAttribute('src', `/api/jobs/${id}/original`);
 
   const recovery = page.waitForResponse(response =>
     response.url().endsWith(`/api/jobs/${id}/pitch-reference/vocals`)
@@ -222,7 +222,6 @@ test('pitch-only analysis retains the hidden full-vocal prerequisite and recover
   await expect(recoveredView.getByLabel('Pitch background audio', { exact: true })).toHaveValue('vocals');
   expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(200);
   const recoveredPlayer = recoveredView.locator('audio');
-  await expect(recoveredPlayer).toHaveAttribute('src', `/api/jobs/${id}/pitch-reference/vocals`);
   await expect.poll(() => recoveredPlayer.evaluate(element => element.paused)).toBe(true);
   await recoveredPlayer.evaluate(element => element.play());
   await expect.poll(() => recoveredPlayer.evaluate(element =>

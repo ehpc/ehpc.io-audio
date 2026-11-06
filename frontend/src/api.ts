@@ -481,6 +481,10 @@ export function originalUrl(id: number): string {
   return `${API_BASE}/jobs/${id}/original`;
 }
 
+export function playbackUrl(audioUrl: string): string {
+  return `${audioUrl}?playback=1`;
+}
+
 export function subscribeToJob(
   id: number,
   onUpdate: (job: JobDTO) => void,

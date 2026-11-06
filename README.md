@@ -214,6 +214,23 @@ any source-key, pitch, and tempo descriptors present in the filename. If the
 source key is unknown, no source-key descriptor or placeholder is added. The
 original download is never retagged; its bytes remain unchanged.
 
+Native players use owner-protected **listening** requests (`?playback=1`) while
+download links keep their original URLs and bytes. Standalone MP3 audio at
+16 kHz or higher is packet-copied into a seek-indexed MP4 container, without
+re-encoding, for accurate partially buffered playback. This applies to original
+audio, generated outputs and the timeline's private vocal reference. All original
+decoded samples and headroom are preserved; the container may retain trailing
+MP3 encoder padding without an onset offset.
+
+Listening copies are prepared locally on demand and cached by source content,
+FFmpeg/FFprobe binary revisions and the listening-algorithm version. Eligible
+preparation failures are visible errors, not silent fallback to the inaccurate
+raw stream. MP3 below 16 kHz and other input formats retain their existing native
+bytes/MIME behavior. Downloads, embedded download titles, analysis inputs,
+pitch/lyric timestamps and tempo-clock mappings are unchanged; this is not a
+transcription or alignment-model correction. Physical Safari/iOS playback remains
+unverified.
+
 When **Extract lyrics** is selected, the worker looks up an exact-version lyric
 reference from credible music metadata, independently recognizes the full source
 vocals with [Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), and
@@ -866,11 +883,29 @@ separately measure per-component spectral amplitudes, non-normalized sums,
 multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
 interrupted-job recovery, retry and historical migrations.
 
-The default browser matrix contains **66 cases**, covering processing/behavior,
+The default Chromium browser matrix covers processing/behavior,
 unknown keys, download metadata, native MP3 uploads, responsive workspaces,
 adjustments, retained forms, lyrics, exclusive playback, vocal pitch, pitched
-lyrics, and six song-discovery UI cases. The separate visual and manual YouTube
-suites are excluded from this matrix.
+lyrics, and six song-discovery UI cases. The separate native-listening, visual
+and manual YouTube suites are excluded from this matrix.
+
+The dedicated Firefox listening regression uploads original, aperiodic synthetic
+VBR audio and drives the real Results player through the owner-protected HTTP
+API. A transparent test-only relay paces actual audio responses at 64 KiB/s,
+preserving Range/HEAD, status, headers and bytes; the audio response is not
+mocked. The processing queue is disabled, so no model job runs. Muted native
+capture, independent full-decode reference crops and natural-play calibration
+check that a seek beyond the buffered region keeps decoded content within
+100 ms of the player clock, with confident waveform matches. Only this case
+runs in Firefox; the Chromium matrix is not duplicated.
+
+```sh
+node frontend/e2e/run.mjs --visual --throttle-media --config=playwright.listening.config.ts
+```
+
+This requires the matching Playwright Firefox installation and native tools.
+The case retains PCM/clock diagnostics and the harness retains
+`test-results/visual/listening-transport.json`; CI runs it before any GPU work.
 
 The six discovery cases exercise five viewport widths (375/390/430/1440/2560),
 explicit search, pending/selected states, canonical URL key-preview handoff,
@@ -1049,11 +1084,12 @@ exercise arbitrary mix selections with decoded waveform/spectral assertions.
 These are deterministic local checks, not thousands of GPU runs or a proof over
 arbitrary numeric pitch/tempo values.
 
-CI runs native/backend/frontend checks, real GPU smoke tests, the browser matrix
-against a unique test app, and the visual suite below for every push/PR. Only a
+CI runs native/backend/frontend checks, the isolated Firefox listening check,
+real GPU smoke tests, the browser matrix against a unique test app, and the
+visual suite below for every push/PR. Only a
 passing main run promotes `audio-separator-v2` and publishes the image. The old
 `audio-separator` app remains untouched for old web instances. Both promotion
-jobs retain the deterministic/native, full-stack and visual release gates.
+jobs retain the deterministic/native, listening, full-stack and visual release gates.
 The separate manual YouTube workflow is not a release dependency.
 
 ### Real external YouTube key analysis
@@ -1072,8 +1108,8 @@ The separate **Real YouTube key analysis** workflow
 (`.github/workflows/youtube.yml`) runs only through `workflow_dispatch`, selected
 from GitHub Actions' **Run workflow** control. It preserves this real external
 check without making YouTube's runner/IP authentication decisions a push/PR or
-release prerequisite. Together with the functional and visual suites it covers
-**92 browser cases**, including the explicitly controlled discovery UI cases.
+release prerequisite. It complements the functional, native-listening and visual
+suites, including the explicitly controlled discovery UI cases.
 YouTube bot/authentication restrictions, missing tools, and network failures
 still **fail the manual workflow visibly**; it never skips or substitutes
 fixtures, submits a processing job, or invokes a GPU. Artifacts are uploaded

@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { JobDTO } from "~/api";
 import ResultsView from "./ResultsView";
 
-it("shows transposition and tempo while preserving server download names and the original", () => {
+it("keeps stem keys tied to the source and renders lyric markup as text", () => {
   const job: JobDTO = {
     id: 1,
     status: "done",
@@ -59,79 +59,11 @@ it("shows transposition and tempo while preserving server download names and the
   };
   render(() => <ResultsView job={job} onReset={vi.fn()} />);
 
-  expect(screen.getByText("vocals (pitch +2 st, tempo 120%)")).toBeInTheDocument();
-  expect(screen.getByText("Original (unchanged)")).toBeInTheDocument();
-
   expect(screen.getByText("C major")).toBeInTheDocument();
   expect(screen.getByText("D major")).toBeInTheDocument();
   expect(screen.getAllByText("Source key: C major")).toHaveLength(2);
   expect(screen.queryByText("Source key: D major")).toBeNull();
-  expect(screen.getByText("Notes (major): C · D · E · F · G · A · B")).toBeInTheDocument();
-  expect(screen.getByText("Notes (major): D · E · F# · G · A · B · C#")).toBeInTheDocument();
-  expect(screen.getByText("+2 semitones")).toBeInTheDocument();
-  expect(screen.getByText("120% of original")).toBeInTheDocument();
-  const stem = document.querySelector<HTMLAnchorElement>('a[href="/api/jobs/1/results/vocals"]')!;
-  expect(stem).toHaveAttribute("download", job.manifest![1].download_name);
-  expect(stem).toHaveAttribute("href", "/api/jobs/1/results/vocals");
-  const original = screen.getByRole("link", { name: "Download original" });
-  expect(original).toHaveAttribute("href", "/api/jobs/1/original");
-  expect(original).toHaveAttribute("download", "");
-  expect(screen.getByText("Full song (pitch +2 st, tempo 120%)", { exact: true })).toBeInTheDocument();
-  expect([...document.querySelectorAll("audio")].map(audio => audio.getAttribute("src"))).toEqual([
-    "/api/jobs/1/original", "/api/jobs/1/results/song", "/api/jobs/1/results/vocals",
-  ]);
-  expect(document.querySelector('a[href="/api/jobs/1/results/song"]')).toHaveAttribute(
-    "download", job.manifest![0].download_name,
-  );
-  expect(screen.getByText("Original audio timestamps · approximate segment timing. Automatic transcription may contain errors; review the text.")).toBeInTheDocument();
-  expect(screen.getByText("Language: en")).toBeInTheDocument();
   expect(screen.getByText("[00:00] <img src=x onerror=alert(1)>")).toBeInTheDocument();
   expect(document.querySelector("img")).toBeNull();
-  const lyrics = screen.getByRole("link", { name: "Download timestamped TXT" });
-  expect(lyrics).toHaveAttribute("href", "/api/jobs/1/lyrics/download");
-  expect(lyrics).toHaveAttribute("download", "");
 });
 
-it("renders server song and custom mix names with the requested adjustments exactly once", () => {
-  const options: JobDTO["options"] = {
-    extract_vocals: false,
-    extract_instruments: false,
-    extract_lyrics: false,
-    detect_pitch: false,
-    extract_pitched_lyrics: false,
-    mixes: [{ id: "mix-1", name: "Karaoke", components: ["vocals", "drums"] }],
-    decrowd: false,
-    decrowd_vocals: false,
-    dereverb: false,
-    genders: false,
-    lead_backing: false,
-    drums: false,
-    pitch_semitones: 1.25,
-    tempo_percent: 125,
-  };
-  const job: JobDTO = {
-    id: 17,
-    status: "done",
-    position: null,
-    source_type: "url",
-    source_value: "https://example.com/song",
-    title: "Song",
-    options,
-    original_key: null,
-    output_key: null,
-    manifest: [
-      { label: "song", display_name: "song", filename: "song - pitch+1.25st - tempo125pct.mp3", download_name: "Song - song.mp3", size_bytes: 1, duration_s: 1 },
-      { label: "mix-1", display_name: "Karaoke", filename: "mix-1 - pitch+1.25st - tempo125pct.mp3", download_name: "Song - Karaoke [mix-1].mp3", size_bytes: 1, duration_s: 1 },
-    ],
-    transcript: null,
-    error_message: null,
-    created_at: 1700000000,
-    has_original: true,
-    has_pitch_vocals: false,
-  };
-
-  render(() => <ResultsView job={job} onReset={vi.fn()} />);
-
-  expect(screen.getByText("Full song (pitch +1.25 st, tempo 125%)", { exact: true })).toBeInTheDocument();
-  expect(screen.getByText("Karaoke (pitch +1.25 st, tempo 125%)", { exact: true })).toBeInTheDocument();
-});

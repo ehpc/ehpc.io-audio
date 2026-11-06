@@ -17,10 +17,20 @@ persist_pitch_vocals(job,converted)
 db.mark_done(job.id,[],None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 `;
 
+const corruptPrivateReference = String.raw`
+import os,sys
+from pathlib import Path
+from backend import config,db
+assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
+job=db.get_job(int(sys.argv[1]))
+assert job is not None and job.status == 'done'
+(config.RESULTS_DIR / str(job.id) / '.pitch-vocals.mp3').write_bytes(b'corrupt listening reference')
+`;
+
 for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
   test.describe(`native timeline ${viewport.width}px`, () => {
   test.use({ viewport, isMobile: viewport.width <= 700, hasTouch: true });
-  test('ruler, footer transport, manual browsing, and immediate tooltips', async ({ page }, info) => {
+  test('ruler, footer transport, manual browsing, and immediate tooltips', async ({ page, browser }, info) => {
     test.setTimeout(120_000);
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
@@ -63,15 +73,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await player.evaluate(element => { element.preload = 'auto'; element.load(); });
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
       && element.duration > 10 && element.seekable.length > 0)).toBe(true);
-    await page.evaluate(url => {
-      const audio = document.createElement('audio');
-      audio.id = 'pitch-competing-audio';
-      audio.src = url;
-      audio.preload = 'auto';
-      document.body.append(audio);
-      audio.load();
-    }, `/api/jobs/${id}/original`);
-    const competingAudio = page.locator('#pitch-competing-audio');
+    const competingAudio = page.getByRole('link', { name: 'Download original', exact: true }).locator('..').locator('audio');
+    await competingAudio.evaluate(audio => { audio.preload = 'auto'; audio.load(); });
     await expect.poll(() => competingAudio.evaluate(audio => Number.isFinite(audio.duration)
       && audio.duration > 10 && audio.seekable.length > 0)).toBe(true);
     await competingAudio.evaluate(audio => audio.play());
@@ -110,7 +113,6 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeLessThan(205);
 
     await sourceSelector.selectOption('vocals');
-    await expect(player).toHaveAttribute('src', `/api/jobs/${id}/pitch-reference/vocals`);
     await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
       && element.duration > 10 && element.seekable.length > 0)).toBe(true);
@@ -124,7 +126,6 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect(await player.evaluate(element => element.paused)).toBe(true);
 
     await sourceSelector.selectOption('song');
-    await expect(player).toHaveAttribute('src', `/api/jobs/${id}/original`);
     await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
       && element.duration > 10 && element.seekable.length > 0)).toBe(true);
@@ -306,6 +307,35 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect(await page.evaluate(() => innerWidth)).toBe(viewport.width);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     await view.locator('.pitch-footer').screenshot({ path: info.outputPath('timeline-footer.png') });
+    // A real preparation failure must stop playback visibly, not silently serve
+    // the raw media. A fresh owner context avoids reusing a previously decoded
+    // copy of this reference from the browser cache.
+    execFileSync('uv', ['run', 'python', '-c', corruptPrivateReference, String(id)], {
+      cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+    });
+    const errorContext = await browser.newContext({
+      storageState: await page.context().storageState(), baseURL: process.env.E2E_BASE_URL,
+      viewport, isMobile: viewport.width <= 700, hasTouch: true,
+    });
+    try {
+      const errorPage = await errorContext.newPage();
+      await errorPage.goto('/');
+      const errorView = errorPage.getByLabel('Vocal pitch analysis', { exact: true });
+      const failedResponse = errorPage.waitForResponse(response =>
+        response.url().includes(`/api/jobs/${id}/pitch-reference/vocals`) && response.request().method() === 'GET');
+      await errorView.getByLabel('Pitch background audio', { exact: true }).selectOption('vocals');
+      const keyboard = errorView.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
+      await keyboard.press('Space');
+      expect((await failedResponse).status()).toBe(503);
+      await expect(errorView.getByRole('alert')).toBeVisible();
+      const failedPlayer = errorView.locator('audio');
+      await expect.poll(() => failedPlayer.evaluate(audio => audio.paused && audio.error !== null)).toBe(true);
+      await errorView.getByLabel('Pitch background audio', { exact: true }).selectOption('song');
+      await keyboard.press('Space');
+      await expect.poll(() => failedPlayer.evaluate(audio => audio.currentTime)).toBeGreaterThan(0.3);
+      await expect(errorView.getByRole('alert')).toBeHidden();
+      await failedPlayer.evaluate(audio => audio.pause());
+    } finally { await errorContext.close(); }
     await touch?.detach();
   });
   });

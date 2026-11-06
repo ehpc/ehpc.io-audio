@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
 
@@ -19,6 +20,7 @@ from backend.models import (
     pitched_lyrics_filename,
 )
 from backend.pitch_reference import persist_pitch_vocals
+from backend.playback import listening_path
 from backend.session import get_session_id
 from separator.artifact_cache import async_locked
 from separator.audio import transposed_key
@@ -30,9 +32,32 @@ from separator.pitched_lyrics_odt import MIME_TYPE, pitched_lyrics_odt
 router = APIRouter(tags=["results"])
 
 
+async def _listening_response(
+    path: Path, media_type: str | None = None
+) -> FileResponse:
+    try:
+        indexed = await asyncio.to_thread(
+            listening_path, path, config.DATA_DIR / "artifacts" / "playback"
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(
+            503,
+            "Listening audio could not be prepared. "
+            "The original download is unchanged.",
+        ) from exc
+    return FileResponse(
+        indexed or path,
+        media_type="audio/mp4" if indexed is not None else media_type,
+        headers={"Content-Disposition": "inline", "Cache-Control": "private"},
+    )
+
+
 @router.get("/jobs/{job_id}/original")
+@router.head("/jobs/{job_id}/original", include_in_schema=False)
 async def get_original(
-    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+    job_id: int,
+    session_id: Annotated[str, Depends(get_session_id)],
+    playback: bool = False,
 ) -> FileResponse:
     job = await asyncio.to_thread(db.get_job, job_id)
     if job is None or job.session_id != session_id:
@@ -44,14 +69,21 @@ async def get_original(
         raise HTTPException(404, "original not available")
 
     path = files[0]
+    if not path.is_file():
+        raise HTTPException(404, "original not available")
+    if playback:
+        return await _listening_response(path)
     return FileResponse(
         path, filename=original_filename(job.title, job_id, path.suffix)
     )
 
 
 @router.get("/jobs/{job_id}/pitch-reference/vocals")
+@router.head("/jobs/{job_id}/pitch-reference/vocals", include_in_schema=False)
 async def get_pitch_vocals(
-    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+    job_id: int,
+    session_id: Annotated[str, Depends(get_session_id)],
+    playback: bool = False,
 ) -> FileResponse:
     job = await asyncio.to_thread(db.get_job, job_id)
     if job is None or job.session_id != session_id:
@@ -59,6 +91,8 @@ async def get_pitch_vocals(
     path = pitch_vocals_path(job)
     if path is None:
         raise HTTPException(404, "pitch reference not found")
+    if playback:
+        return await _listening_response(path, "audio/mpeg")
     return FileResponse(path, media_type="audio/mpeg")
 
 
@@ -102,8 +136,12 @@ async def recover_pitch_vocals(
 
 
 @router.get("/jobs/{job_id}/results/{label}")
+@router.head("/jobs/{job_id}/results/{label}", include_in_schema=False)
 async def get_result(
-    job_id: int, label: str, session_id: Annotated[str, Depends(get_session_id)]
+    job_id: int,
+    label: str,
+    session_id: Annotated[str, Depends(get_session_id)],
+    playback: bool = False,
 ) -> FileResponse:
     job = await asyncio.to_thread(db.get_job, job_id)
     if (
@@ -119,6 +157,10 @@ async def get_result(
         raise HTTPException(404, "result not found")
 
     path = config.RESULTS_DIR / str(job_id) / entry.filename
+    if not path.is_file():
+        raise HTTPException(404, "result not found")
+    if playback:
+        return await _listening_response(path, "audio/mpeg")
     download_name = download_filename(
         job.title, job_id, label, job.options, job.original_key
     )

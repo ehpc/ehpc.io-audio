@@ -8,14 +8,17 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
 import { transform } from 'esbuild';
+import { startMediaRelay } from './media-relay.mjs';
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
 const visual = process.argv.includes('--visual');
 const youtube = process.argv.includes('--youtube');
 const cpu = process.argv.includes('--cpu');
+const throttleMedia = process.argv.includes('--throttle-media');
+if (throttleMedia && !visual) throw new Error('--throttle-media requires --visual so fixture jobs cannot run workers.');
 const cpuOnly = visual || youtube || cpu;
-const arguments_ = process.argv.slice(2).filter(argument => !['--visual', '--youtube', '--cpu'].includes(argument));
+const arguments_ = process.argv.slice(2).filter(argument => !['--visual', '--youtube', '--cpu', '--throttle-media'].includes(argument));
 if (youtube) arguments_.unshift('--config=playwright.youtube.config.ts');
 const app = cpuOnly ? 'audio-separator-key-analysis-no-gpu' : process.env.E2E_MODAL_APP_NAME;
 // Both production namespaces are off-limits: the live app and the new v2
@@ -70,7 +73,9 @@ const reservation = createNetServer();
 await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
 const port = reservation.address().port;
 await new Promise(resolve => reservation.close(resolve));
-const baseURL = `http://127.0.0.1:${port}`;
+const backendURL = `http://127.0.0.1:${port}`;
+const mediaRelay = throttleMedia ? await startMediaRelay(backendURL) : null;
+const baseURL = mediaRelay?.url ?? backendURL;
 const environment = {
   ...process.env,
   DATA_DIR: resolve(temporary, 'data'),
@@ -101,12 +106,14 @@ let interrupted = false;
 const interrupt = () => {
   interrupted = true;
   child?.kill('SIGTERM');
+  void mediaRelay?.stop();
   backend.kill('SIGTERM');
 };
 process.once('SIGINT', interrupt);
 process.once('SIGTERM', interrupt);
 for (const stream of [backend.stdout, backend.stderr]) stream.on('data', chunk => { backendLog += chunk; process.stdout.write(chunk); });
 const cleanup = async () => {
+  await mediaRelay?.stop();
   if (backend.exitCode === null && !backendError) backend.kill('SIGTERM');
   await backendClosed;
   await new Promise(resolve => source.close(resolve));
@@ -136,6 +143,12 @@ try {
     const results = resolve(frontend, 'test-results', ...(visual ? ['visual'] : youtube ? ['youtube'] : []));
     await mkdir(results, { recursive: true });
     await writeFile(resolve(results, 'backend.log'), backendLog);
+    if (mediaRelay) {
+      await mediaRelay.stop();
+      await writeFile(resolve(results, 'listening-transport.json'), JSON.stringify({
+        bytesPerSecond: mediaRelay.bytesPerSecond, chunkBytes: mediaRelay.chunkBytes, requests: mediaRelay.records,
+      }, null, 2));
+    }
   } finally {
     await cleanup();
     process.off('SIGINT', interrupt);

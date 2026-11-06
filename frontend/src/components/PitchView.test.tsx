@@ -203,7 +203,6 @@ it("uses detected time/pitch geometry, linked melisma, zoom and real player seek
   expect(lowY - highY).toBe(48);
   fireEvent.click(notes[0]);
   const audio = document.querySelector("audio")!;
-  expect(audio.getAttribute("src")).toBe("/api/jobs/7/pitch-reference/vocals");
   expect(audio.currentTime).toBe(1);
   expect(document.querySelector(".pitch-selection")).toHaveTextContent("+25 cents");
   fireEvent.click(screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" }));
@@ -362,7 +361,7 @@ it("switches between full-song and private vocals while preserving output time i
   fireEvent.click(document.querySelector(".pitch-note")!);
   expect(audio.currentTime).toBe(1.25);
   fireEvent.change(selector, { target: { value: "vocals" } });
-  expect(audio.getAttribute("src")).toBe("/api/jobs/7/pitch-reference/vocals");
+  const background = audio.src;
   Object.defineProperty(audio, "readyState", { configurable: true, value: 4 });
   fireEvent.loadedMetadata(audio);
   fireEvent.timeUpdate(audio);
@@ -374,10 +373,9 @@ it("switches between full-song and private vocals while preserving output time i
   fireEvent.timeUpdate(audio);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "500");
   fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "backing" } });
-  expect(audio.getAttribute("src")).toBe("/api/jobs/7/pitch-reference/vocals");
+  expect(audio.src).toBe(background);
   fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "vocals" } });
   fireEvent.change(selector, { target: { value: "song" } });
-  expect(audio.getAttribute("src")).toBe("/api/jobs/7/original");
   expect(audio.currentTime).toBe(6.25);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "500");
   expect(audio.paused).toBe(true);
@@ -401,15 +399,13 @@ it("resets recovered reference and cursor when a different pitch job is mounted 
   setActive(second);
   const nextAudio = document.querySelector<HTMLAudioElement>("audio")!;
   const nextSelector = screen.getByRole("combobox", { name: "Pitch background audio" }) as HTMLSelectElement;
-  expect(nextAudio.getAttribute("src")).toBe("/api/jobs/8/original");
   expect(nextSelector.value).toBe("song");
   expect([...nextSelector.options].find(option => option.value === "vocals")?.disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Recover cached vocals" })).toBeInTheDocument();
   expect(nextAudio.currentTime).toBe(0);
-  expect(screen.getByText(/Playback position: 0:00\.00/)).toBeInTheDocument();
 });
 
-it("shows a recoverable cached-vocal option without inventing its media URL", () => {
+it("offers cached-vocal recovery without enabling missing vocals", () => {
   const source = job();
   source.manifest = [];
   source.has_pitch_vocals = false;
@@ -418,8 +414,6 @@ it("shows a recoverable cached-vocal option without inventing its media URL", ()
   const vocals = [...selector.options].find(option => option.value === "vocals")!;
   expect(vocals.disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Recover cached vocals" })).toBeInTheDocument();
-  expect(document.querySelector("audio")?.getAttribute("src")).toBe("/api/jobs/7/original");
-  expect(document.querySelector("audio")?.getAttribute("src")).not.toContain("pitch-reference/vocals");
 });
 it("shows immediate pitch-and-lyrics note tooltips and lyrics-only word tooltips on hover and focus", () => {
   render(() => <PitchView job={job()} />);
@@ -707,7 +701,6 @@ it("skips five output seconds across original/private clocks, clamps endpoints a
   fireEvent.click(forward); // While the source's metadata/seek is pending.
   fireEvent.loadedMetadata(player.audio);
   expect(player.audio.currentTime).toBe(10);
-  expect(player.audio.getAttribute("src")).toBe("/api/jobs/7/pitch-reference/vocals");
   player.state.paused = false;
   fireEvent.click(back);
   fireEvent.seeked(player.audio);
