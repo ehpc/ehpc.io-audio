@@ -1092,6 +1092,11 @@ passing main run promotes `audio-separator-v2` and publishes the image. The old
 jobs retain the deterministic/native, listening, full-stack and visual release gates.
 The separate manual YouTube workflow is not a release dependency.
 
+The shared CI native-tool installer replaces only inherited Azure Ubuntu archive
+URLs with `https://archive.ubuntu.com/ubuntu`, including hosted-runner mirror
+lists; repository suites, components, signing keys and release deadlines remain
+unchanged.
+
 ### Real external YouTube key analysis
 
 `npm --prefix frontend run test:youtube` builds the real frontend/backend and

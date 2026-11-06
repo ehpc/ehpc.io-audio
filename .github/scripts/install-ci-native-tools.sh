@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Avoid the inherited slow Azure archive route without changing Ubuntu suites,
+# components, signing keys, security repositories or third-party repositories.
+privileged=()
+if (( EUID != 0 )); then
+  privileged=(sudo)
+fi
+for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apt/apt-mirrors.txt; do
+  [[ -f "$source" ]] || continue
+  grep -qE 'http://azure\.archive\.ubuntu\.com/ubuntu/?([[:space:]]|$)' "$source" || continue
+  "${privileged[@]}" sed -i -E \
+    's#http://azure\.archive\.ubuntu\.com/ubuntu(/?)([[:space:]]|$)#https://archive.ubuntu.com/ubuntu\1\2#g' \
+    "$source"
+done
+
 # Build against this host's FFmpeg ABI; the shared script owns the verified
 # upstream source pins used by both CI and the production Docker image.
 packages=(
@@ -8,15 +22,9 @@ packages=(
   libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
   ffmpeg rubberband-cli libfftw3-double3
 )
-if (( EUID == 0 )); then
-  apt-get update
-  apt-get install -y --no-install-recommends "${packages[@]}"
-  .github/scripts/build-keyfinder.sh
-else
-  sudo apt-get update
-  sudo apt-get install -y --no-install-recommends "${packages[@]}"
-  sudo .github/scripts/build-keyfinder.sh
-fi
+"${privileged[@]}" apt-get update
+"${privileged[@]}" apt-get install -y --no-install-recommends "${packages[@]}"
+"${privileged[@]}" .github/scripts/build-keyfinder.sh
 
 for tool in ffmpeg ffprobe rubberband keyfinder-cli; do
   command -v "$tool" >/dev/null || {
