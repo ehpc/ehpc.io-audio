@@ -12,7 +12,13 @@ if (process.env.CI) reporters.push(['github']);
 export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.spec.ts',
-  testIgnore: ['**/visual.spec.ts', '**/youtube-key.spec.ts', '**/listening-clock.spec.ts'],
+  testIgnore: [
+    '**/visual.spec.ts',
+    '**/youtube-key.spec.ts',
+    '**/listening-clock.spec.ts',
+    '**/pitch-interactions.spec.ts',
+    '**/pitched-lyrics-odt.spec.ts',
+  ],
   workers: 1,
   retries: 0,
   maxFailures: process.env.CI ? 1 : 0,

@@ -4,13 +4,16 @@ import { resolve } from 'node:path';
 import { expect, test, type Locator } from '@playwright/test';
 
 const seedPitchOnlyJob = String.raw`
-import json,subprocess,sys
+import json,os,subprocess,sys
+from pathlib import Path
 from backend import config,db
 from backend.pitch_reference import persist_pitch_vocals
 from separator.pitch import pitch_from_json,pitch_to_json
+assert config.QUEUE_CONCURRENCY == 0
+assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
 value=json.load(sys.stdin)
 job=db.get_job(int(sys.argv[1]))
-assert job is not None
+assert job is not None and job.status == 'queued' and job.modal_call_id is None
 source=(config.UPLOADS_DIR / str(job.id) / job.source_value).read_bytes()
 converted=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-i','pipe:0','-t','20','-codec:a','libmp3lame','-f','mp3','pipe:1'],input=source,capture_output=True,check=True).stdout
 persist_pitch_vocals(job,converted)
@@ -32,6 +35,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
   test.use({ viewport, isMobile: viewport.width <= 700, hasTouch: true });
   test('ruler, footer transport, manual browsing, and immediate tooltips', async ({ page, browser }, info) => {
     test.setTimeout(120_000);
+    expect(process.env.QUEUE_CONCURRENCY).toBe('0');
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8');

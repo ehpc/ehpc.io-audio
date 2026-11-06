@@ -296,5 +296,5 @@
 }
 
 .pitched-lyrics-view { display: flex; flex-direction: column; gap: 12px; min-width: 0; max-width: 100%; }
-.pitched-lyrics-text { max-width: 100%; max-height: 36rem; overflow: auto; overscroll-behavior-x: contain; white-space: pre; font: 16px/1.6 ui-monospace, "DejaVu Sans Mono", monospace; font-variant-ligatures: none; padding: 12px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); tab-size: 4; }
+.pitched-lyrics-text { max-width: 100%; max-height: 36rem; overflow: auto; overscroll-behavior-x: contain; white-space: pre; font: 16px/1.6 ui-monospace, "DejaVu Sans Mono", "Courier New", monospace; font-variant-ligatures: none; padding: 12px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); tab-size: 4; }
 .pitched-lyrics-text:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }

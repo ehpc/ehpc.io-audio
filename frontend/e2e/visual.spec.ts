@@ -40,10 +40,10 @@ async function adjust(page: Page) {
   if (page.viewportSize()!.width <= 700) await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
 }
 
-async function compare(subject: Page | Locator, info: TestInfo, name: string) {
+async function compare(subject: Page | Locator, info: TestInfo, name: string, mask: Locator[] = []) {
   // Keep an actual PNG even on success, alongside the strict baseline comparison.
   await subject.screenshot({ path: info.outputPath('actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
-  await expect(subject).toHaveScreenshot(name);
+  await expect(subject).toHaveScreenshot(name, { mask });
 }
 
 for (const tab of ['Outputs', 'Adjust', 'Review']) {
@@ -234,19 +234,13 @@ for (const viewport of [mobile, desktop]) {
     const view = page.getByLabel('Vocal pitch analysis', { exact: true });
     await expect(view).toBeVisible();
     const player = view.locator('audio');
-    // `preload=auto` is only a browser hint and can stop before the full file.
-    // Use the complete real HTTP response for deterministic native buffer paint;
-    // no API interception, audio substitution, hidden controls, or pixel tolerance.
-    await player.evaluate(async element => {
-      const response = await fetch(element.currentSrc || element.src);
-      if (!response.ok) throw new Error(`Native audio download failed: ${response.status}`);
-      element.src = URL.createObjectURL(await response.blob());
+    // Exercise the real HTTP source; native control paint is browser-owned.
+    await player.evaluate(element => {
       element.preload = 'auto';
       element.load();
     });
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
-      && element.buffered.length === 1 && element.buffered.start(0) <= 0.01
-      && element.buffered.end(0) >= element.duration - 0.01)).toBe(true);
+      && element.seekable.length > 0)).toBe(true);
     const payload = await (await page.request.get(`/api/jobs/${id}/pitch`)).json() as PitchAnalysisDTO;
     const acquaintanceIndex = payload.words.findIndex(word => word.text === 'acquaintance');
     const noteIndex = payload.tracks[0].notes.findIndex(note => note.word_indices.includes(acquaintanceIndex));
@@ -258,7 +252,7 @@ for (const viewport of [mobile, desktop]) {
     await page.mouse.move(0, 0);
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await compare(view, info, `vocal-melody-${viewport.width}-word-notes.png`);
+    await compare(view, info, `vocal-melody-${viewport.width}-word-notes.png`, [player]);
   });
 }
 

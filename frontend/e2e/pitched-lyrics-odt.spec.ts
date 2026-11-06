@@ -4,12 +4,17 @@ import { resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { JobDTO } from '../src/api';
 
-// Shared synthetic fixture exercises production storage/DTO/export and real HTTP.
-// Run with the existing --visual harness (queue disabled), never a GPU job.
+// Synthetic stored analysis exercises production storage/DTO/export and real HTTP.
+// The dedicated seeded config runs with queue workers disabled.
 const publish = String.raw`
-import runpy,sys
-from backend import db
+import os,runpy,sys
+from pathlib import Path
+from backend import config,db
 from separator.pitch import pitch_to_json
+assert config.QUEUE_CONCURRENCY == 0
+assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
+job=db.get_job(int(sys.argv[1]))
+assert job is not None and job.status == 'queued' and job.modal_call_id is None
 fixture=runpy.run_path('tests/test_pitched_lyrics_odt.py')['document_fixture']
 transcript,analysis=fixture(3)
 db.mark_done(int(sys.argv[1]),[],transcript,pitch_to_json(analysis))
@@ -33,6 +38,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
 
 for (const width of [1440, 390]) {
   test(`ODT download ${width} keeps selected private stem and shared timestamp columns`, async ({ page, browser }, info) => {
+    expect(process.env.QUEUE_CONCURRENCY).toBe('0');
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
@@ -62,6 +68,9 @@ for (const width of [1440, 390]) {
       expect(decoded.text).toBe(track.text);
       expect((await page.request.get(`/api/jobs/${id}/pitched-lyrics/${track.label}/download?format=odt`)).headers()['content-type']).toBe('application/vnd.oasis.opendocument.text');
     }
+    // Exporting one stem must leave the other stored tracks available unchanged.
+    const afterExports = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
+    expect(afterExports.pitched_lyrics).toEqual(job.pitched_lyrics);
     await view.getByRole('combobox', { name: 'Pitched lyrics vocal stem' }).selectOption('lead');
     const columns = await text.evaluate(element => {
       const content = element.textContent!;

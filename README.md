@@ -464,6 +464,11 @@ with filenames such as
 or the same name ending in `.odt`. Existing stored jobs get the new layout and
 download formats immediately from their stored transcript/pitch analysis;
 no audio processing, model rerun, or algorithm/cache-version change is needed.
+The browser score preserves its system UI monospace/DejaVu Sans Mono preferences,
+then tries Courier New before the generic monospace fallback. This keeps the
+combining-Latin/Cyrillic grid aligned on systems whose generic mono font has
+different combining-character advances; full-width CJK cells still occupy two
+columns.
 Reference-position provenance is a defaulted top-level transcript addition;
 existing Word/Pitch JSON shapes and schema-2 decoding remain compatible.
 
@@ -497,8 +502,8 @@ uv run pytest tests/test_pitched_lyrics.py tests/test_pitched_lyrics_odt.py
 # Optional real-render checks require LibreOffice, Courier New (or Liberation
 # Mono), Noto Sans Mono CJK SC, and the temporary inspection dependency:
 uv run --with pymupdf pytest tests/test_pitched_lyrics_odt.py -k libreoffice
-# Existing isolated CPU harness: real browser downloads, no GPU jobs.
-npm --prefix frontend run test:e2e -- --visual pitched-lyrics-odt.spec.ts
+# Isolated stored-analysis lane: real browser downloads, no GPU jobs.
+npm --prefix frontend run test:e2e -- --visual --config=playwright.seeded.config.ts pitched-lyrics-odt.spec.ts
 ```
 
 
@@ -883,11 +888,24 @@ separately measure per-component spectral amplitudes, non-normalized sums,
 multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
 interrupted-job recovery, retry and historical migrations.
 
-The default Chromium browser matrix covers processing/behavior,
+The 68-case live-queue Chromium browser matrix covers processing/behavior,
 unknown keys, download metadata, native MP3 uploads, responsive workspaces,
 adjustments, retained forms, lyrics, exclusive playback, vocal pitch, pitched
-lyrics, and six song-discovery UI cases. The separate native-listening, visual
-and manual YouTube suites are excluded from this matrix.
+lyrics, and six song-discovery UI cases. A required four-case stored-analysis
+lane covers native pitch-timeline interaction and ODT exports at desktop/mobile
+widths. Together these disjoint lanes retain all 72 behavior cases.
+The separate native-listening, visual and manual YouTube suites are excluded
+from the live-queue matrix.
+
+The stored-analysis cases publish synthetic/captured pitch fixtures with the
+existing isolated CPU harness, never a competing real processing worker.
+`--visual` disables the queue; each publisher also requires the isolated data
+directory and an unclaimed queued job. Real-processing cases continue using
+the live queue unchanged. CI requires this lane before Modal deployment/GPU work:
+
+```sh
+node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
+```
 
 The dedicated Firefox listening regression uploads original, aperiodic synthetic
 VBR audio and drives the real Results player through the owner-protected HTTP
@@ -1085,11 +1103,12 @@ These are deterministic local checks, not thousands of GPU runs or a proof over
 arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, the isolated Firefox listening check,
-real GPU smoke tests, the browser matrix against a unique test app, and the
-visual suite below for every push/PR. Only a
+the four stored-analysis browser cases, real GPU smoke tests, the live-queue
+browser matrix against a unique test app, and the visual suite below for every
+push/PR. Only a
 passing main run promotes `audio-separator-v2` and publishes the image. The old
 `audio-separator` app remains untouched for old web instances. Both promotion
-jobs retain the deterministic/native, listening, full-stack and visual release gates.
+jobs retain the deterministic/native, listening, stored-analysis, full-stack and visual release gates.
 The separate manual YouTube workflow is not a release dependency.
 
 The shared CI native-tool installer replaces only inherited Azure Ubuntu archive
@@ -1178,8 +1197,13 @@ visual tests; existing audio/key cases continue to use real native consumers.
 Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
 timezone, colors, fonts and CPU rasterization; native audio metadata is loaded
 before timeline capture. Animations are disabled and the caret hidden.
+Only the two detected-vocal timeline pixel comparisons mask the browser-owned
+`<audio>` controls; their bounds still determine the mask region. Every case
+retains an **unmasked** `actual.png` for review. App-owned footer buttons,
+timeline notes, karaoke, labels and layout remain pixel-tested; native playback,
+seeking and volume remain covered by functional browser tests.
 Comparisons allow **zero differing pixels** above a strict **0.005 YIQ color
-threshold** (only about one RGB level of native-control raster rounding);
+threshold** (only about one RGB level of minor raster color rounding);
 there is no pixel-count or percentage allowance for layout changes. A missing
 baseline or changed screenshot fails normal runs; they never auto-accept.
 

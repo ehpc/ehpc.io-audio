@@ -156,6 +156,8 @@ jobs:
           test "$MODAL_APP_NAME" = "$E2E_MODAL_APP_NAME"
       - name: Check Firefox native listening clock without GPU work
         run: node frontend/e2e/run.mjs --visual --throttle-media --config=playwright.listening.config.ts
+      - name: Check seeded Chromium interactions without GPU work
+        run: node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
       - name: Deploy isolated Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: GPU smoke test (spawns deployed function)
