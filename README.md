@@ -1543,3 +1543,12 @@ pin incidental Scots title orthography to one speech model's spelling.
 Unreferenced recognition remains fallible; no song-specific spelling replacement
 or homophone alias is applied.
 
+The owned noncommercial structure smoke mounts its checksum-validated complete
+public-domain recording at sandbox startup, runs both neural checks as the
+sandbox's main command, and reads the structured transcript, formatted text, and
+short-tail result from stdout after exit. It does not depend on a sleeping
+sandbox, runtime filesystem upload, a separate exec, or filesystem readback.
+The real GPU assertions, dedicated QA model cache, timeouts, evidence artifacts,
+and owned sandbox cleanup remain unchanged. A CPU-only fixture/hash/ffprobe
+check exercises this transport, not neural accuracy or the cause of an earlier
+Modal service failure; the full GPU smoke remains required.

@@ -22,8 +22,9 @@ from separator.modal_app import ASR_PYTHON, GPU, STRUCTURE_PYTHON, TIMEOUT, imag
 pytestmark = [pytest.mark.smoke, pytest.mark.timeout(TIMEOUT + 1200)]
 
 
-def test_owned_noncommercial_full_song_structure_and_short_tail() -> None:
-    source = full_sung_song()
+def test_owned_noncommercial_full_song_structure_and_short_tail(tmp_path: Path) -> None:
+    source = tmp_path / "full-song.ogg"
+    source.write_bytes(full_sung_song())
     app = modal.App("lyrics-structure-noncommercial-smoke")
     volume = modal.Volume.from_name(
         "lyrics-structure-noncommercial-models",
@@ -38,16 +39,13 @@ from pathlib import Path
 from separator.options import SeparationOptions
 from separator.processing import run_processing
 from separator.lyrics import transcript_text
-from separator.structure import analyze_structure
 result = run_processing(
     Path('/tmp/full-song.ogg'), SeparationOptions(extract_lyrics=True),
     Path('/tmp'), '/dev-model-cache', '/dev-model-cache/stems', {TIMEOUT},
     {ASR_PYTHON!r}, {STRUCTURE_PYTHON!r},
 )
 assert result.transcript is not None
-Path('/tmp/real-transcript.json').write_text(json.dumps(asdict(result.transcript)))
-Path('/tmp/real-lyrics.txt').write_text(transcript_text(
-    result.transcript.segments, result.transcript.sections))
+text = transcript_text(result.transcript.segments, result.transcript.sections)
 # 420s + 480 samples: the genuine complete song followed by silence. The
 # upstream outer chunk loop previously never advanced past this short tail.
 subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', '/tmp/full-song.ogg',
@@ -58,30 +56,36 @@ subprocess.run([{STRUCTURE_PYTHON!r}, '-m', 'separator.structure',
     check=True, timeout={TIMEOUT}, cwd='/root')
 print('STRUCTURE_REAL_RESULT ' + json.dumps(dict(
     transcript=asdict(result.transcript),
+    text=text,
     short_tail=json.loads(Path('/tmp/short-tail.json').read_text()),
 )))
 """
     with app.run(environment_name=config.MODAL_ENVIRONMENT):
         sandbox = modal.Sandbox.create(
-            "sleep",
-            str(TIMEOUT * 2),
+            "python",
+            "-c",
+            script,
             app=app,
-            image=image,
+            image=image.add_local_file(source, "/tmp/full-song.ogg", copy=False),
             gpu=GPU,
             volumes={"/dev-model-cache": volume},
             timeout=TIMEOUT * 2,
             workdir="/root",
         )
         try:
-            sandbox.filesystem.write_bytes(source, "/tmp/full-song.ogg")
-            process = sandbox.exec("python", "-c", script, timeout=TIMEOUT * 2)
-            stdout = process.stdout.read()
-            stderr = process.stderr.read()
-            process.wait()
-            assert process.returncode == 0, stderr
-            transcript_json = sandbox.filesystem.read_text("/tmp/real-transcript.json")
+            sandbox.wait()
+            stdout, stderr = sandbox.stdout.read(), sandbox.stderr.read()
+            assert sandbox.returncode == 0, stderr
+            result = json.loads(
+                next(
+                    line.removeprefix("STRUCTURE_REAL_RESULT ")
+                    for line in stdout.splitlines()
+                    if line.startswith("STRUCTURE_REAL_RESULT ")
+                )
+            )
+            transcript_json = json.dumps(result["transcript"])
             transcript = transcript_from_json(transcript_json)
-            text = sandbox.filesystem.read_text("/tmp/real-lyrics.txt")
+            text = result["text"]
             assert transcript.timestamp_reference == "original"
             assert transcript.status == "recognized"
             assert {"verse", "chorus"} <= {s.label for s in transcript.sections}
@@ -99,7 +103,7 @@ print('STRUCTURE_REAL_RESULT ' + json.dumps(dict(
             assert " --> " not in text
             formatted_lines = re.findall(r"^\[\d+:\d{2}\] (.*)$", text, re.MULTILINE)
             assert formatted_lines == [s.text for s in transcript.segments]
-            tail = json.loads(sandbox.filesystem.read_text("/tmp/short-tail.json"))
+            tail = result["short_tail"]
             assert abs(tail["sections"][-1]["end_s"] - 420.02) < 1 / 24000
             assert tail["sections"][0]["start_s"] == 0
             assert all(
