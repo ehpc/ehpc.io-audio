@@ -218,12 +218,22 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
         await settled.dispose();
       }
     };
-    const pan = async (distance: number) => {
+    const playheadGeometry = () => scroll.evaluate(element => {
+      const viewport = element.getBoundingClientRect();
+      const axis = element.querySelector('.pitch-axis')!.getBoundingClientRect();
+      const x = element.querySelector('.pitch-playhead')!.getBoundingClientRect().x;
+      const right = viewport.left + element.clientLeft + element.clientWidth;
+      return { x, axisRight: axis.right, right, visible: x >= axis.right && x < right };
+    });
+    const pan = async (distance: number, stopAtPlayhead = false) => {
       await scroll.scrollIntoViewIfNeeded();
       if (touch) {
         const box = (await scroll.boundingBox())!;
         const target = await scroll.evaluate((element, delta) => element.scrollLeft + delta, distance);
         for (;;) {
+          // Returning is complete after the first settled swipe that reveals
+          // the cursor; another swipe would be a new manual opt-out.
+          if (stopAtPlayhead && (await playheadGeometry()).visible) break;
           const remaining = target - await scroll.evaluate(element => element.scrollLeft);
           if (Math.abs(remaining) < 40) break;
           const stroke = Math.sign(remaining) * Math.min(Math.abs(remaining), box.width - 102);
@@ -301,10 +311,21 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
     const currentOutput = await player.evaluate(element => element.currentTime / 1.25);
     const returnTo = currentOutput * 640 - (await scroll.evaluate(element => element.clientWidth) - 54) / 2;
-    await pan(returnTo - pausedChoice);
+    const beforeReturn = await playheadGeometry();
+    expect(beforeReturn.visible).toBe(false);
+    await pan(returnTo - pausedChoice, true);
+    const afterReturn = await playheadGeometry();
+    expect(afterReturn.visible).toBe(true);
     const returned = await scroll.evaluate(element => element.scrollLeft);
+    const returnNative = await player.evaluate(element => element.currentTime);
     await player.evaluate(element => element.play());
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(returnNative + 0.3);
     await expect.poll(() => scroll.evaluate(element => element.scrollLeft), { timeout: 10_000 }).toBeGreaterThan(returned + 50);
+    await info.attach('native-manual-return', { body: Buffer.from(JSON.stringify({
+      viewport, beforeReturn, afterReturn, returned, returnNative,
+      resumedNative: await player.evaluate(element => element.currentTime),
+      resumedLeft: await scroll.evaluate(element => element.scrollLeft),
+    })), contentType: 'application/json' });
     await view.getByRole('checkbox', { name: 'Follow playback' }).uncheck();
     const optedOut = await scroll.evaluate(element => element.scrollLeft);
     await activate(forward);
