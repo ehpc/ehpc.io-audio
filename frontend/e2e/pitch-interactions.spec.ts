@@ -62,13 +62,32 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const ruler = view.getByRole('slider', { name: 'Pitch timeline position' });
     await view.getByRole('slider', { name: 'Melody zoom' }).fill('40');
     const tapRulerAtFiveSeconds = async () => {
+      // Forward playback can put five seconds underneath the sticky note axis.
+      // Reveal it with the real ruler keyboard action before testing a pointer seek.
+      await ruler.press('Home');
       await ruler.scrollIntoViewIfNeeded();
-      const box = await ruler.boundingBox();
-      expect(box).not.toBeNull();
-      const x = box!.x + 54 + 5 * 40;
-      const y = box!.y + box!.height / 2;
-      if (viewport.width <= 700) await page.touchscreen.tap(x, y);
-      else await page.mouse.click(x, y);
+      const target = () => ruler.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        const axis = element.querySelector('.pitch-axis-corner')!.getBoundingClientRect();
+        const viewport = element.closest('.pitch-viewport')!.getBoundingClientRect();
+        const x = box.x + 54 + 5 * 40;
+        const y = box.y + box.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        return {
+          x, y, axisRight: axis.right, viewportRight: viewport.right,
+          visible: x > axis.right && x < viewport.right && y > viewport.top && y < viewport.bottom,
+          hitsRuler: hit !== null && element.contains(hit) && !hit.closest('.pitch-axis-corner'),
+        };
+      });
+      await expect.poll(async () => {
+        const point = await target();
+        return point.visible && point.hitsRuler;
+      }).toBe(true);
+      const point = await target();
+      expect(point.visible && point.hitsRuler).toBe(true);
+      await info.attach('playing-ruler-target', { body: Buffer.from(JSON.stringify(point)), contentType: 'application/json' });
+      if (viewport.width <= 700) await page.touchscreen.tap(point.x, point.y);
+      else await page.mouse.click(point.x, point.y);
     };
     await player.evaluate(element => { element.preload = 'auto'; element.load(); });
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
