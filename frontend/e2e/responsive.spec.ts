@@ -135,7 +135,11 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await expect(page.getByText('Target key: D major', { exact: true })).toBeVisible();
     expect(await page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' }).evaluate(el => Number.parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
-    for (const option of await options.all()) { await expect(option).toBeChecked(); await option.uncheck(); }
+    // Check retained effective choices before disabling karaoke restores manual preferences.
+    for (const option of await options.all()) await expect(option).toBeChecked();
+    await page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true }).uncheck();
+    for (const option of await options.all()) await option.uncheck();
+    for (const option of await options.all()) await expect(option).not.toBeChecked();
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toHaveCount(0);
     await page.getByRole('tab', { name: 'Review', exact: true }).click();
     await expect(page.locator('.output-tags').getByText(mixLabel, { exact: true })).toBeVisible();
