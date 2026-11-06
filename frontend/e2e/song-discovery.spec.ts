@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { QueryRecognition } from '../src/components/VoiceQuery';
+import { songArtwork, songVersions } from './song-fixtures';
 
 type SpeechTestWindow = Window & { recognition: QueryRecognition; aborted: number };
 
@@ -23,14 +24,15 @@ for (const width of [375, 390, 430, 1440, 2560]) {
     await page.route('**/api/song-search/controlled-song', route => {
       polls++;
       return route.fulfill({ json: polls === 1 ? { status: 'pending' } : {
-        status: 'done', song: { title: 'First Love', artists: ['宇多田ヒカル'], duration_seconds: 258,
-          url: 'https://music.youtube.com/watch?v=o1sUaVJUeB0' },
+        status: 'done', songs: songVersions,
       } });
     });
     await page.route('**/api/key-analysis', route => {
       analyzed.push(route.request().postData() ?? '');
       return route.fulfill({ json: { original_key: 'C major' } });
     });
+    await page.route(songVersions[0].thumbnail_url!, route => route.fulfill({ contentType: 'image/svg+xml', body: songArtwork }));
+    await page.route(songVersions[2].thumbnail_url!, route => route.abort());
     await page.goto('/');
     const finder = page.getByRole('button', { name: 'Find song', exact: true });
     if (width < 700) await finder.tap();
@@ -57,11 +59,39 @@ for (const width of [375, 390, 430, 1440, 2560]) {
     await expect.poll(() => searches).toBe(1);
     if (width === 390 || width === 1440) await query.press('Enter');
     await page.screenshot({ path: info.outputPath(`song-pending-${width}.png`), fullPage: true });
-    const link = page.getByRole('link', { name: 'Verify on YouTube Music' });
-    await expect(link).toHaveAttribute('href', 'https://music.youtube.com/watch?v=o1sUaVJUeB0');
-    await expect(page.getByLabel('Selected song')).toContainText('宇多田ヒカル');
+    const link = page.getByRole('link', { name: 'Verify First Love on YouTube Music', exact: true });
+    await expect(link).toHaveAttribute('href', songVersions[0].url);
+    const choices = page.getByRole('radio');
+    await expect(choices).toHaveCount(3);
+    await expect(choices.nth(0)).toBeChecked();
     await expect.poll(() => analyzed.length).toBe(1);
-    expect(analyzed[0]).toContain('https://music.youtube.com/watch?v=o1sUaVJUeB0');
+    expect(analyzed[0]).toContain(songVersions[0].url);
+    const artwork = page.locator('.song-match img');
+    await expect(artwork).toHaveCount(1);
+    await expect.poll(() => artwork.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+    expect(await artwork.evaluate(image => {
+      const box = image.getBoundingClientRect();
+      return { width: box.width, height: box.height, fit: getComputedStyle(image).objectFit };
+    })).toEqual({ width: 48, height: 48, fit: 'cover' });
+    await expect(page.getByText('About 2.7B YouTube Music plays', { exact: true })).toBeVisible();
+    await expect(page.getByText('0 YouTube Music plays', { exact: true })).toBeVisible();
+    await expect(page.getByText('5:05', { exact: true })).toBeVisible();
+    for (const label of await page.locator('.song-choice').all()) expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    if (width < 700) await page.locator('.song-choice').nth(1).tap();
+    else {
+      await choices.nth(0).focus();
+      await page.keyboard.press('ArrowDown');
+    }
+    await expect(choices.nth(1)).toBeChecked();
+    await expect.poll(() => analyzed.length).toBe(2);
+    expect(analyzed[1]).toContain(songVersions[1].url);
+    await expect(page.getByRole('link', { name: 'Verify First Love (Dance Remix) on YouTube Music', exact: true })).toHaveAttribute('href', songVersions[1].url);
+    await choices.nth(2).focus();
+    await page.keyboard.press('Space');
+    await expect(choices.nth(2)).toBeChecked();
+    await page.keyboard.press('Enter');
+    await expect.poll(() => analyzed.length).toBe(3);
+    expect(analyzed[2]).toContain(songVersions[2].url);
     expect(jobs).toBe(0);
     expect(searches).toBe(1);
     await info.attach('search-request-proof', {

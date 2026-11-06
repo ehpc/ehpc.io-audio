@@ -45,11 +45,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [follow, setFollow] = createSignal(true);
   const [browsing, setBrowsing] = createSignal(false);
   const [playbackError, setPlaybackError] = createSignal("");
+  const [nativePaused, setNativePaused] = createSignal(true);
   const [recoveredVocals, setRecoveredVocals] = createSignal(false);
   const [recoveringVocals, setRecoveringVocals] = createSignal(false);
   const [recoveryError, setRecoveryError] = createSignal("");
   const [tooltip, setTooltip] = createSignal<PitchTooltip | null>(null);
   const tooltipId = createUniqueId();
+  const backgroundHelpId = createUniqueId();
   const dismissTooltip = () => setTooltip(null);
   let audio!: HTMLAudioElement;
   let viewport!: HTMLDivElement;
@@ -153,9 +155,11 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     }
     settleLegacyScroll();
   };
+  const syncNativePlayback = () => setNativePaused(audio.paused || audio.ended || Boolean(audio.error));
   const stopPlaybackClock = () => {
     if (playbackFrame !== undefined) cancelAnimationFrame(playbackFrame);
     playbackFrame = undefined;
+    if (audio) syncNativePlayback();
   };
   const startPlaybackClock = () => {
     stopPlaybackClock();
@@ -251,7 +255,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const hasOutput = (label: string) => props.job.manifest?.some(item => item.label === label) ?? false;
   const hasVocals = () => recoveredVocals() || props.job.has_pitch_vocals;
   const hasSong = () => hasOutput("song") || props.job.has_original;
-  const otherReferences = () => analysis().tracks.filter(item => item.label !== "vocals" && hasOutput(item.label));
+  const otherReferences = () => analysis().tracks.filter(item => item.label !== "vocals"
+    && item.label !== "song" && item.label !== "instruments" && item.label !== "drums" && hasOutput(item.label));
   const initialTrack = track()?.label;
   const [reference, setReference] = createSignal(
     initialTrack && hasOutput(initialTrack) && (initialTrack !== "vocals" || hasVocals())
@@ -268,7 +273,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const referenceLabel = () => reference() === "song"
     ? hasOutput("song") ? "Transformed full song (not isolated vocals)" : "Original full song (unchanged, not isolated vocals)"
     : reference() === "vocals" ? `Just vocals (all vocal parts) · ${displayOutputLabel("vocals", props.job.options)}`
-      : displayOutputLabel(reference(), props.job.options);
+      : displayOutputLabel(reference() === "instruments" ? "Instruments" : reference() === "drums" ? "Drums only" : reference(), props.job.options);
   const recoverVocals = async () => {
     setRecoveringVocals(true);
     setRecoveryError("");
@@ -307,12 +312,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (event.clientX < viewport.getBoundingClientRect().left + viewport.clientLeft + AXIS_WIDTH) return;
     seek((event.clientX - event.currentTarget.getBoundingClientRect().left - AXIS_WIDTH) / zoom());
   };
-  const togglePlaybackKey = (event: KeyboardEvent): boolean => {
-    if (event.key !== " " || event.target !== event.currentTarget || event.defaultPrevented
-      || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.repeat) return true;
+  const togglePlayback = () => {
+    if (!referenceUrl()) return;
     const attempt = ++playAttempt;
     if (!audio.paused) audio.pause();
     else {
@@ -325,6 +326,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           ? error.message : "This reference audio could not be played.");
       });
     }
+  };
+  const togglePlaybackKey = (event: KeyboardEvent): boolean => {
+    if (event.key !== " " || event.target !== event.currentTarget || event.defaultPrevented
+      || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) togglePlayback();
     return true;
   };
   const seekRulerKey = (event: KeyboardEvent) => {
@@ -362,6 +370,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         stopPlaybackClock();
         setPlaybackError("");
         audio.load();
+        syncNativePlayback();
         audio.currentTime = toAudioTime(next);
       }
     });
@@ -417,9 +426,12 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           </select>
         </label>
         <label>Background audio
-          <select aria-label="Pitch background audio" value={reference()} onChange={event => changeReference(event.currentTarget.value)}>
+          <select aria-label="Pitch background audio" aria-describedby={!hasOutput("instruments") || !hasOutput("drums") ? backgroundHelpId : undefined}
+            value={reference()} onChange={event => changeReference(event.currentTarget.value)}>
             <option value="song" disabled={!hasSong()}>Full song</option>
             <option value="vocals" disabled={!hasVocals()}>Just vocals</option>
+            <option value="instruments" disabled={!hasOutput("instruments")}>{displayOutputLabel("Instruments", props.job.options)}</option>
+            <option value="drums" disabled={!hasOutput("drums")}>{displayOutputLabel("Drums only", props.job.options)}</option>
             <For each={otherReferences()}>{item => <option value={item.label}>{displayOutputLabel(item.label, props.job.options)}</option>}</For>
           </select>
         </label>
@@ -435,6 +447,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <label class="pitch-follow"><input type="checkbox" checked={follow()} onChange={event => setFollow(event.currentTarget.checked)} /> Follow playback</label>
       </div>
       <p class="text-sm">Reference audio: <strong>{referenceLabel()}</strong>.</p>
+      <Show when={!hasOutput("instruments") || !hasOutput("drums")}>
+        <p id={backgroundHelpId} class="text-xs text-muted-foreground">For unavailable backgrounds, select “Extract instruments” or “Split drums, bass &amp; other instruments” in Outputs before processing. Only generated audio is available in this job.</p>
+      </Show>
       <Show when={!hasVocals()}>
         <p class="text-xs text-muted-foreground">This stored job has no vocal listening reference. Recover its already-computed vocals from the cache without rerunning analysis.</p>
         <Show when={props.job.has_original} fallback={<p class="text-xs text-muted-foreground">The original audio is unavailable, so cached vocals cannot be recovered.</p>}>
@@ -530,20 +545,20 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
               <div class="pitch-words" style={{ width: `${width() + AXIS_WIDTH}px` }} aria-label="Approximate sung words">
                 <span class="pitch-word-label">Words<br /><small>≈ timing</small></span>
                 <For each={analysis().words}>{(word, index) => {
-                  const linked = createMemo(() => notes().filter(note => note.word_indices.includes(index())));
-                  return <button type="button" class="pitch-word" classList={{ "pitch-word-selected": selectedWord() === index() || (selectedNote()?.word_indices.includes(index()) ?? false), "pitch-word-unlinked": linked().length === 0 }}
+                  const firstLinked = createMemo(() => notes().find(note => note.word_indices.includes(index())));
+                  return <button type="button" class="pitch-word" classList={{ "pitch-word-selected": selectedWord() === index() || (selectedNote()?.word_indices.includes(index()) ?? false), "pitch-word-unlinked": firstLinked() === undefined }}
                     style={{ left: `${AXIS_WIDTH + word.start_s * zoom()}px`, width: `${Math.max(4, (word.end_s - word.start_s) * zoom())}px` }}
-                    aria-label={`${word.origin === "asr-extra" ? "ASR-only extra: " : ""}${word.text}, approximate word timing; ${linked().length} linked notes`}
+                    aria-label={`${word.origin === "asr-extra" ? "ASR-only extra: " : ""}${word.text}, approximate word timing`}
                     aria-describedby={tooltip()?.key === word ? tooltipId : undefined}
                     onPointerEnter={event => showTooltip(event.currentTarget, word, word.text)} onPointerLeave={dismissTooltip}
                     onPointerMove={event => { if ((event.pointerType === "mouse" || event.pointerType === "pen") && tooltip()?.key !== word) showTooltip(event.currentTarget, word, word.text); }}
                     onFocus={event => showTooltip(event.currentTarget, word, word.text)} onBlur={dismissTooltip}
                     onKeyDown={event => { if (event.key === "Escape") dismissTooltip(); }}
                     onClick={event => {
-                      setSelectedWord(index()); setSelectedNote(null); seek(linked()[0]?.start_s ?? word.start_s);
+                      setSelectedWord(index()); setSelectedNote(null); seek(firstLinked()?.start_s ?? word.start_s);
                       showTooltip(event.currentTarget, word, word.text);
                     }}>
-                    {word.text}<Show when={linked().length > 1}><small> · {linked().length} notes</small></Show>
+                    {word.text}
                   </button>;
                 }}</For>
               </div>
@@ -563,9 +578,20 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           <strong>{note().note}</strong> · {note().cents >= 0 ? "+" : ""}{note().cents} cents · {note().frequency_hz.toFixed(1)} Hz · {timeLabel(note().start_s)}–{timeLabel(note().end_s)} · confidence {Math.round(note().confidence * 100)}%
           <Show when={note().word_indices.length > 0}><span> · Approximate words: {note().word_indices.map(index => analysis().words[index].text).join(" ")}</span></Show>
         </>}</Show>
-        <Show when={selectedWord() !== null}><span>“{analysis().words[selectedWord()!].text}” · {notes().filter(note => note.word_indices.includes(selectedWord()!)).length} linked notes (approximate full-vocal word alignment).</span></Show>
+        <Show when={selectedWord() !== null}><span>“{analysis().words[selectedWord()!].text}” · approximate full-vocal word alignment.</span></Show>
       </div>
       <footer class="pitch-footer">
+        <div class="pitch-skip-controls" role="group" aria-label="Timeline playback">
+          <Button type="button" variant="outline" aria-label="Back 5 seconds" onClick={() => seek(position() - 5)}>−5 s</Button>
+          <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl()} onClick={togglePlayback}>
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+              <Show when={nativePaused()} fallback={<><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>}>
+                <path d="M7 3v18l15-9z" />
+              </Show>
+            </svg>
+          </Button>
+          <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => seek(position() + 5)}>+5 s</Button>
+        </div>
         <TimelineKaraoke job={props.job} position={position()} />
         <p class="pitch-follow-status" role="status">
           <Show when={follow() && browsing()}>Auto-follow paused while browsing. Scroll back to the playhead to resume.</Show>
@@ -579,10 +605,6 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             if (pendingSourcePosition !== null) audio.currentTime = toAudioTime(pendingSourcePosition);
           }}
           onTimeUpdate={updatePosition} onSeeked={updatePosition} />
-        <div class="pitch-skip-controls" role="group" aria-label="Skip playback">
-          <Button type="button" variant="outline" aria-label="Back 5 seconds" onClick={() => seek(position() - 5)}>−5 s</Button>
-          <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => seek(position() + 5)}>+5 s</Button>
-        </div>
       </footer>
     </section>
   );

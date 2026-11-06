@@ -17,9 +17,9 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const keyResponse = page.waitForResponse(response => response.url().endsWith('/api/key-analysis'));
   await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source });
   expect((await keyResponse).ok()).toBe(true);
-  await page.getByRole('checkbox', { name: 'Detect vocal pitch', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'Extract lyrics', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'Extract vocals', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true }).check();
+  await expect(page.getByRole('checkbox', { name: 'Extract lyrics', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Extract vocals', exact: true })).toBeChecked();
   await page.getByRole('checkbox', { name: 'Split lead & backing vocals', exact: true }).check();
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill('1.25');
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill('125');
@@ -154,7 +154,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await writeFile(info.outputPath('pitch-proof.json'), JSON.stringify({ source_sha256: SOURCE_SHA256, job, linked_word: { text: analysis.words[wordIndex].text, notes: linkedCount }, download_filename: download.suggestedFilename(), shortest_word_note: { note: shortNote, zoom_px_per_second: 640, geometry: shortGeometry, visible_ruler_label: rulerLabel }, screenshots: ['pitch-desktop.png', 'pitch-mobile.png', 'pitch-mobile-short-note-zoom.png'] }, null, 2));
 });
 
-test('pitch-only analysis retains the hidden full-vocal prerequisite and recovers its cached private audio without reanalysis', async ({ page, browser }) => {
+test('legacy API pitch-only analysis retains the hidden full-vocal prerequisite and recovers its cached private audio without reanalysis', async ({ page, browser }) => {
   test.setTimeout(25 * 60 * 1000);
   let analysisPostCount = 0;
   page.on('request', request => {
@@ -164,12 +164,16 @@ test('pitch-only analysis retains the hidden full-vocal prerequisite and recover
   });
   const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-30s.flac'));
   await page.goto('/');
-  await page.getByRole('button', { name: 'Upload audio', exact: true }).click();
-  await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'sung-excerpt.flac', mimeType: 'audio/flac', buffer: source });
-  await page.getByRole('checkbox', { name: 'Detect vocal pitch', exact: true }).check();
-  const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Process audio', exact: true }).click();
-  const id = (await (await submitted).json()).id as number;
+  // The current karaoke form includes vocals and lyrics. Preserve coverage of
+  // independent API pitch-only requests and their historical stored-job path.
+  const id = await page.evaluate(async bytes => {
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array(bytes)], 'sung-excerpt.flac', { type: 'audio/flac' }));
+    form.append('detect_pitch', 'true');
+    const response = await fetch('/api/jobs', { method: 'POST', body: form, credentials: 'include' });
+    if (!response.ok) throw new Error(`Pitch-only API submission failed: ${response.status}`);
+    return (await response.json()).id as number;
+  }, [...source]);
   let job: JobDTO | undefined;
   await expect.poll(async () => {
     job = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
@@ -181,6 +185,7 @@ test('pitch-only analysis retains the hidden full-vocal prerequisite and recover
   expect(job!.pitch!.tracks.map(track => track.label)).toEqual(['vocals']);
   expect(job!.pitch!.tracks[0].notes.some(note => note.start_s < 4.5 && note.end_s > 2.5)).toBe(true);
   expect(job!.pitch!.word_alignment).toBeNull();
+  await page.reload();
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(view.getByLabel('Pitch background audio', { exact: true })).toHaveValue('song');
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);

@@ -40,12 +40,17 @@ def environment_registry(monkeypatch):
     ):
         endpoints[environment, "search_song"] = {
             "status": "done",
-            "song": {
-                "title": title,
-                "artists": ["Owned routing fixture"],
-                "url": f"https://music.youtube.com/watch?v={video_id}",
-                "duration_seconds": 120,
-            },
+            "songs": [
+                {
+                    "title": title,
+                    "artists": ["Owned routing fixture"],
+                    "url": f"https://music.youtube.com/watch?v={video_id}",
+                    "duration_seconds": 120,
+                    "thumbnail_url": None,
+                    "play_count": None,
+                    "play_count_approximate": False,
+                }
+            ],
         }
         endpoints[environment, "separate"] = {
             "vocals": StemResult(f"{environment} separated audio".encode(), 1.0)
@@ -106,7 +111,7 @@ def test_http_search_uses_configured_environment_not_ambient_main(
     assert started.status_code == 202
     result = client.get("/api/song-search/" + started.json()["search_id"])
     assert result.status_code == 200
-    assert result.json()["song"]["title"] == expected_title
+    assert result.json()["songs"][0]["title"] == expected_title
     assert client.get("/api/jobs").json() == []
 
 

@@ -16,7 +16,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source });
   await page.getByRole('checkbox', { name: 'Lyrics with pitches', exact: true }).check();
   await expect(page.getByRole('checkbox', { name: 'Extract lyrics', exact: true })).not.toBeChecked();
-  await expect(page.getByRole('checkbox', { name: 'Detect vocal pitch', exact: true })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true })).not.toBeChecked();
   await page.getByRole('checkbox', { name: 'Extract vocals', exact: true }).check();
   await page.getByRole('checkbox', { name: 'Split lead & backing vocals', exact: true }).check();
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill('1.25');

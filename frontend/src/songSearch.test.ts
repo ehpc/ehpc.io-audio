@@ -6,11 +6,11 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 it("normalizes Unicode input and polls the opaque session-bound handle until a catalog match arrives", async () => {
-  const song = { title: "First Love", artists: ["宇多田ヒカル"], url: "https://music.youtube.com/watch?v=o1sUaVJUeB0", duration_seconds: 258 };
+  const songs = [{ title: "First Love", artists: ["宇多田ヒカル"], url: "https://music.youtube.com/watch?v=o1sUaVJUeB0", duration_seconds: 258, thumbnail_url: null, play_count: null, play_count_approximate: false }];
   const fetchMock = vi.fn<typeof fetch>()
     .mockResolvedValueOnce(response({ search_id: "opaque/id", status: "pending" }, 202))
     .mockResolvedValueOnce(response({ status: "pending" }))
-    .mockResolvedValueOnce(response({ status: "done", song }));
+    .mockResolvedValueOnce(response({ status: "done", songs }));
   vi.stubGlobal("fetch", fetchMock);
   const controller = new AbortController();
   const pending = searchSong("  宇多田ヒカル \n First   Love ", controller.signal);
@@ -22,7 +22,7 @@ it("normalizes Unicode input and polls the opaque session-bound handle until a c
   await vi.advanceTimersByTimeAsync(1);
   expect(fetchMock.mock.calls[1]).toEqual(["/api/song-search/opaque%2Fid", expect.objectContaining({ credentials: "include", signal: controller.signal })]);
   await vi.advanceTimersByTimeAsync(2000);
-  await expect(pending).resolves.toEqual(song);
+  await expect(pending).resolves.toEqual(songs);
   expect(fetchMock).toHaveBeenCalledTimes(3);
   expect(vi.getTimerCount()).toBe(0);
 });

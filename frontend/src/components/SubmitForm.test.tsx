@@ -319,9 +319,9 @@ describe("SubmitForm", () => {
     expect(screen.getByText("Tracks and files you'll get (2)")).toBeInTheDocument();
     expect(screen.getByText("Lyrics with pitches: vocals (TXT)")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Detect vocal pitch", exact: true })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true })).not.toBeChecked();
     expect(screen.queryByText("Lyrics (timestamped TXT)")).toBeNull();
-    expect(screen.queryByText("Vocal pitch timeline + JSON")).toBeNull();
+    expect(screen.queryByText("Karaoke with pitches + JSON")).toBeNull();
     await userEvent.click(screen.getByRole("checkbox", { name: "Split lead & backing vocals", exact: true }));
     expect(screen.getByText("Tracks and files you'll get (5)")).toBeInTheDocument();
     expect(screen.getByText("Lyrics with pitches: lead (TXT)")).toBeInTheDocument();
@@ -330,6 +330,101 @@ describe("SubmitForm", () => {
     expect(screen.getByText("Tracks and files you'll get (9)")).toBeInTheDocument();
     expect(screen.getByText("Lyrics with pitches: lead-dry (TXT)")).toBeInTheDocument();
     expect(screen.getByText("Lyrics with pitches: backing-dry (TXT)")).toBeInTheDocument();
+  });
+
+  it("includes and locks karaoke outputs in both preview and an immutable submitted request", async () => {
+    const pending = Promise.withResolvers<api.SubmitResult>();
+    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise);
+    const onSubmitted = vi.fn();
+    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/karaoke" } });
+    const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
+    const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
+    const lyrics = screen.getByRole("checkbox", { name: "Extract lyrics", exact: true });
+    await userEvent.click(karaoke);
+    for (const included of [vocals, lyrics]) {
+      expect(included).toBeChecked();
+      expect(included).toBeDisabled();
+      await userEvent.click(included);
+      expect(included).toBeChecked();
+    }
+    expect(screen.getByText("vocals", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Lyrics (timestamped TXT)")).toBeInTheDocument();
+    for (const name of ["Extract instruments", "Lyrics with pitches", "Split by gender (male/female)", "Split drums, bass & other instruments"]) {
+      expect(screen.getByRole("checkbox", { name, exact: true })).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name, exact: true })).toBeEnabled();
+    }
+    await userEvent.click(submitButton());
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ detect_pitch: true, extract_vocals: true, extract_lyrics: true,
+        extract_instruments: false, extract_pitched_lyrics: false, drums: false, genders: false }),
+    }));
+    await userEvent.click(karaoke);
+    expect(vocals).not.toBeChecked();
+    expect(lyrics).not.toBeChecked();
+    pending.resolve({ id: 42, status: "queued", position: 1 });
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
+    expect(onSubmitted.mock.calls[0][0].options).toEqual(expect.objectContaining({
+      detect_pitch: true, extract_vocals: true, extract_lyrics: true,
+    }));
+  });
+
+  it.each([[false, false], [true, false], [false, true], [true, true]])(
+    "restores prior vocals=%s and lyrics=%s while preserving independent selections and source edits",
+    async (wantedVocals, wantedLyrics) => {
+      vi.mocked(api.submitJob).mockResolvedValue({ id: 43, status: "queued", position: 1 });
+      render(() => <SubmitForm onSubmitted={vi.fn()} />);
+      const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
+      const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
+      const lyrics = screen.getByRole("checkbox", { name: "Extract lyrics", exact: true });
+      const pitchedText = screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true });
+      const drums = screen.getByRole("checkbox", { name: "Split drums, bass & other instruments", exact: true });
+      if (wantedVocals) await userEvent.click(vocals);
+      if (wantedLyrics) await userEvent.click(lyrics);
+      await userEvent.click(pitchedText);
+      await userEvent.click(drums);
+      await userEvent.click(karaoke);
+      await userEvent.click(screen.getByRole("button", { name: "Upload audio", exact: true }));
+      await userEvent.click(screen.getByRole("button", { name: "From URL", exact: true }));
+      expect(vocals).toBeDisabled();
+      expect(lyrics).toBeDisabled();
+      await userEvent.click(karaoke);
+      expect((vocals as HTMLInputElement).checked).toBe(wantedVocals);
+      expect((lyrics as HTMLInputElement).checked).toBe(wantedLyrics);
+      expect(vocals).toBeEnabled();
+      expect(lyrics).toBeEnabled();
+      expect(pitchedText).toBeChecked();
+      expect(drums).toBeChecked();
+      expect(karaoke).not.toBeChecked();
+      fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/independent" } });
+      await userEvent.click(submitButton());
+      expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+        options: expect.objectContaining({ detect_pitch: false, extract_vocals: wantedVocals,
+          extract_lyrics: wantedLyrics, extract_pitched_lyrics: true, drums: true }),
+      }));
+    },
+  );
+
+  it("explains a disabled lyric selection immediately on hover, keyboard focus and an info-button click", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true }));
+    const help = screen.getByRole("button", { name: "Why Extract lyrics is included" });
+    fireEvent.pointerEnter(help.parentElement!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/timed word highlighting/);
+    fireEvent.pointerLeave(help.parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    help.focus();
+    expect(screen.getByRole("tooltip")).toBeVisible();
+    expect(help).toHaveAccessibleDescription(/timed word highlighting/);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.blur(help);
+    fireEvent.click(help);
+    expect(screen.getByRole("tooltip")).toBeVisible();
+    expect(api.submitJob).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true }));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true })).toBeEnabled();
   });
   it("previews lyrics as a separate original-clock TXT output without audio transforms", async () => {
     render(() => <SubmitForm onSubmitted={vi.fn()} />);

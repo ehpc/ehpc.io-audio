@@ -71,7 +71,7 @@
 .source-tabs button[aria-pressed="true"] { background: hsl(var(--accent)); color: hsl(var(--primary)); box-shadow: inset 0 0 0 1px #566843; }
 .source-field { flex: 1; min-width: 0; }
 .source-field > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.audio-workspace input:not([type="checkbox"]) { background: hsl(var(--background)); width: 100%; min-width: 0; border: 1px solid hsl(var(--border)); border-radius: 9px; padding: 10px 12px; font-size: var(--app-control-size); min-height: 44px; }
+.audio-workspace input:not([type="checkbox"], [type="radio"]) { background: hsl(var(--background)); width: 100%; min-width: 0; border: 1px solid hsl(var(--border)); border-radius: 9px; padding: 10px 12px; font-size: var(--app-control-size); min-height: 44px; }
 .audio-workspace input[type="file"] { padding: 7px; }
 .audio-workspace input[type="file"]::file-selector-button { background: hsl(var(--secondary)); color: inherit; border: 0; border-radius: 6px; padding: 6px 10px; margin-right: 8px; }
 .audio-workspace :is(button,input,summary):focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 3px; }
@@ -85,11 +85,21 @@
 .song-mic[aria-pressed="true"] { color: hsl(var(--primary)); border-color: hsl(var(--primary)); }
 .song-voice-status { flex-basis: 100%; order: 1; font-size: 14px; }
 .song-search-error { margin-top: 10px; overflow-wrap: anywhere; }
-.song-match { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding: 12px; background: hsl(var(--accent)); border: 1px solid #566843; border-radius: 9px; overflow-wrap: anywhere; }
-.song-match > div { min-width: 0; }
-.song-match p { color: hsl(var(--muted-foreground)); }
+.song-results { min-width: 0; margin-top: 12px; }
+.song-results legend { color: hsl(var(--primary)); font-weight: 600; }
+.song-results > .workspace-helper { margin-top: 4px; font-size: 14px; }
+.song-match { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; margin-top: 8px; padding: 10px; background: hsl(var(--background)); border: 1px solid hsl(var(--border)); border-radius: 9px; overflow-wrap: anywhere; }
+.song-match-selected { background: hsl(var(--accent)); border-color: #566843; }
+.song-choice { display: grid; grid-template-columns: 18px 48px minmax(0, 1fr); align-items: center; gap: 10px; min-width: 0; min-height: 48px; cursor: pointer; }
+.song-choice input { width: 18px; height: 18px; margin: 0; accent-color: hsl(var(--primary)); }
+.song-artwork { display: block; width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
+.song-artwork-empty { background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); }
+.song-details { min-width: 0; }
+.song-details strong, .song-artists { display: block; }
+.song-artists, .song-metadata { color: hsl(var(--muted-foreground)); font-size: 14px; }
+.song-metadata { display: flex; flex-wrap: wrap; gap: 0 12px; }
 .song-match a { color: hsl(var(--primary)); text-decoration: underline; display: inline-flex; align-items: center; min-height: 44px; }
-.song-match button { min-height: 44px; flex-shrink: 0; }
+.song-clear { min-height: 44px; margin-top: 4px; }
 .workspace-panes { display: grid; grid-template-columns: minmax(0, 1fr) clamp(352px, 22vw, 460px); gap: 20px; margin-top: 16px; align-items: stretch; }
 .selection-pane, .adjustment-rail { padding: 20px; }
 .adjustment-rail { background: hsl(var(--muted)); }
@@ -102,6 +112,14 @@
 .workspace-option { display: flex; align-items: center; gap: 9px; min-height: 44px; line-height: 1.3; cursor: pointer; }
 .workspace-option input { width: 18px; height: 18px; margin: 0; flex-shrink: 0; accent-color: hsl(var(--primary)); }
 .workspace-option:has(:checked) { color: hsl(var(--primary)); }
+.workspace-option-row { position: relative; display: flex; align-items: center; min-width: 0; gap: 6px; }
+.workspace-option-row .workspace-option { flex: 1; min-width: 0; }
+.workspace-option:has(:disabled) { cursor: default; }
+.option-microphone { width: 18px; height: 18px; flex-shrink: 0; }
+.option-dependency-toggle { min-width: 44px; min-height: 44px; flex-shrink: 0; color: hsl(var(--primary)); font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.option-dependency-toggle:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; border-radius: 4px; }
+.option-dependency-help { position: absolute; z-index: 30; left: 0; right: 0; top: 100%; padding: 10px 12px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--card)); color: hsl(var(--card-foreground)); box-shadow: 0 3px 12px #0004; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.option-dependency-help[hidden] { display: none; }
 /* Mix builder (approved design: arbitrary named mixes from 2+ parts). */
 .mix-group legend { display: flex; gap: 8px; align-items: center; }
 .new-tag { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; padding: 3px 6px; border-radius: 4px; background: hsl(var(--accent)); color: hsl(var(--primary)); }
@@ -194,7 +212,8 @@
   .source-line { display: block; }
   .source-tabs { border: 0; padding: 0; gap: 4px; margin-bottom: 6px; }
   .source-tabs button { flex: 1; }
-  .song-match { align-items: flex-start; flex-direction: column; gap: 0; }
+  .song-match { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .song-match a { justify-self: start; margin-left: 86px; }
   .source-tabs button { padding-left: 10px; padding-right: 10px; }
   .source-panel > .workspace-helper { margin-top: 8px; }
   .workspace-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; background: hsl(var(--secondary)); border-radius: 12px; margin-top: 8px; }
@@ -207,7 +226,7 @@
   .output-group, .mix-group { grid-column: 1 / -1; }
   .option-group { border: 1px solid hsl(var(--border)); border-radius: 12px; background: hsl(var(--card)); padding: 6px 9px; }
   .option-group legend { float: left; width: 100%; margin: 0 0 4px; }
-  .option-group legend + label { clear: both; }
+  .option-group legend + .workspace-option-row { clear: both; }
   .workspace-option { font-size: 14px; }
   .workspace-helper { font-size: 14px; }
   .mix-group { padding: 10px 11px; }
@@ -267,7 +286,6 @@
 .pitch-words { position: sticky; bottom: 0; height: 64px; z-index: 4; background: hsl(var(--card)); border-top: 1px solid hsl(var(--border)); }
 .pitch-word-label { position: sticky; left: 0; display: flex; flex-direction: column; justify-content: center; padding: 4px; width: 54px; height: 64px; background: hsl(var(--muted)); z-index: 5; font-size: 11px; }
 .pitch-word { position: absolute; top: 6px; min-height: 44px; padding: 4px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; border: 1px solid hsl(var(--border)); border-radius: 4px; font-size: 13px; }
-.pitch-word small { font-size: 10px; }
 .pitch-word-selected { background: hsl(var(--accent)); border-color: hsl(var(--primary)); }
 .pitch-word-unlinked { border-style: dashed; color: hsl(var(--muted-foreground)); }
 .pitch-selection { min-height: 44px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }

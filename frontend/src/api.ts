@@ -270,9 +270,12 @@ export interface SongMatch {
   artists: string[];
   url: string;
   duration_seconds: number | null;
+  thumbnail_url: string | null;
+  play_count: number | null;
+  play_count_approximate: boolean;
 }
 
-type SongSearchStatus = { status: "pending" } | { status: "done"; song: SongMatch };
+type SongSearchStatus = { status: "pending" } | { status: "done"; songs: SongMatch[] };
 
 const API_BASE = "/api";
 
@@ -360,7 +363,7 @@ export async function analyzeKey(source: AudioSource, signal: AbortSignal): Prom
 }
 
 /** Cancellation stops this browser's polling, not the remote model invocation. */
-export async function searchSong(query: string, signal: AbortSignal): Promise<SongMatch> {
+export async function searchSong(query: string, signal: AbortSignal): Promise<SongMatch[]> {
   const response = await fetch(`${API_BASE}/song-search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -390,7 +393,7 @@ export async function searchSong(query: string, signal: AbortSignal): Promise<So
     });
     if (!poll.ok) throw new Error(await readError(poll));
     const result = await poll.json() as SongSearchStatus;
-    if (result.status === "done") return result.song;
+    if (result.status === "done") return result.songs;
   }
 }
 

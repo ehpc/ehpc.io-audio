@@ -1,4 +1,4 @@
-import { batch, createEffect, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { BooleanOptionKey, JobDTO, SeparationOptions, SongMatch } from "~/api";
 import { analyzeKey, audioSettingsError, searchSong, submitJob } from "~/api";
@@ -6,6 +6,7 @@ import { Button } from "~/components/button";
 import KeyNotes from "~/components/KeyNotes";
 import MixBuilder from "~/components/MixBuilder";
 import VoiceQuery from "~/components/VoiceQuery";
+import SongResults from "~/components/SongResults";
 import { Label } from "~/components/label";
 import { TextField, TextFieldInput } from "~/components/text-field";
 import { displayOutputLabel, expectedPitchStems, expectedStems } from "~/lib/expectedStems";
@@ -25,10 +26,10 @@ interface OptionDescriptor {
 }
 
 const PROCESSING_OPTIONS: OptionDescriptor[] = [
+  { key: "detect_pitch", label: "Karaoke with pitches", group: "Outputs" },
   { key: "extract_vocals", label: "Extract vocals", group: "Outputs" },
   { key: "extract_instruments", label: "Extract instruments", group: "Outputs" },
   { key: "extract_lyrics", label: "Extract lyrics", group: "Outputs" },
-  { key: "detect_pitch", label: "Detect vocal pitch", group: "Outputs" },
   { key: "extract_pitched_lyrics", label: "Lyrics with pitches", group: "Outputs" },
   { key: "decrowd", label: "Remove crowd noise from instrumental", mobileLabel: "Crowd off instruments", group: "Cleanup" },
   { key: "decrowd_vocals", label: "Remove crowd noise from vocals", mobileLabel: "Crowd off vocals", group: "Cleanup" },
@@ -37,6 +38,13 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
   { key: "lead_backing", label: "Split lead & backing vocals", mobileLabel: "Lead / backing", group: "Splits" },
   { key: "drums", label: "Split drums, bass & other instruments", mobileLabel: "Drums / bass / other", group: "Splits" },
 ];
+
+// Public selections included by the karaoke feature, not every internal model
+// prerequisite. Other output modes retain their independent export choices.
+const KARAOKE_INCLUDED_OPTIONS: Partial<Record<BooleanOptionKey, string>> = {
+  extract_vocals: "Full vocals are included with Karaoke with pitches for the vocal listening reference.",
+  extract_lyrics: "Lyrics are included with Karaoke with pitches for timed word highlighting.",
+};
 
 const DEFAULT_OPTIONS: SeparationOptions = {
   extract_vocals: false,
@@ -60,7 +68,9 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const [url, setUrl] = createSignal("");
   const [file, setFile] = createSignal<File | null>(null);
   const [query, setQuery] = createSignal("");
-  const [song, setSong] = createSignal<SongMatch | null>(null);
+  const [songs, setSongs] = createSignal<SongMatch[]>([]);
+  const [selectedSongIndex, setSelectedSongIndex] = createSignal(0);
+  const song = () => songs()[selectedSongIndex()] ?? null;
   const [searching, setSearching] = createSignal(false);
   const [searchError, setSearchError] = createSignal<string | null>(null);
   const [voiceRevision, setVoiceRevision] = createSignal(0);
@@ -70,7 +80,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     searchController = null;
     setSearching(false);
     setSearchError(null);
-    setSong(null);
+    setSongs([]);
+    setSelectedSongIndex(0);
   };
   const editQuery = (value: string) => batch(() => {
     invalidateSearch();
@@ -101,7 +112,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     setSearching(true);
     try {
       const result = await searchSong(query(), controller.signal);
-      if (!controller.signal.aborted) setSong(result);
+      if (!controller.signal.aborted) setSongs(result);
     } catch (err) {
       if (!controller.signal.aborted) setSearchError(err instanceof Error ? err.message : "Song search failed. Try again.");
     } finally {
@@ -114,7 +125,13 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   onCleanup(() => searchController?.abort());
   const effectiveUrl = () => mode() === "search" ? song()?.url ?? "" : url().trim();
   // Fresh mixes array per form instance so nothing shares DEFAULT_OPTIONS.mixes.
-  const [options, setOptions] = createStore<SeparationOptions>({ ...DEFAULT_OPTIONS, mixes: [] });
+  const [preferences, setOptions] = createStore<SeparationOptions>({ ...DEFAULT_OPTIONS, mixes: [] });
+  const lockedOptions = createMemo<typeof KARAOKE_INCLUDED_OPTIONS>(() => preferences.detect_pitch ? KARAOKE_INCLUDED_OPTIONS : {});
+  const options = createMemo(() => {
+    const effective = { ...preferences };
+    for (const key of Object.keys(lockedOptions()) as BooleanOptionKey[]) effective[key] = true;
+    return effective;
+  });
   const [submitting, setSubmitting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [originalKey, setOriginalKey] = createSignal<string | null>(null);
@@ -176,7 +193,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
       controller.abort();
     });
   });
-  const targetKey = () => transposeKey(originalKey(), options.pitch_semitones);
+  const targetKey = () => transposeKey(originalKey(), options().pitch_semitones);
   // Keep number inputs uncontrolled so intermediate "-" and decimal input
   // are not overwritten while their valueAsNumber is temporarily NaN.
   let pitchInput!: HTMLInputElement;
@@ -185,21 +202,21 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   // Direct entry stays fractional (step="any"); buttons move by one semitone
   // or one percentage point without crossing tempo's exclusive zero bound.
   const canAdjust = (key: AudioOptionKey, delta: -1 | 1) => {
-    const next = options[key] + delta;
-    return Number.isFinite(next) && next !== options[key] && (key !== "tempo_percent" || next > 0);
+    const next = options()[key] + delta;
+    return Number.isFinite(next) && next !== options()[key] && (key !== "tempo_percent" || next > 0);
   };
   const adjust = (key: AudioOptionKey, input: HTMLInputElement, delta: -1 | 1) => {
     if (!canAdjust(key, delta)) return;
-    const next = options[key] + delta;
+    const next = options()[key] + delta;
     input.value = String(next);
     setOptions(key, next);
   };
 
   // The source is always retained. Lyrics are a separate non-audio output.
-  const stems = () => ["original", ...expectedStems(options)];
+  const stems = () => ["original", ...expectedStems(options())];
 
-  const outputCount = () => stems().length + Number(options.extract_lyrics) + Number(options.detect_pitch) +
-    (options.extract_pitched_lyrics ? expectedPitchStems(options).length : 0);
+  const outputCount = () => stems().length + Number(options().extract_lyrics) + Number(options().detect_pitch) +
+    (options().extract_pitched_lyrics ? expectedPitchStems(options()).length : 0);
   const validationError = (): string | null => {
     if (mode() === "search" && !song()) return "Find and select a song before processing audio.";
     const hasUrl = mode() !== "file" && effectiveUrl().length > 0;
@@ -207,7 +224,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     if (!hasUrl && !hasFile) {
       return "Provide a URL or choose a file to upload.";
     }
-    return audioSettingsError(options);
+    return audioSettingsError(options());
   };
 
   const handleSubmit = async (event: Event) => {
@@ -226,8 +243,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     // Snapshot including mixes: editing or removing a mix while the POST is
     // pending must never mutate the submitted payload or the optimistic job.
     const submittedOptions: SeparationOptions = {
-      ...options,
-      mixes: options.mixes.map((mix) => ({ ...mix, components: [...mix.components] })),
+      ...options(),
+      mixes: options().mixes.map((mix) => ({ ...mix, components: [...mix.components] })),
     };
     try {
       const result = await submitJob({
@@ -313,16 +330,10 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                 </p>
               </Show>
               <Show when={searchError()}><p role="alert" class="song-search-error text-destructive">{searchError()}</p></Show>
-              <Show when={song()}>{match => (
-                <div class="song-match" aria-label="Selected song">
-                  <div>
-                    <strong>{match().title}</strong>
-                    <p>{match().artists.join(", ")}</p>
-                    <a href={match().url} target="_blank" rel="noopener noreferrer">Verify on YouTube Music</a>
-                  </div>
-                  <Button type="button" variant="ghost" onClick={invalidateSearch}>Clear selection</Button>
-                </div>
-              )}</Show>
+              <Show when={songs().length > 0}>
+                <SongResults songs={songs()} selectedIndex={selectedSongIndex()} onSelect={setSelectedSongIndex}
+                  onClear={invalidateSearch} />
+              </Show>
             </div>
           </Show>
         </div>
@@ -363,26 +374,53 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           <div class="workspace-heading"><h2>Choose your outputs</h2><span>All optional</span></div>
           <div class="option-groups">
             <For each={OPTION_GROUPS}>{(group) => (
-              <Show when={group !== "Mixes"} fallback={<MixBuilder mixes={options.mixes} onMixesChange={(mixes) => setOptions("mixes", mixes)} mobile={mobile()} />}>
+              <Show when={group !== "Mixes"} fallback={<MixBuilder mixes={options().mixes} onMixesChange={(mixes) => setOptions("mixes", mixes)} mobile={mobile()} />}>
                 <fieldset class="option-group" classList={{ "output-group": group === "Outputs" }}>
                   <legend>{group}</legend>
-                  <For each={PROCESSING_OPTIONS.filter((option) => option.group === group)}>{(opt) => (
-                    <label class="workspace-option" for={`option-${opt.key}`}>
-                      <input id={`option-${opt.key}`} type="checkbox" checked={options[opt.key]} aria-label={opt.label}
-                        onChange={(event) => setOptions(opt.key, event.currentTarget.checked)} />
-                      <span>{mobile() && opt.mobileLabel ? opt.mobileLabel : opt.label}</span>
-                    </label>
-                  )}</For>
+                  <For each={PROCESSING_OPTIONS.filter((option) => option.group === group)}>{(opt) => {
+                    const [hovered, setHovered] = createSignal(false);
+                    const [focused, setFocused] = createSignal(false);
+                    const [expanded, setExpanded] = createSignal(false);
+                    const reason = () => lockedOptions()[opt.key];
+                    const helpVisible = () => hovered() || focused() || expanded();
+                    return (
+                      <div class="workspace-option-row" onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+                        <label class="workspace-option" for={`option-${opt.key}`}>
+                          <input id={`option-${opt.key}`} type="checkbox" checked={options()[opt.key]} aria-label={opt.label}
+                            disabled={!!reason()} aria-describedby={reason() ? `option-help-${opt.key}` : undefined}
+                            onChange={(event) => { if (!reason()) setOptions(opt.key, event.currentTarget.checked); }} />
+                          <Show when={opt.key === "detect_pitch"}>
+                            <svg class="option-microphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                              <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+                            </svg>
+                          </Show>
+                          <span>{mobile() && opt.mobileLabel ? opt.mobileLabel : opt.label}</span>
+                        </label>
+                        <Show when={reason()}>
+                          <button type="button" class="option-dependency-toggle" aria-label={`Why ${opt.label} is included`}
+                            aria-expanded={helpVisible()} aria-controls={`option-help-${opt.key}`} aria-describedby={`option-help-${opt.key}`}
+                            onFocus={() => setFocused(true)} onBlur={() => { setFocused(false); setExpanded(false); }}
+                            onClick={() => setExpanded(value => !value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Escape") { setFocused(false); setExpanded(false); setHovered(false); }
+                            }}>Why?</button>
+                          <p id={`option-help-${opt.key}`} class="option-dependency-help" role="tooltip" hidden={!helpVisible()}>
+                            {reason()} Turn off Karaoke with pitches to change this option.
+                          </p>
+                        </Show>
+                      </div>
+                    );
+                  }}</For>
                 </fieldset>
               </Show>
             )}</For>
           </div>
           <p class="workspace-helper"><strong>Needed stems are extracted automatically.</strong> Only your selected mixes and outputs are downloaded, plus the unchanged original.</p>
-          <Show when={options.detect_pitch}>
-            <p class="workspace-helper">Vocal melody notes for each selected vocal stem, or full vocals internally if none selected. Add lyrics for approximate sung-word alignment.</p>
+          <Show when={options().detect_pitch}>
+            <p class="workspace-helper">Karaoke includes full vocals and lyrics for the pitch timeline and timed word highlighting. Other stems and cleanup remain optional.</p>
           </Show>
-          <Show when={options.extract_pitched_lyrics}>
-            <p class="workspace-helper">Pitch-over-word TXT for each selected vocal stem, or full vocals internally if none selected. Analysis does not add audio exports.</p>
+          <Show when={options().extract_pitched_lyrics}>
+            <p class="workspace-helper">Pitch-over-word TXT for each selected vocal stem, or full vocals internally if none selected. This text-only option does not add audio exports or select karaoke.</p>
           </Show>
         </section>
         <aside class="adjustment-rail" aria-label="Adjustments and output preview">
@@ -448,17 +486,17 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             aria-labelledby={mobile() ? "tab-review" : undefined}>
             <h2>Output preview</h2>
             <p class="workspace-helper">Tracks and files you'll get ({outputCount()})</p>
-            <Show when={options.mixes.length > 0}>
+            <Show when={options().mixes.length > 0}>
               <p class="preview-count" aria-live="polite">
-                {options.mixes.length} {options.mixes.length === 1 ? "mix" : "mixes"} ·
-                {" "}{outputCount() - options.mixes.length - 1} separate {outputCount() - options.mixes.length - 1 === 1 ? "output" : "outputs"} · original
+                {options().mixes.length} {options().mixes.length === 1 ? "mix" : "mixes"} ·
+                {" "}{outputCount() - options().mixes.length - 1} separate {outputCount() - options().mixes.length - 1 === 1 ? "output" : "outputs"} · original
               </p>
             </Show>
             <div class="output-tags">
-              <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options)}</span>}</For>
-              <Show when={options.extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
-              <Show when={options.detect_pitch}><span>Vocal pitch timeline + JSON</span></Show>
-              <For each={options.extract_pitched_lyrics ? expectedPitchStems(options) : []}>
+              <For each={stems()}>{(label) => <span>{displayOutputLabel(label, options())}</span>}</For>
+              <Show when={options().extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
+              <Show when={options().detect_pitch}><span>Karaoke with pitches + JSON</span></Show>
+              <For each={options().extract_pitched_lyrics ? expectedPitchStems(options()) : []}>
                 {label => <span>Lyrics with pitches: {label} (TXT)</span>}
               </For>
             </div>
@@ -468,8 +506,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           <div class="workspace-action">
             <div class="action-summary">
               <span>
-                {options.mixes.length > 0
-                  ? `${options.mixes.length} ${options.mixes.length === 1 ? "mix" : "mixes"} · original included`
+                {options().mixes.length > 0
+                  ? `${options().mixes.length} ${options().mixes.length === 1 ? "mix" : "mixes"} · original included`
                   : outputCount() === 1 ? "Original only · unchanged" : `${outputCount()} outputs · original included`}
               </span>
               <button type="button" onClick={() => showTab("review", true)}>Review →</button>

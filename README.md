@@ -109,12 +109,14 @@ baseline alignment but may require fresh reference-dependent acoustic alignment.
 ### Text-assisted YouTube Music discovery
 
 `POST /api/song-search` accepts `{"query":"artist, title, or lyric clue"}` and
-returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after reusing a
-cached successful match or spawning remote work, not after provider inference.
-`GET /api/song-search/{search_id}` returns
-`{"status":"pending"}` or `{"status":"done","song":{"title":"…","artists":["…"],
-"url":"https://music.youtube.com/watch?v=…","duration_seconds":214}}`.
-Duration may be `null`. Poll every two seconds; polls retrieve the existing call
+returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after reusing
+cached successful matches or spawning remote work, not after provider inference.
+`GET /api/song-search/{search_id}` returns `{"status":"pending"}` or
+`{"status":"done","songs":[{"title":"…","artists":["…"],
+"url":"https://music.youtube.com/watch?v=…","duration_seconds":214,
+"thumbnail_url":null,"play_count":2700000000,"play_count_approximate":true}]}`.
+Successful results contain **one to three** songs; duration, artwork and plays
+may be `null`. Poll every two seconds; polls retrieve the existing call
 with zero inference wait and never spawn another model request. Browser voice
 input is browser dictation into this same text field, not server audio upload.
 
@@ -137,7 +139,7 @@ from their **first validated successful persistence**, not from search start or
 the most recent cache hit. Keys use the existing whitespace-normalized query
 (case and Unicode text preserved), discovery producer version, model, OpenRouter
 endpoint and HTTP dependency revision. A hit creates a new session-owned handle
-with the original success timestamp and validated match, without contacting
+with the original success timestamp and validated matches, without contacting
 Modal, OpenRouter or YouTube Music. Cached copies do not extend freshness.
 At exactly 86,400 seconds, or after a query/producer identity change, a new search
 is required. Pending, failed and abandoned/unpolled searches are not successful
@@ -182,23 +184,49 @@ are not exposed in public errors. Search clues and candidate metadata are sent
 to OpenRouter and its selected model provider, but not browser/session IDs,
 audio bytes, job history or application credentials in prompt content.
 On a query-result cache miss, the model extracts supplied clues into search text
-(validated not to invent artist/title words), then selects strictly from fresh
-public YouTube Music **song** candidates via `ytmusicapi==1.11.5`. Lyric clues go
-to catalog search as lyrics, not a model's guessed artist. Catalog HTTP
-connect/read timeouts are 5/15 seconds; the remote function is capped at 180
-seconds. User and catalog text are untrusted prompt data. The model cannot
-supply URLs, metadata or uncatalogued IDs; invalid selections/abstentions fail
-explicitly, never falling back to the first song.
+(validated not to invent artist/title words), then identifies relevant versions
+from at most **eight** fresh public YouTube Music **song** candidates via
+`ytmusicapi==1.11.5`. Artist, song and explicit remix/version intent take priority:
+unrelated songs, samples, mashups and other artists' covers are excluded unless
+requested. Different songs or artists that fit equally remain ambiguous;
+popularity is not used to resolve that ambiguity. Lyric clues go to catalog
+search as lyrics, not a model's guessed artist. Catalog HTTP connect/read
+timeouts remain 5/15 seconds; the remote function remains capped at 180 seconds.
+User and catalog text are untrusted prompt data. The model returns only distinct
+supplied IDs, never URLs, metadata, counts or uncatalogued IDs; invalid
+selections/abstentions fail explicitly, never falling back to the first song.
+
+Popularity is the **YouTube Music song catalog's reported plays**, not individual
+YouTube video views or artist totals. English song renderers label this value
+“plays”; the pinned library's `parse_song_run` exposes it under the misleading
+`views` key after stripping that label. Catalog requests explicitly use English.
+Validated `K`/`M`/`B` abbreviations expand numerically for sorting and set
+`play_count_approximate: true`; exact whole counts, including zero, set it false.
+Missing, malformed or browser-unsafe integer counts become `null` with a false
+approximation flag. No additional song-detail requests, model estimates or
+mixing with per-video view counts are used.
+
+After relevance selection, known play counts sort descending, including zero
+before unknown counts; ties preserve catalog relevance order. The top three
+available matches are returned, not a claim to the global most-played recordings.
+Repeated catalog IDs are discarded, but distinct IDs are never merged merely
+because title, artist or duration coincide. Original version/remix titles remain
+visible. Artwork comes only from trusted HTTPS Google/YouTube image-provider
+URLs already supplied by the catalog; missing or unsafe URLs become `null`.
+The backend does not download images or audio for discovery.
 
 The existing `audio-song-discovery` Modal volume stores versioned, validated
 inference artifacts. Keys include the explicit model, OpenRouter endpoint,
-HTTP dependency revision, inference/prompt version and complete prompt/candidate
-inputs. Provider calls happen only on cache misses. The new producer identity
-does not reuse previous local-model inference; unused historical model files
-are left untouched, not deleted. Catalog searches are fresh whenever the one-day
-query-result cache misses or expires, so mutable catalog results are not frozen
-indefinitely; changed candidates invalidate only selection inference. Discovery
-never invalidates audio caches.
+HTTP dependency revision, inference/prompt version and complete relevance inputs
+(candidate IDs, titles, artists and durations). Artwork URLs and popularity are
+not sent to the model. Cached selected IDs map to **current** catalog metadata
+before sorting, so artwork/count changes alone do not rerun semantic inference.
+Catalog searches are fresh whenever the one-day query-result cache misses or
+expires; successful plural results, including their metadata snapshot, retain
+the same 24-hour lifetime. The discovery-only producer identity invalidates old
+single-match query/inference cache entries without deleting their rows or files.
+There is no database schema or infrastructure change for plural results.
+Discovery never invalidates audio caches.
 
 ## Choosing outputs
 
@@ -268,9 +296,9 @@ authorization does not grant additional rights under the model licenses.
 
 | Selection | Output label or file |
 |---|---|
+| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), plus included `vocals` and timestamped lyrics |
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
-| Detect vocal pitch | Musical-note timeline and pitch JSON (output audio clock) |
 | Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, also shown in Results/History (output audio clock) |
 | Extract instruments | `instruments` |
 | Remove crowd noise from vocals | `vocals-decrowded` |
@@ -344,14 +372,43 @@ it. At widths up to 700px, the same controls become **Outputs / Adjust / Review*
 tabs; changing tabs never resets processing choices, pitch, tempo or key analysis.
 Arrow keys, Home and End navigate the tab bar.
 
+**Karaoke with pitches** is the first output option, marked with a decorative
+microphone. Selecting it includes and locks **Extract vocals** and **Extract
+lyrics** for a vocal listening reference and timed word highlighting. Hover an
+included option or focus/tap its **Why?** button for an immediate explanation;
+Escape dismisses the explanation. Turning karaoke off restores each output's
+previous manual choice rather than clearing selections you made yourself.
+The preview and submitted request use those same included outputs.
+Instruments, drums, splits, cleanup and mixes remain independent choices;
+karaoke does not enable them. To request separate drums, use **Split drums,
+bass & other instruments** under Splits, not a one-part mix. Included vocal
+outputs can add analysis or cleanup work when combined with other selected
+vocal variants; this is not a promise of cost-free extra outputs.
+
+**Lyrics with pitches** remains a separate text-output mode: it does not select
+karaoke or expose its internal vocal/lyric-analysis prerequisites as downloads.
+The API retains the `detect_pitch` field, and older stored pitch-only jobs and
+independent API callers keep their existing behavior. All options remain off
+by default.
+
 The source selector offers **From URL**, **Upload audio**, and **Find song**.
 In Find song, enter a title, artist, or description (up to 500 characters), then
 select **Search** or press **Enter** in the query. Typing alone does not search;
 Enter never submits audio and is ignored during an active search or IME composition.
 While the search is pending, the form shows
-**Finding on YouTube Music…**. The returned
-title, artists, and **Verify on YouTube Music** link let you check the match.
-Its canonical URL immediately feeds the existing key preview, but a processing
+**Finding on YouTube Music…**. Results offer up to three matching versions,
+with title/version, artists, duration, a 48px square cover when available, and
+a **YouTube Music** verification link for each. Missing or failed artwork keeps
+the same square space without obscuring the choice. These are bounded matching
+catalog results, not a claim to include every version on YouTube.
+
+Versions retain the server's ranking by **YouTube Music plays** when available.
+Rounded catalog counts are labeled **About** and displayed compactly; exact
+counts keep their digits. Unavailable counts are distinct from a real zero.
+These are Music plays, not per-video YouTube views or LLM-estimated popularity.
+The first result is selected automatically. Tap/click another version, or use
+the radio controls with arrow keys/Space, to switch the canonical URL and key
+preview. Enter on a version selects it without submitting audio. A processing
 job is created only when you select **Download song** or **Process audio**.
 Editing the query, clearing the selection, or switching source modes invalidates
 the match and cancels browser polling/key preview, so an old match cannot be
@@ -410,8 +467,8 @@ The vocal-stem selector covers the same selected vocal-only outputs as pitch
 detection, including dry variants. Without a selected vocal output, it analyzes
 full vocals internally; that prerequisite is not offered as a vocal download.
 The preview counts one pitched TXT for each analyzed stem. Selecting plain
-**Extract lyrics** or **Detect vocal pitch** as well still shows those explicitly
-requested views.
+**Extract lyrics** or **Karaoke with pitches** as well still shows those requested
+views; selecting karaoke also includes its vocal and lyric outputs.
 
 Pitch rows are above lyric rows in fixed-width whole-word cells. The timestamp
 is the left prefix of the **lyric row**, not a separate third row; the pitch row
@@ -509,12 +566,14 @@ npm --prefix frontend run test:e2e -- --visual --config=playwright.seeded.config
 
 ## Vocal pitch detection
 
-**Detect vocal pitch** is opt-in and independent of the global musical-key
-estimate or the pitch-shift control. It analyzes every selected vocal-only stem:
-full/decrowded vocals, male/female, lead/backing, and their selected dry versions.
+**Karaoke with pitches** enables the pitch timeline (`detect_pitch`), independently
+of the global musical-key estimate or pitch-shift control. In the browser it also
+includes **Extract vocals** and **Extract lyrics**; API clients and older saved
+jobs can still contain pitch-only analysis. It analyzes every selected vocal-only
+stem: full/decrowded vocals, male/female, lead/backing, and selected dry versions.
 Instrument stems and vocal-plus-instrument mixes are never passed to the
-monophonic estimator. If no vocal output is selected, full vocals are extracted
-internally for analysis without adding an unwanted vocal download.
+monophonic estimator. When an API request selects no vocal output, full vocals
+are extracted internally for analysis without adding a vocal download.
 
 The estimator is [torchcrepe 0.0.24](https://github.com/maxrmorrison/torchcrepe),
 using the **full CREPE neural model**, its official **weighted-argmax decoder**,
@@ -554,11 +613,19 @@ the timeline instead of squeezing the song to screen width; buttons and a native
 zoom slider provide 40–640 px/s. The initial vertical view centers the typical
 vocal register, while every detected high/low row remains reachable by scrolling.
 
-The native play/pause and volume controls sit below the graph and selection
-details, with **−5 s / +5 s** buttons beneath them. Skips use five **output-timeline**
-seconds, clamp to zero/the analysis end, and preserve playing/paused state,
-volume, background source and selected stem. The unchanged original uses its
-tempo-converted source clock; transformed backgrounds use the output clock.
+Word chips show only the lyric text, without appended note counts; literal
+numbers in lyrics are preserved. Selecting a word still seeks its first linked
+note and highlights all associated notes, or uses its word onset when unlinked.
+
+A **−5 s / Play–Pause / +5 s** row sits immediately above the karaoke lyrics,
+below the graph and selection details. The center icon and accessible action
+follow the native player's actual state, including external pauses and source
+changes; failed playback is reported rather than shown as playing. Native audio
+controls, including volume, remain below the karaoke reader. All controls use
+the same player. Skips use five **output-timeline** seconds, clamp to zero/the
+analysis end, and preserve playing/paused state, volume, background source and
+selected stem. The unchanged original uses its tempo-converted source clock;
+transformed backgrounds use the output clock.
 
 With focus on the timeline's scroll region or time ruler, **Space** toggles that
 same native player without scrolling the page; holding Space does not repeatedly
@@ -587,12 +654,17 @@ animation.
 
 **Background audio** is independent of the detected **Vocal stem** selector.
 Choose **Full song** (the transformed song when available, otherwise the
-unchanged original) or **Just vocals** (all vocal parts, not necessarily the
-selected detected voice). Other exported detected vocal stems can also be chosen
-explicitly. The initial reference retains the matching exported stem when one
-exists. Switching backgrounds preserves the current output-clock position,
-maps it to the new source's clock, and stops the old source without autoplay.
-Selecting another history job resets its playback and reference state.
+unchanged original), **Just vocals** (all vocal parts, not necessarily the
+selected detected voice), **Instruments**, or **Drums only**. Accompaniment
+choices require the corresponding generated `instruments` or `drums` output;
+unavailable choices are disabled. Request **Extract instruments** or
+**Split drums, bass & other instruments** in Outputs to generate them. Selecting
+a background never launches extraction, and a cleaned instrumental is not
+silently substituted for the instrumental output. Other exported detected vocal
+stems remain available. The initial reference retains the matching exported
+stem when one exists. Switching backgrounds preserves the current output-clock
+position, maps it to the new source's clock, and stops the old source without
+autoplay. Selecting another history job resets its playback and reference state.
 Source-picker rows shrink within mobile cards, so long transformed-stem labels cannot widen the device viewport or displace note tap targets.
 
 New pitch-timeline jobs retain their already-computed full-vocal prerequisite
@@ -926,13 +998,16 @@ The case retains PCM/clock diagnostics and the harness retains
 `test-results/visual/listening-transport.json`; CI runs it before any GPU work.
 
 The six discovery cases exercise five viewport widths (375/390/430/1440/2560),
-explicit search, pending/selected states, canonical URL key-preview handoff,
-stale-source protection, 16px inputs, 44px buttons, and no automatic job creation.
+explicit search, three-version selection with tap/keyboard, canonical URL
+key-preview handoff, loaded/missing/failed square artwork, approximate/zero plays,
+stale-source protection, 16px inputs, 44px choice targets, and no automatic job creation.
 The sixth simulates the prefixed Web Speech API for deterministic dictation and
 permission/lifecycle coverage; it does **not** prove a physical microphone or
 actual Safari. Vitest additionally covers polling cancellation, provider errors,
 Unicode normalization, race ordering, clear selection, retry, retained mixes,
-unsupported browsers, and stale speech callbacks. Run these browser cases with
+one-result auto-selection, stale key cancellation when changing versions,
+exact/approximate/unknown/zero plays, unsupported browsers, and stale speech
+callbacks. Run these browser cases with
 `npm --prefix frontend run test:e2e -- --cpu song-discovery.spec.ts`.
 These controlled API fixtures prove the UI contract, not real LLM/catalog accuracy.
 
@@ -1168,7 +1243,7 @@ using a host Chromium or override `E2E_CHROMIUM_EXECUTABLE` for this suite.
 Updating Playwright requires updating the Docker image version/digest and reviewing
 all regenerated baselines together.
 
-The **25 screenshot cases** compare committed PNGs in
+The screenshot cases compare committed PNGs in
 `frontend/e2e/visual-snapshots/`: three 390px mobile Outputs/Adjust/Review
 screens, two 1440px/2560px desktop workspaces, eight tightly cropped focused
 pitch/tempo controls (390px and 1440px, each with zero/C major, +2/D major,
@@ -1177,8 +1252,10 @@ with linked sung words (390px/1440px), two reference-aligned provenance
 views with inline uncertainty and raw recognition (390px/1440px), two
 synthetic pitched-lyrics typography views covering Unicode word cells,
 repeated-note melisma and explicitly untimed lines (390px/1440px), two mix
-builder/review cases, and four song-discovery pending/selected cases
-(390px/1440px). These complement, not replace, the functional browser E2E cases.
+builder/review cases, two karaoke-output dependency/help views (390px/1440px),
+and four song-discovery pending/selected cases (390px/1440px), including three
+version rows, square artwork/fallbacks, and play-count availability. These
+complement, not replace, the functional browser E2E cases.
 Two additional desktop/mobile geometry cases exercise long transformed-source choices and short notes beside the sticky ruler/word lanes at maximum zoom, using a small purpose-built fixture without inference.
 The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
@@ -1192,7 +1269,8 @@ clock and notes rather than synthesizing results. They upload the unchanged
 source, run the real native full-song transform/storage/API consumers, and
 publish the captured inference with queue workers disabled. Only the four
 song-discovery UI cases intercept search/key API responses with deterministic
-catalog fixtures. No external recording is fetched or Modal function called by
+catalog fixtures and synthetic artwork (including a failed image).
+No external recording is fetched or Modal function called by
 visual tests; existing audio/key cases continue to use real native consumers.
 Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
 timezone, colors, fonts and CPU rasterization; native audio metadata is loaded

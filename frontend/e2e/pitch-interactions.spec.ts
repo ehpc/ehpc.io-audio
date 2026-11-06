@@ -3,12 +3,14 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Locator } from '@playwright/test';
 
-const seedPitchOnlyJob = String.raw`
+const seedTimelineJob = String.raw`
 import json,os,subprocess,sys
 from pathlib import Path
 from backend import config,db
 from backend.pitch_reference import persist_pitch_vocals
+from backend.queue import _persist_results
 from separator.pitch import pitch_from_json,pitch_to_json
+from separator.stems import StemResult
 assert config.QUEUE_CONCURRENCY == 0
 assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
 value=json.load(sys.stdin)
@@ -17,7 +19,14 @@ assert job is not None and job.status == 'queued' and job.modal_call_id is None
 source=(config.UPLOADS_DIR / str(job.id) / job.source_value).read_bytes()
 converted=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-i','pipe:0','-t','20','-codec:a','libmp3lame','-f','mp3','pipe:1'],input=source,capture_output=True,check=True).stdout
 persist_pitch_vocals(job,converted)
-db.mark_done(job.id,[],None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
+# Distinct CPU-generated fixture backgrounds exercise real output encoding and
+# native playback, not separation quality or another model invocation.
+backgrounds={}
+for label,frequency,duration in [('instruments',220,16),('drums',80,18)]:
+ wav=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i',f'sine=frequency={frequency}:duration={duration}:sample_rate=24000','-f','wav','pipe:1'],capture_output=True,check=True).stdout
+ backgrounds[label]=StemResult(wav,0)
+manifest=_persist_results(job,backgrounds)
+db.mark_done(job.id,manifest,None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 `;
 
 const corruptPrivateReference = String.raw`
@@ -45,7 +54,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     } });
     expect(submitted.ok()).toBe(true);
     const id = (await submitted.json()).id as number;
-    execFileSync('uv', ['run', 'python', '-c', seedPitchOnlyJob, String(id)], {
+    execFileSync('uv', ['run', 'python', '-c', seedTimelineJob, String(id)], {
       cwd: process.env.E2E_REPO_ROOT!, input: fixture,
       env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
     });
@@ -58,10 +67,22 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const sourceSelector = view.getByRole('combobox', { name: 'Pitch background audio' });
     const back = view.getByRole('button', { name: 'Back 5 seconds', exact: true });
     const forward = view.getByRole('button', { name: 'Forward 5 seconds', exact: true });
+    const playButton = view.getByRole('button', { name: 'Play', exact: true });
+    const pauseButton = view.getByRole('button', { name: 'Pause', exact: true });
     const activate = async (button: Locator) => viewport.width <= 700 ? button.tap() : button.click();
     const graphBounds = (await view.locator('.pitch-viewport').boundingBox())!;
     const playerBounds = (await player.boundingBox())!;
     expect(playerBounds.y).toBeGreaterThanOrEqual(graphBounds.y + graphBounds.height);
+    const selectionBounds = (await view.locator('.pitch-selection').boundingBox())!;
+    const karaokeBounds = (await view.getByRole('region', { name: 'Current karaoke line' }).boundingBox())!;
+    const transportBounds = (await view.getByRole('group', { name: 'Timeline playback' }).boundingBox())!;
+    const backBounds = (await back.boundingBox())!;
+    const playBounds = (await playButton.boundingBox())!;
+    const forwardBounds = (await forward.boundingBox())!;
+    expect(transportBounds.y).toBeGreaterThanOrEqual(selectionBounds.y + selectionBounds.height);
+    expect(transportBounds.y + transportBounds.height).toBeLessThanOrEqual(karaokeBounds.y);
+    expect(playBounds.x).toBeGreaterThanOrEqual(backBounds.x + backBounds.width);
+    expect(playBounds.x + playBounds.width).toBeLessThanOrEqual(forwardBounds.x);
     await player.evaluate(element => { element.volume = 0.4; });
     const ruler = view.getByRole('slider', { name: 'Pitch timeline position' });
     await view.getByRole('slider', { name: 'Melody zoom' }).fill('40');
@@ -117,8 +138,20 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
       expect(await scroll.evaluate(element => ({ page: scrollY, top: element.scrollTop, left: element.scrollLeft }))).toEqual(before);
     }
-    await scroll.focus();
-    await scroll.press('Space');
+    await competingAudio.evaluate(audio => audio.play());
+    const buttonStart = await player.evaluate(element => element.currentTime);
+    await activate(playButton);
+    await expect(pauseButton).toBeVisible();
+    await expect.poll(() => competingAudio.evaluate(element => element.paused)).toBe(true);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(buttonStart + 0.3);
+    // An external/native stop must update the app-owned action, too.
+    await competingAudio.evaluate(audio => audio.play());
+    await expect(playButton).toBeVisible();
+    await activate(playButton);
+    await activate(pauseButton);
+    await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
+    await playButton.focus();
+    await playButton.press('Space');
     await expect.poll(() => player.evaluate(element => !element.paused)).toBe(true);
     await expect.poll(() => competingAudio.evaluate(audio => audio.paused)).toBe(true);
     await activate(forward);
@@ -137,6 +170,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
     await sourceSelector.selectOption('vocals');
     await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
+    await expect(playButton).toBeVisible();
     await expect.poll(() => player.evaluate(element => Number.isFinite(element.duration)
       && element.duration > 10 && element.seekable.length > 0)).toBe(true);
     await expect.poll(() => player.evaluate(element => Math.abs(element.currentTime - 5) < 0.1)).toBe(true);
@@ -163,6 +197,31 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(6.25, 1);
     expect(await player.evaluate(element => element.paused && element.volume === 0.4)).toBe(true);
 
+    let outputTime = await player.evaluate(element => element.currentTime / 1.25);
+    const backgroundProof = [];
+    for (const [label, expectedDuration] of [['instruments', 12.8], ['drums', 14.4]] as const) {
+      await sourceSelector.selectOption(label);
+      await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
+      await expect(playButton).toBeVisible();
+      await expect.poll(() => player.evaluate(element => element.duration)).toBeCloseTo(expectedDuration, 1);
+      await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(outputTime, 1);
+      await competingAudio.evaluate(element => element.play());
+      const beforePlay = await player.evaluate(element => element.currentTime);
+      await activate(playButton);
+      await expect.poll(() => competingAudio.evaluate(element => element.paused)).toBe(true);
+      await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(beforePlay + 0.3);
+      await activate(pauseButton);
+      await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
+      outputTime = await player.evaluate(element => element.currentTime);
+      expect(await player.evaluate(element => element.volume)).toBe(0.4);
+      expect(await view.getByLabel('Pitch vocal stem', { exact: true }).inputValue()).toBe('vocals');
+      backgroundProof.push({ label, duration: await player.evaluate(element => element.duration), beforePlay, pausedAt: outputTime });
+    }
+    await sourceSelector.selectOption('song');
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(outputTime * 1.25, 1);
+    expect(await player.evaluate(element => element.paused)).toBe(true);
+    await info.attach('native-accompaniment-backgrounds', { body: Buffer.from(JSON.stringify(backgroundProof)), contentType: 'application/json' });
+
     const note = view.locator('.pitch-note').first();
 
     await note.scrollIntoViewIfNeeded();
@@ -174,7 +233,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(noteTooltip.locator('.pitch-tooltip-lyrics')).toHaveText('Should');
     await expect(noteTooltip).not.toContainText(/confidence|approximate|0:10|model/i);
 
-    const word = view.getByRole('button', { name: 'Should, approximate word timing; 3 linked notes', exact: true });
+    const wordIndex = JSON.parse(fixture).pitch.tracks[0].notes[0].word_indices[0] as number;
+    const word = view.locator('.pitch-word').nth(wordIndex);
+    await expect(word).toHaveText('Should');
     await word.scrollIntoViewIfNeeded();
     if (viewport.width <= 700) await word.tap();
     else await word.hover();
@@ -189,6 +250,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await word.focus();
     await word.press('Space');
     await expect(view.locator('.pitch-selection')).toContainText('Should');
+    await expect(view.locator('.pitch-note-selected')).toHaveCount(3);
     expect(await player.evaluate(element => element.paused)).toBe(true);
 
     // Real playback must not immediately undo a user's horizontal browsing.
@@ -303,8 +365,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await pan(-600);
     await expect.poll(() => scroll.evaluate(element => element.scrollLeft)).toBeLessThan(manuallyChosen - 500);
     const pausedChoice = await scroll.evaluate(element => element.scrollLeft);
-    await scroll.focus();
-    await scroll.press('Space');
+    await activate(playButton);
     await expect.poll(() => player.evaluate(element => !element.paused)).toBe(true);
     await activate(forward);
     expect(await player.evaluate(element => !element.paused && element.volume === 0.4)).toBe(true);
@@ -343,7 +404,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect(await player.evaluate(element => element.paused)).toBe(true);
     expect(await sourceSelector.inputValue()).toBe('song');
     expect(await view.getByLabel('Pitch vocal stem', { exact: true }).inputValue()).toBe('vocals');
-    for (const button of [back, forward]) {
+    for (const button of [back, playButton, forward]) {
       const box = (await button.boundingBox())!;
       expect(box.height).toBeGreaterThanOrEqual(44);
       expect(box.width).toBeGreaterThanOrEqual(44);
@@ -368,17 +429,18 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       const failedResponse = errorPage.waitForResponse(response =>
         response.url().includes(`/api/jobs/${id}/pitch-reference/vocals`) && response.request().method() === 'GET');
       await errorView.getByLabel('Pitch background audio', { exact: true }).selectOption('vocals');
-      const keyboard = errorView.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
-      await keyboard.press('Space');
+      await activate(errorView.getByRole('button', { name: 'Play', exact: true }));
       expect((await failedResponse).status()).toBe(503);
       await expect(errorView.getByRole('alert')).toBeVisible();
       const failedPlayer = errorView.locator('audio');
       await expect.poll(() => failedPlayer.evaluate(audio => audio.paused && audio.error !== null)).toBe(true);
+      await expect(errorView.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
       await errorView.getByLabel('Pitch background audio', { exact: true }).selectOption('song');
-      await keyboard.press('Space');
+      await activate(errorView.getByRole('button', { name: 'Play', exact: true }));
       await expect.poll(() => failedPlayer.evaluate(audio => audio.currentTime)).toBeGreaterThan(0.3);
       await expect(errorView.getByRole('alert')).toBeHidden();
-      await failedPlayer.evaluate(audio => audio.pause());
+      await errorView.getByRole('button', { name: 'Pause', exact: true }).press('Enter');
+      await expect.poll(() => failedPlayer.evaluate(audio => audio.paused)).toBe(true);
     } finally { await errorContext.close(); }
     await touch?.detach();
   });

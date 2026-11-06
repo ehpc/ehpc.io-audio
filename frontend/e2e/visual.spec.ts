@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
 import type { PitchAnalysisDTO } from '../src/api';
+import { songArtwork, songVersions } from './song-fixtures';
 
 const mobile = { width: 390, height: 844 };
 const desktop = { width: 1440, height: 1000 };
@@ -80,6 +81,68 @@ for (const viewport of [desktop, { width: 2560, height: 1440 }]) {
   });
 }
 
+for (const viewport of [desktop, mobile]) {
+  test.describe(`karaoke output dependencies ${viewport.width}`, () => {
+    test.use({ viewport, hasTouch: viewport.width === 390, isMobile: viewport.width === 390 });
+    test('preserves manual output choices and exposes locked dependencies by hover, focus and touch', async ({ page }, info) => {
+      let submittedJobs = 0;
+      page.on('request', request => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/jobs') submittedJobs++;
+      });
+      await analyze(page, info);
+      const karaoke = page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true });
+      const vocals = page.getByRole('checkbox', { name: 'Extract vocals', exact: true });
+      const lyrics = page.getByRole('checkbox', { name: 'Extract lyrics', exact: true });
+      const manual = viewport.width === 390 ? lyrics : vocals;
+      const included = viewport.width === 390 ? vocals : lyrics;
+      await manual.check();
+      await karaoke.check();
+      for (const control of [vocals, lyrics]) {
+        await expect(control).toBeChecked();
+        await expect(control).toBeDisabled();
+      }
+      const drums = page.getByRole('checkbox', { name: 'Split drums, bass & other instruments', exact: true });
+      await expect(drums).not.toBeChecked();
+      await expect(drums).toBeEnabled();
+      await drums.check();
+      const help = page.getByRole('button', { name: 'Why Extract lyrics is included', exact: true });
+      if (viewport.width === 390) await help.tap();
+      else {
+        await lyrics.hover();
+        await expect(page.getByRole('tooltip')).toBeVisible();
+        await page.mouse.move(0, 0);
+        await help.focus();
+      }
+      await expect(page.getByRole('tooltip')).toBeVisible();
+      await help.press('Escape');
+      await expect(page.getByRole('tooltip')).toHaveCount(0);
+      await karaoke.uncheck();
+      await expect(vocals).toBeEnabled();
+      await expect(lyrics).toBeEnabled();
+      await expect(manual).toBeChecked();
+      await expect(included).not.toBeChecked();
+      await expect(drums).toBeChecked();
+      await expect(page.getByRole('checkbox', { name: 'Lyrics with pitches', exact: true })).not.toBeChecked();
+      await karaoke.check();
+      if (viewport.width === 390) await help.tap(); else await help.focus();
+      await expect(page.getByRole('tooltip')).toBeVisible();
+      const layout = await karaoke.evaluate(input => {
+        const label = input.closest('label')!.getBoundingClientRect();
+        const outputs = input.closest('fieldset')!;
+        const rowTops = [...outputs.querySelectorAll('input')].map(control => control.getBoundingClientRect().top);
+        return { height: label.height, first: input.getBoundingClientRect().top === Math.min(...rowTops),
+          width: innerWidth, document: document.documentElement.scrollWidth };
+      });
+      expect(layout.first).toBe(true);
+      expect(layout.height).toBeGreaterThanOrEqual(44);
+      expect(layout.width).toBe(viewport.width);
+      expect(layout.document).toBeLessThanOrEqual(viewport.width);
+      expect(submittedJobs, 'option/help interactions must not submit an analysis job').toBe(0);
+      await compare(page, info, `karaoke-options-${viewport.width}.png`);
+    });
+  });
+}
+
 // Deterministic catalog boundary fixtures: these snapshots assert discovery UI,
 // not model/provider accuracy. Existing native key/audio fixtures stay real.
 for (const viewport of [mobile, desktop]) {
@@ -89,15 +152,21 @@ for (const viewport of [mobile, desktop]) {
       status: 202, json: { status: 'pending', search_id: 'visual-song' },
     }));
     await page.route('**/api/song-search/visual-song', route => route.fulfill({ json: {
-      status: 'done', song: { title: 'First Love', artists: ['Hikaru Utada'], duration_seconds: 258,
-        url: 'https://music.youtube.com/watch?v=o1sUaVJUeB0' },
+      status: 'done', songs: songVersions,
     } }));
     await page.route('**/api/key-analysis', route => route.fulfill({ json: { original_key: 'C major' } }));
+    await page.route(songVersions[0].thumbnail_url!, route => route.fulfill({ contentType: 'image/svg+xml', body: songArtwork }));
+    await page.route(songVersions[2].thumbnail_url!, route => route.abort());
     await page.goto('/');
     await page.getByRole('button', { name: 'Find song', exact: true }).click();
     await page.getByLabel('Describe a song').fill('Hikaru Utada First Love');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
-    await expect(page.getByRole('link', { name: 'Verify on YouTube Music' })).toBeVisible();
+    await expect(page.getByRole('radio')).toHaveCount(3);
+    await expect(page.getByRole('radio').first()).toBeChecked();
+    await page.getByRole('radio', { name: /Dance Remix/ }).check();
+    const artwork = page.locator('.song-match img');
+    await expect(artwork).toHaveCount(1);
+    await expect.poll(() => artwork.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     await expect(page.getByRole('status')).toHaveCount(0);
     await page.getByRole('heading', { name: "ehpc's Vocal Tools", exact: true }).click();
     await page.evaluate(() => document.fonts.ready);
@@ -114,7 +183,7 @@ for (const viewport of [mobile, desktop]) {
     await page.getByRole('button', { name: 'Find song', exact: true }).click();
     await page.getByLabel('Describe a song').fill('A soulful piano ballad by Hikaru Utada');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
-    await expect(page.getByRole('status')).toContainText('Finding on YouTube Music');
+    await expect(page.getByRole('status')).toBeVisible();
     await page.getByRole('heading', { name: "ehpc's Vocal Tools", exact: true }).click();
     await page.evaluate(() => document.fonts.ready);
     await compare(page.locator('.source-panel'), info, `song-discovery-pending-${viewport.width}.png`);

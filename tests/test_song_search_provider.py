@@ -15,16 +15,22 @@ CANDIDATES = [
         "title": "Unrelated Song",
         "artists": ["Other Artist"],
         "duration_seconds": 120,
+        "thumbnail_url": None,
+        "play_count": None,
+        "play_count_approximate": False,
     },
     {
         "video_id": "bbbbbbbbbbb",
         "title": "Desired Song",
         "artists": ["Desired Artist"],
         "duration_seconds": 210,
+        "thumbnail_url": None,
+        "play_count": None,
+        "play_count_approximate": False,
     },
 ]
 EXTRACTION = '{"search":"Desired Artist Desired Song"}'
-SELECTION = '{"status":"match","video_id":"bbbbbbbbbbb"}'
+SELECTION = '{"status":"match","video_ids":["bbbbbbbbbbb"]}'
 
 
 def completion(content, finish_reason="stop"):
@@ -90,12 +96,17 @@ def test_provider_grounding_cache_and_model_dependency_invalidation(
     def expect_fresh():
         responses.extend([(200, completion(EXTRACTION)), (200, completion(SELECTION))])
         result = run()
-        assert result == {
-            "title": "Desired Song",
-            "artists": ["Desired Artist"],
-            "url": "https://music.youtube.com/watch?v=bbbbbbbbbbb",
-            "duration_seconds": 210,
-        }
+        assert result == [
+            {
+                "title": "Desired Song",
+                "artists": ["Desired Artist"],
+                "url": "https://music.youtube.com/watch?v=bbbbbbbbbbb",
+                "duration_seconds": 210,
+                "thumbnail_url": None,
+                "play_count": None,
+                "play_count_approximate": False,
+            }
+        ]
         assert not responses
         return result
 
@@ -154,7 +165,7 @@ def test_provider_failures_publish_nothing_and_do_not_expose_response(
 @pytest.mark.parametrize(
     ("selection", "code"),
     [
-        ('{"status":"match","video_id":"invented_id"}', "invalid_model"),
+        ('{"status":"match","video_ids":["invented_id"]}', "invalid_model"),
         ('{"status":"no_match"}', "no_match"),
         ('{"status":"ambiguous"}', "ambiguous"),
     ],

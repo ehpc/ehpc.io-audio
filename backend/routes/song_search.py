@@ -4,16 +4,26 @@ import uuid
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 from backend import db, modal_client
 from backend.session import get_session_id
 from separator.song_search import (
+    MAX_PLAY_COUNT,
     QUERY_MAX_LENGTH,
+    RESULT_LIMIT,
     SEARCH_RESULT_TTL,
     SEARCH_TTL,
     normalize_query,
     query_cache_key,
+    trusted_thumbnail_url,
 )
 
 router = APIRouter(tags=["song-search"])
@@ -36,7 +46,7 @@ class SongSearchRequest(BaseModel):
         return normalize_query(value)
 
 
-class Song(BaseModel):
+class SongMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1)
     artists: list[str]
@@ -44,6 +54,23 @@ class Song(BaseModel):
         pattern=r"^https://music\.youtube\.com/watch\?v=[A-Za-z0-9_-]{11}$"
     )
     duration_seconds: float | None = Field(ge=0, allow_inf_nan=False)
+    thumbnail_url: str | None = Field(strict=True)
+    play_count: int | None = Field(strict=True, ge=0, le=MAX_PLAY_COUNT)
+    play_count_approximate: bool = Field(strict=True)
+
+    @field_validator("thumbnail_url")
+    @classmethod
+    def trusted_artwork(cls, value: str | None) -> str | None:
+        if value is not None and trusted_thumbnail_url(value) is None:
+            raise ValueError("Artwork must use a trusted HTTPS image provider.")
+        return value
+
+    @field_validator("play_count_approximate")
+    @classmethod
+    def known_approximation(cls, value: bool, info: ValidationInfo) -> bool:
+        if value and info.data.get("play_count") is None:
+            raise ValueError("Unavailable plays cannot be approximate.")
+        return value
 
 
 class SearchStarted(BaseModel):
@@ -58,7 +85,14 @@ class SearchPending(BaseModel):
 class SearchDone(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["done"] = "done"
-    song: Song
+    songs: list[SongMatch] = Field(min_length=1, max_length=RESULT_LIMIT)
+
+    @field_validator("songs")
+    @classmethod
+    def unique_versions(cls, songs: list[SongMatch]) -> list[SongMatch]:
+        if len({song.url for song in songs}) != len(songs):
+            raise ValueError("Song versions must have distinct catalog IDs.")
+        return songs
 
 
 @router.post("/song-search", status_code=202)

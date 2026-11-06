@@ -80,8 +80,8 @@ function animationFrames() {
   };
 }
 
-function keyboardPlayer() {
-  const player = scrollPlayer();
+function keyboardPlayer(source = job()) {
+  const player = scrollPlayer(source);
   player.state.paused = true;
   const play = vi.spyOn(player.audio, "play").mockImplementation(() => {
     player.state.paused = false;
@@ -146,7 +146,7 @@ it("leaves note/word Space activation and composing or modified Space to their e
   expect(player.audio.currentTime).toBe(2);
   expect(player.audio.paused).toBe(true);
   expect(document.querySelector(".pitch-selection")).toHaveTextContent("D#4");
-  const word = screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" });
+  const word = screen.getByRole("button", { name: /^world,/ });
   word.focus();
   await userEvent.keyboard("[Space]");
   expect(player.audio.currentTime).toBe(1);
@@ -191,6 +191,106 @@ it.each(["NotAllowedError", "NotSupportedError"])("shows a current %s until play
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
+it("keeps the transport action synchronized with native playback, external pause, ending and source changes", async () => {
+  const player = keyboardPlayer();
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  expect(player.audio.paused).toBe(false);
+  expect(screen.getByRole("button", { name: "Pause", exact: true })).toBeEnabled();
+  player.audio.pause();
+  const playButton = screen.getByRole("button", { name: "Play", exact: true });
+  playButton.focus();
+  await userEvent.keyboard("[Space]");
+  expect(player.audio.paused).toBe(false);
+  const pauseButton = screen.getByRole("button", { name: "Pause", exact: true });
+  pauseButton.focus();
+  await userEvent.keyboard("[Enter]");
+  expect(player.audio.paused).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  Object.defineProperty(player.audio, "ended", { configurable: true, value: true });
+  fireEvent.ended(player.audio);
+  expect(screen.getByRole("button", { name: "Play", exact: true })).toBeEnabled();
+  Object.defineProperty(player.audio, "ended", { configurable: true, value: false });
+  player.audio.pause();
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  vi.spyOn(player.audio, "load").mockImplementation(() => { player.state.paused = true; fireEvent.emptied(player.audio); });
+  fireEvent.change(screen.getByLabelText("Pitch background audio"), { target: { value: "song" } });
+  expect(player.audio.paused).toBe(true);
+  expect(screen.getByRole("button", { name: "Play", exact: true })).toBeEnabled();
+});
+
+it("does not advertise pause before native playback starts and exposes a rejected button play", async () => {
+  const player = keyboardPlayer();
+  const pending = Promise.withResolvers<void>();
+  player.play.mockReturnValueOnce(pending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  expect(player.audio.paused).toBe(true);
+  expect(screen.getByRole("button", { name: "Play", exact: true })).toBeEnabled();
+  pending.reject(new DOMException("Permission denied by the media device.", "NotAllowedError"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Permission denied by the media device.");
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  expect(player.audio.paused).toBe(false);
+  expect(screen.getByRole("button", { name: "Pause", exact: true })).toBeEnabled();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("disables playback when neither original nor a listening reference exists", () => {
+  const source = job();
+  source.has_original = false;
+  source.has_pitch_vocals = false;
+  source.manifest = [];
+  render(() => <PitchView job={source} />);
+  expect(screen.getByRole("button", { name: "Play", exact: true })).toBeDisabled();
+});
+
+it("preserves numeric lyrics without appended counts while selecting every associated note", () => {
+  const source = job();
+  source.pitch = { ...pitch, words: [{ ...pitch.words[0], start_s: 0.75, text: "99" }] };
+  render(() => <PitchView job={source} />);
+  const word = screen.getByRole("button", { name: /^99,/ });
+  expect(word).toHaveTextContent(/^99$/);
+  expect(word.getAttribute("aria-label")?.match(/\d+/g)).toEqual(["99"]);
+  fireEvent.click(word);
+  expect(document.querySelector("audio")!.currentTime).toBe(1);
+  expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
+  expect(document.querySelector(".pitch-selection")!.textContent?.match(/\d+/g)).toEqual(["99"]);
+  expect(screen.getByRole("tooltip")).toHaveTextContent(/^99$/);
+});
+
+it.each(["instruments", "drums"])("plays a generated %s background on the output clock without changing the analyzed voice", label => {
+  const source = job();
+  source.manifest!.push({ label, filename: `${label}.mp3`, download_name: `${label}.mp3`, duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  vi.spyOn(player.audio, "load").mockImplementation(() => { player.state.paused = true; fireEvent.emptied(player.audio); });
+  const backgrounds = screen.getByRole("combobox", { name: "Pitch background audio" });
+  fireEvent.change(backgrounds, { target: { value: "song" } });
+  player.audio.volume = 0.4;
+  player.time(12.5);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  fireEvent.change(backgrounds, { target: { value: label } });
+  fireEvent.loadedMetadata(player.audio);
+  expect(player.audio.currentTime).toBe(10);
+  expect(player.audio.paused).toBe(true);
+  expect(player.audio.volume).toBe(0.4);
+  expect(screen.getByLabelText("Pitch vocal stem")).toHaveValue("vocals");
+  fireEvent.click(screen.getByRole("button", { name: "Forward 5 seconds", exact: true }));
+  expect(player.audio.currentTime).toBe(15);
+  fireEvent.change(backgrounds, { target: { value: "song" } });
+  fireEvent.loadedMetadata(player.audio);
+  expect(player.audio.currentTime).toBe(18.75);
+  expect(player.audio.paused).toBe(true);
+});
+
+it("does not offer absent accompaniment bytes just because processing flags or a cleaned instrumental exist", () => {
+  const source = job();
+  source.options.extract_instruments = true;
+  source.options.drums = true;
+  source.manifest!.push({ label: "instruments-decrowded", filename: "cleaned.mp3", download_name: "cleaned.mp3", duration_s: 70, size_bytes: 100 });
+  render(() => <PitchView job={source} />);
+  const backgrounds = screen.getByRole("combobox", { name: "Pitch background audio" });
+  expect(backgrounds.querySelector('option[value="instruments"]')).toBeDisabled();
+  expect(backgrounds.querySelector('option[value="drums"]')).toBeDisabled();
+});
+
 it("uses detected time/pitch geometry, linked melisma, zoom and real player seeking without inventing syllables", () => {
   render(() => <PitchView job={job()} />);
   const notes = document.querySelectorAll<SVGGElement>(".pitch-note");
@@ -205,10 +305,8 @@ it("uses detected time/pitch geometry, linked melisma, zoom and real player seek
   const audio = document.querySelector("audio")!;
   expect(audio.currentTime).toBe(1);
   expect(document.querySelector(".pitch-selection")).toHaveTextContent("+25 cents");
-  fireEvent.click(screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" }));
+  fireEvent.click(screen.getByRole("button", { name: /^world,/ }));
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
-  expect(document.querySelector(".pitch-selection")).toHaveTextContent("2 linked notes");
-  expect(document.querySelector(".pitch-selection")).not.toHaveTextContent("Select a note");
   fireEvent.click(screen.getByRole("button", { name: "Zoom in melody" }));
   expect(notes[0].querySelector("rect")).toHaveAttribute("x", "120");
   expect(notes[0].querySelector("rect")).toHaveAttribute("width", "120");
@@ -318,7 +416,7 @@ it("retains unversioned word timing interactions without inventing a recognizer"
   expect(screen.queryByText(/Whisper/)).not.toBeInTheDocument();
   expect(screen.getByText(/Recognition model unspecified/)).toBeVisible();
   expect(screen.getByText(/alignment model is unspecified/)).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" }));
+  fireEvent.click(screen.getByRole("button", { name: /^world,/ }));
   expect(document.querySelector("audio")!.currentTime).toBe(1);
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
   expect(source.pitch!.words[0]).toEqual(pitch.words[0]);
@@ -434,7 +532,7 @@ it("shows immediate pitch-and-lyrics note tooltips and lyrics-only word tooltips
   fireEvent.blur(note);
   expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
-  const word = screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" });
+  const word = screen.getByRole("button", { name: /^world,/ });
   expect(word.closest("[title]")).toBeNull();
   expect(word.querySelector("[title], title")).toBeNull();
   fireEvent.pointerEnter(word);
@@ -453,7 +551,7 @@ it.each(["note", "word"])("restores a %s tooltip when scrolling leaves the point
   render(() => <PitchView job={job()} />);
   const target = kind === "note"
     ? document.querySelector<SVGGElement>(".pitch-note")!
-    : screen.getByRole("button", { name: "world, approximate word timing; 2 linked notes" });
+    : screen.getByRole("button", { name: /^world,/ });
   fireEvent.pointerEnter(target);
   fireEvent.scroll(window);
   expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();

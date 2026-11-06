@@ -96,5 +96,5 @@ STRUCTURE_PACKAGES = ("torch", "torchaudio", "transformers", "muq", "librosa", "
 PITCH_PACKAGES = ("torch", "torchcrepe", "numpy", "scipy")
 
 # Independent discovery producer; never invalidates audio/ASR artifacts.
-SONG_SEARCH = "openrouter-chat-json-temp0-tokens256-no-reasoning-grounded-v2"
+SONG_SEARCH = "openrouter-chat-json-temp0-tokens256-no-reasoning-song-versions-plays-v3"
 SONG_MODEL = "z-ai/glm-4.7-flash"
