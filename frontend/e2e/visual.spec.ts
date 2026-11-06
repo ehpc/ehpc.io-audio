@@ -47,6 +47,31 @@ async function compare(subject: Page | Locator, info: TestInfo, name: string, ma
   await expect(subject).toHaveScreenshot(name, { mask });
 }
 
+async function expectReadableTooltip(page: Page, info: TestInfo, interaction: string) {
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toContainText('Drums, bass and other instruments are all available as downloads.');
+  const geometry = await tooltip.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    const footer = document.querySelector('.workspace-action');
+    const footerBox = footer?.getBoundingClientRect();
+    const footerTop = footer && footerBox && ['fixed', 'sticky'].includes(getComputedStyle(footer).position)
+      && footerBox.top < innerHeight ? footerBox.top : null;
+    const uncovered = [0.1, 0.5, 0.9].flatMap(x => [0.1, 0.5, 0.9].map(y => {
+      const painted = document.elementFromPoint(box.left + box.width * x, box.top + box.height * y);
+      return !!painted && (painted === element || element.contains(painted));
+    }));
+    return { box: box.toJSON(), width: innerWidth, height: innerHeight, footerTop, uncovered,
+      fits: element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight };
+  });
+  await info.attach(`drums-help-${interaction}`, { body: JSON.stringify(geometry), contentType: 'application/json' });
+  expect(geometry.box.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.box.top).toBeGreaterThanOrEqual(0);
+  expect(geometry.box.right).toBeLessThanOrEqual(geometry.width);
+  expect(geometry.box.bottom).toBeLessThanOrEqual(geometry.height);
+  expect(geometry.fits).toBe(true);
+  expect(geometry.uncovered.every(Boolean)).toBe(true);
+}
+
 for (const tab of ['Outputs', 'Adjust', 'Review']) {
   test(`mobile 390 ${tab} workspace`, async ({ page }, info) => {
     await page.setViewportSize(mobile);
@@ -93,22 +118,23 @@ for (const viewport of [desktop, mobile]) {
       const karaoke = page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true });
       const vocals = page.getByRole('checkbox', { name: 'Extract vocals', exact: true });
       const lyrics = page.getByRole('checkbox', { name: 'Extract lyrics', exact: true });
+      const instruments = page.getByRole('checkbox', { name: 'Extract instruments', exact: true });
+      const drums = page.getByRole('checkbox', { name: 'Split drums, bass & other instruments', exact: true });
+      const manualBacking = viewport.width === 390 ? instruments : drums;
+      const includedBacking = viewport.width === 390 ? drums : instruments;
       const manual = viewport.width === 390 ? lyrics : vocals;
       const included = viewport.width === 390 ? vocals : lyrics;
       await manual.check();
+      await manualBacking.check();
       await karaoke.check();
-      for (const control of [vocals, lyrics]) {
+      for (const control of [vocals, lyrics, instruments, drums]) {
         await expect(control).toBeChecked();
         await expect(control).toBeDisabled();
       }
-      const drums = page.getByRole('checkbox', { name: 'Split drums, bass & other instruments', exact: true });
-      await expect(drums).not.toBeChecked();
-      await expect(drums).toBeEnabled();
-      await drums.check();
-      const help = page.getByRole('button', { name: 'Why Extract lyrics is included', exact: true });
+      const help = page.getByRole('button', { name: 'Why Extract instruments is included', exact: true });
       if (viewport.width === 390) await help.tap();
       else {
-        await lyrics.hover();
+        await instruments.hover();
         await expect(page.getByRole('tooltip')).toBeVisible();
         await page.mouse.move(0, 0);
         await help.focus();
@@ -116,14 +142,32 @@ for (const viewport of [desktop, mobile]) {
       await expect(page.getByRole('tooltip')).toBeVisible();
       await help.press('Escape');
       await expect(page.getByRole('tooltip')).toHaveCount(0);
+      const drumsHelp = page.getByRole('button', { name: 'Why Split drums, bass & other instruments is included', exact: true });
+      if (viewport.width === 390) await drumsHelp.tap(); else await drumsHelp.hover();
+      await expectReadableTooltip(page, info, 'pointer');
+      await drumsHelp.press('Escape');
+      await page.mouse.move(0, 0);
+      await help.focus();
+      await help.press('Escape');
+      for (let step = 0; step < 60 && !(await drumsHelp.evaluate(element => element === document.activeElement)); step++) {
+        await page.keyboard.press('Tab');
+      }
+      await expect(drumsHelp).toBeFocused();
+      await expect(drumsHelp).toHaveAccessibleDescription(/drums-only backing track/);
+      await expectReadableTooltip(page, info, 'keyboard');
+      await drumsHelp.press('Escape');
       await karaoke.uncheck();
       await expect(vocals).toBeEnabled();
       await expect(lyrics).toBeEnabled();
       await expect(manual).toBeChecked();
       await expect(included).not.toBeChecked();
-      await expect(drums).toBeChecked();
+      await expect(instruments).toBeEnabled();
+      await expect(drums).toBeEnabled();
+      await expect(manualBacking).toBeChecked();
+      await expect(includedBacking).not.toBeChecked();
       await expect(page.getByRole('checkbox', { name: 'Lyrics with pitches', exact: true })).not.toBeChecked();
       await karaoke.check();
+      await page.evaluate(() => window.scrollTo(0, 0));
       if (viewport.width === 390) await help.tap(); else await help.focus();
       await expect(page.getByRole('tooltip')).toBeVisible();
       const layout = await karaoke.evaluate(input => {

@@ -44,6 +44,8 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
 const KARAOKE_INCLUDED_OPTIONS: Partial<Record<BooleanOptionKey, string>> = {
   extract_vocals: "Full vocals are included with Karaoke with pitches for the vocal listening reference.",
   extract_lyrics: "Lyrics are included with Karaoke with pitches for timed word highlighting.",
+  extract_instruments: "Instruments are included with Karaoke with pitches for an instrumental backing track and download.",
+  drums: "Drum separation is included with Karaoke with pitches for the drums-only backing track. Drums, bass and other instruments are all available as downloads.",
 };
 
 const DEFAULT_OPTIONS: SeparationOptions = {
@@ -383,6 +385,13 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                     const [expanded, setExpanded] = createSignal(false);
                     const reason = () => lockedOptions()[opt.key];
                     const helpVisible = () => hovered() || focused() || expanded();
+                    let helpElement: HTMLParagraphElement | undefined;
+                    createEffect(() => {
+                      if (mobile() && reason() && helpVisible() && (focused() || expanded())
+                        && helpElement?.isConnected && !helpElement.hidden) {
+                        helpElement.scrollIntoView({ block: "nearest", behavior: "instant" });
+                      }
+                    });
                     return (
                       <div class="workspace-option-row" onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
                         <label class="workspace-option" for={`option-${opt.key}`}>
@@ -404,7 +413,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                             onKeyDown={(event) => {
                               if (event.key === "Escape") { setFocused(false); setExpanded(false); setHovered(false); }
                             }}>Why?</button>
-                          <p id={`option-help-${opt.key}`} class="option-dependency-help" role="tooltip" hidden={!helpVisible()}>
+                          <p ref={helpElement} id={`option-help-${opt.key}`} class="option-dependency-help" role="tooltip" hidden={!helpVisible()}>
                             {reason()} Turn off Karaoke with pitches to change this option.
                           </p>
                         </Show>
@@ -417,7 +426,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           </div>
           <p class="workspace-helper"><strong>Needed stems are extracted automatically.</strong> Only your selected mixes and outputs are downloaded, plus the unchanged original.</p>
           <Show when={options().detect_pitch}>
-            <p class="workspace-helper">Karaoke includes full vocals and lyrics for the pitch timeline and timed word highlighting. Other stems and cleanup remain optional.</p>
+            <p class="workspace-helper">Karaoke includes vocals, lyrics, instruments and drum separation so all four backing choices are available. Drums, bass and other instruments are separate downloads. Vocal splits, cleanup and mixes remain optional.</p>
           </Show>
           <Show when={options().extract_pitched_lyrics}>
             <p class="workspace-helper">Pitch-over-word TXT for each selected vocal stem, or full vocals internally if none selected. This text-only option does not add audio exports or select karaoke.</p>

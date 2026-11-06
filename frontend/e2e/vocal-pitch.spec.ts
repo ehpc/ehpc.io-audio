@@ -20,6 +20,8 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true }).check();
   await expect(page.getByRole('checkbox', { name: 'Extract lyrics', exact: true })).toBeChecked();
   await expect(page.getByRole('checkbox', { name: 'Extract vocals', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Extract instruments', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Split drums, bass & other instruments', exact: true })).toBeChecked();
   await page.getByRole('checkbox', { name: 'Split lead & backing vocals', exact: true }).check();
   await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill('1.25');
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill('125');
@@ -47,7 +49,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   expect(job!.transcript!.timestamp_reference).toBe('original');
   expect(job!.transcript!.reference).not.toBeNull();
   expect(job!.transcript!.words![0].start_s / 1.25).toBeCloseTo(analysis.words[0].start_s, 6);
-  expect(job!.manifest!.map(entry => entry.label)).toEqual(['song', 'vocals', 'lead', 'backing']);
+  expect(job!.manifest!.map(entry => entry.label)).toEqual(['song', 'vocals', 'lead', 'backing', 'instruments', 'drums', 'bass', 'other-instruments']);
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(view).toBeVisible();
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[0].notes.length);

@@ -38,7 +38,7 @@ it("finds only explicitly, analyzes the canonical match, and retains source/opti
   const query = await chooseSearch();
   fireEvent.input(query, { target: { value: "宇多田ヒカル first love" } });
   expect(api.submitJob).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("checkbox", { name: "Extract vocals", exact: true }));
+  await userEvent.click(screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true }));
   await userEvent.click(screen.getByRole("button", { name: "Drums", exact: true }));
   await userEvent.click(screen.getByRole("button", { name: "Bass", exact: true }));
   await userEvent.click(screen.getByRole("button", { name: "Add mix", exact: true }));
@@ -53,12 +53,17 @@ it("finds only explicitly, analyzes the canonical match, and retains source/opti
   expect(api.submitJob).not.toHaveBeenCalled();
   await process();
   expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({ url: match.url, file: undefined,
-    options: expect.objectContaining({ extract_vocals: true, mixes: [expect.objectContaining({ components: ["drums", "bass"] })] }),
+    options: expect.objectContaining({ detect_pitch: true, extract_vocals: true, extract_lyrics: true,
+      extract_instruments: true, drums: true, mixes: [expect.objectContaining({ components: ["drums", "bass"] })] }),
   }));
   expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ source_type: "url", source_value: match.url }));
   expect(query).toHaveValue("宇多田ヒカル first love");
   expect(screen.getByRole("button", { name: "Find song" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("link", { name: /Verify .* on YouTube Music/ })).toBeInTheDocument();
+  for (const name of ["Extract vocals", "Extract lyrics", "Extract instruments", "Split drums, bass & other instruments"]) {
+    expect(screen.getByRole("checkbox", { name, exact: true })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name, exact: true })).toBeDisabled();
+  }
 });
 
 it("switches versions without submitting, cancels stale key analysis, and processes only the chosen version", async () => {

@@ -296,7 +296,7 @@ authorization does not grant additional rights under the model licenses.
 
 | Selection | Output label or file |
 |---|---|
-| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), plus included `vocals` and timestamped lyrics |
+| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), timestamped lyrics, and included `vocals`, `instruments`, `drums`, `bass`, `other-instruments` downloads |
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
 | Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, also shown in Results/History (output audio clock) |
@@ -373,17 +373,22 @@ tabs; changing tabs never resets processing choices, pitch, tempo or key analysi
 Arrow keys, Home and End navigate the tab bar.
 
 **Karaoke with pitches** is the first output option, marked with a decorative
-microphone. Selecting it includes and locks **Extract vocals** and **Extract
-lyrics** for a vocal listening reference and timed word highlighting. Hover an
-included option or focus/tap its **Why?** button for an immediate explanation;
-Escape dismisses the explanation. Turning karaoke off restores each output's
-previous manual choice rather than clearing selections you made yourself.
-The preview and submitted request use those same included outputs.
-Instruments, drums, splits, cleanup and mixes remain independent choices;
-karaoke does not enable them. To request separate drums, use **Split drums,
-bass & other instruments** under Splits, not a one-part mix. Included vocal
-outputs can add analysis or cleanup work when combined with other selected
-vocal variants; this is not a promise of cost-free extra outputs.
+microphone. Selecting it includes and locks **Extract vocals**, **Extract
+lyrics**, **Extract instruments**, and **Split drums, bass & other instruments**.
+Every newly processed karaoke job therefore offers the four backing choices:
+Full song, Just vocals, Instruments, and Drums only. Drum separation also
+produces public **bass** and **other-instruments** downloads, not just drums.
+The unchanged original is retained; existing pitch/tempo rules determine
+whether an additional transformed full-song download is generated.
+Hover an included option or focus/tap its **Why?** button for an immediate
+explanation; Escape dismisses it. Turning karaoke off restores each output's
+previous manual choice, including a drums-only selection without a public
+instrumental download. The preview and submitted request use the same included
+outputs. No one-part mix or other automatic mix is inserted; existing mixes,
+vocal splits, cleanup, and standalone pitched-lyrics choices remain independent.
+On a cold cache, the instrumental and drum/bass/other separation models add
+processing work. Compatible already-computed stages are reused from cache;
+this is not a promise that the additional outputs are cost-free.
 
 **Lyrics with pitches** remains a separate text-output mode: it does not select
 karaoke or expose its internal vocal/lyric-analysis prerequisites as downloads.
@@ -468,7 +473,7 @@ detection, including dry variants. Without a selected vocal output, it analyzes
 full vocals internally; that prerequisite is not offered as a vocal download.
 The preview counts one pitched TXT for each analyzed stem. Selecting plain
 **Extract lyrics** or **Karaoke with pitches** as well still shows those requested
-views; selecting karaoke also includes its vocal and lyric outputs.
+views; selecting karaoke also includes its lyric and complete backing-track outputs.
 
 Pitch rows are above lyric rows in fixed-width whole-word cells. The timestamp
 is the left prefix of the **lyric row**, not a separate third row; the pitch row
@@ -568,8 +573,8 @@ npm --prefix frontend run test:e2e -- --visual --config=playwright.seeded.config
 
 **Karaoke with pitches** enables the pitch timeline (`detect_pitch`), independently
 of the global musical-key estimate or pitch-shift control. In the browser it also
-includes **Extract vocals** and **Extract lyrics**; API clients and older saved
-jobs can still contain pitch-only analysis. It analyzes every selected vocal-only
+includes vocals, lyrics, instruments, and drum/bass/other separation; API clients
+and older saved jobs can still contain pitch-only analysis. It analyzes every selected vocal-only
 stem: full/decrowded vocals, male/female, lead/backing, and selected dry versions.
 Instrument stems and vocal-plus-instrument mixes are never passed to the
 monophonic estimator. When an API request selects no vocal output, full vocals
@@ -655,12 +660,16 @@ animation.
 **Background audio** is independent of the detected **Vocal stem** selector.
 Choose **Full song** (the transformed song when available, otherwise the
 unchanged original), **Just vocals** (all vocal parts, not necessarily the
-selected detected voice), **Instruments**, or **Drums only**. Accompaniment
-choices require the corresponding generated `instruments` or `drums` output;
-unavailable choices are disabled. Request **Extract instruments** or
-**Split drums, bass & other instruments** in Outputs to generate them. Selecting
-a background never launches extraction, and a cleaned instrumental is not
-silently substituted for the instrumental output. Other exported detected vocal
+selected detected voice), **Instruments**, or **Drums only**. New karaoke
+submissions include the required public instrumental and drum outputs.
+Older stored jobs do not gain missing stems automatically: their unavailable
+choices remain disabled. Run **Karaoke with pitches** again to produce missing
+outputs, reusing compatible cached stages rather than silently launching work
+when a background is selected. With tempo-only adjustments and selected stems,
+Full song still uses the unchanged original at original speed, mapped to the
+output clock; nonzero pitch also produces the transformed full-song reference.
+A cleaned instrumental is not silently substituted for the instrumental output.
+Other exported detected vocal
 stems remain available. The initial reference retains the matching exported
 stem when one exists. Switching backgrounds preserves the current output-clock
 position, maps it to the new source's clock, and stops the old source without
@@ -963,9 +972,10 @@ interrupted-job recovery, retry and historical migrations.
 The 68-case live-queue Chromium browser matrix covers processing/behavior,
 unknown keys, download metadata, native MP3 uploads, responsive workspaces,
 adjustments, retained forms, lyrics, exclusive playback, vocal pitch, pitched
-lyrics, and six song-discovery UI cases. A required four-case stored-analysis
-lane covers native pitch-timeline interaction and ODT exports at desktop/mobile
-widths. Together these disjoint lanes retain all 72 behavior cases.
+lyrics, and six song-discovery UI cases. A required stored-analysis lane covers
+legacy native pitch-timeline interaction, new karaoke form submissions with all
+four playable backgrounds and public audio downloads, and ODT exports at
+desktop/mobile widths. These disjoint lanes retain their existing behavior cases.
 The separate native-listening, visual and manual YouTube suites are excluded
 from the live-queue matrix.
 
@@ -1178,7 +1188,7 @@ These are deterministic local checks, not thousands of GPU runs or a proof over
 arbitrary numeric pitch/tempo values.
 
 CI runs native/backend/frontend checks, the isolated Firefox listening check,
-the four stored-analysis browser cases, real GPU smoke tests, the live-queue
+the stored-analysis browser cases, real GPU smoke tests, the live-queue
 browser matrix against a unique test app, and the visual suite below for every
 push/PR. Only a
 passing main run promotes `audio-separator-v2` and publishes the image. The old
