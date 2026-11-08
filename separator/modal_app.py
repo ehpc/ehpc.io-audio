@@ -28,8 +28,8 @@ def _deployment_settings() -> tuple[str, str]:
     test_gpu = os.environ.get("MODAL_TEST_GPU")
     if test_gpu is None:
         return "audio-inference-v3", "L40S"
-    if test_gpu != "L4":
-        raise ValueError("MODAL_TEST_GPU must be L4 when set")
+    if test_gpu not in {"L4", "L40S"}:
+        raise ValueError("MODAL_TEST_GPU must be L4 or L40S when set")
     target = os.environ.get("MODAL_APP_NAME", "")
     if (
         not target

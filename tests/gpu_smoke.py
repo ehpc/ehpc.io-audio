@@ -22,10 +22,10 @@ def gpu_context(root: Path) -> ProcessingContext:
         or config.MODAL_APP_NAME
         in {"audio-separator", "audio-separator-v2", "audio-inference-v3"}
         or os.environ.get("MODAL_APP_NAME") != config.MODAL_APP_NAME
-        or os.environ.get("MODAL_TEST_GPU") != "L4"
+        or os.environ.get("MODAL_TEST_GPU") not in {"L4", "L40S"}
     ):
         raise RuntimeError(
-            "GPU smoke requires an explicit isolated app and MODAL_TEST_GPU=L4"
+            "GPU smoke requires an explicit isolated app and MODAL_TEST_GPU=L4 or L40S"
         )
     manifest = load_manifest(config.PRODUCER_MANIFEST)
     pending: dict[str, str] = {}

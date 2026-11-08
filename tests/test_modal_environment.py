@@ -56,7 +56,8 @@ def assert_deployment_rejected(
     ("gpu", "target", "browser_target"),
     [
         *[
-            ("L4", target, None)
+            (gpu, target, None)
+            for gpu in ("L4", "L40S")
             for target in (
                 None,
                 "",
@@ -71,23 +72,18 @@ def assert_deployment_rejected(
         ],
         *[
             (gpu, "audio-separator-ci-owned", None)
-            for gpu in ("", "T4", "A10", "L40S", "L4:2", "l4")
+            for gpu in ("", "T4", "A10", "L4:2", "l4")
         ],
-        (
-            "L4",
-            "audio-separator-ci-owned",
-            "audio-separator-v2",
-        ),
-        (
-            "L4",
-            "audio-separator-ci-owned",
-            "audio-inference-v3",
-        ),
-        (
-            "L4",
-            "audio-separator-ci-owned",
-            "",
-        ),
+        *[
+            (gpu, "audio-separator-ci-owned", browser_target)
+            for gpu in ("L4", "L40S")
+            for browser_target in (
+                "audio-separator-v2",
+                "audio-inference-v3",
+                "audio-separator-ci-other",
+                "",
+            )
+        ],
     ],
 )
 def test_test_gpu_rejects_unsafe_deployment_before_resource_declarations(

@@ -917,15 +917,18 @@ inference and real browser downloads.
 
 ### Lower-cost isolated GPU tests
 
-CI selects **L4** with `MODAL_TEST_GPU=L4` only in its isolated deployment/test
-job. Production keeps **L40S** when that variable is absent; production promotion
-requires it to be unset. Both use one `infer` pool for five finite operations:
+CI uses two explicit, isolated test apps: **L4** for the eleven shorter GPU
+smokes, then **L40S** for the full-song/short-tail structure smoke and all 68 live
+browser cases. Each app is stopped after its phase; this is not an automatic
+retry on larger hardware. Production keeps **L40S** when `MODAL_TEST_GPU` is
+absent; production promotion requires it to be unset. Each app uses one `infer`
+pool for five finite operations:
 a separator pass, raw Qwen recognition, MMS alignment, CREPE frame prediction,
 and full-context SongFormer prediction. Cache lookup, reference HTTP, final
 transcript/section/note assembly, mixes, exports, song discovery and recovery
 run on the VPS, without acquiring a GPU.
 
-The override accepts only `L4` and requires an explicit, nonblank
+The override accepts only `L4` or `L40S` and requires an explicit, nonblank
 `MODAL_APP_NAME` other than `audio-separator`, `audio-separator-v2` or
 `audio-inference-v3`, without surrounding whitespace.
 If `E2E_MODAL_APP_NAME` is set, it must match.
@@ -945,14 +948,20 @@ the bill. CPU, memory, storage and external APIs are additional costs;
 whole-suite wall time is not the sum of billable GPU allocation time.
 
 [L4 has 24 GB GPU memory and BF16 support](https://www.nvidia.com/en-us/data-center/l4/),
-versus L40S's 48 GB. Model identities, precision, batching, source lengths,
-resource limits, timeouts and artifact versions do not change with the hardware
-override. An L4 allocation must pass the same real-model and live-browser gates
-before release; an
-out-of-memory or timeout failure stays visible, without a silent GPU fallback
-or reduced assertions. The local deployment-boundary tests require no Modal
-allocation. The full CI run is the hardware-fit/performance proof, rather than
-an additional duplicate neural smoke run.
+versus L40S's 48 GB. The unchanged full-song structure smoke completed its
+approximately 141-second input on L4, but its required **420.02-second** padded
+short-tail case exhausted memory inside MuQ attention: a 6.57 GiB allocation
+was requested with only 5.41 GiB free. The longer case therefore runs explicitly
+on production-class L40S; it is not clipped, split into shorter model contexts,
+or replaced with a warm-cache-only assertion.
+
+Model identities, precision, batching, source lengths, resource limits,
+timeouts and artifact versions do not change with the hardware override.
+All existing real-model and live-browser coverage remains required.
+An out-of-memory or timeout failure stays visible, without a silent GPU
+fallback or reduced assertions. The local deployment-boundary tests require
+no Modal allocation. The full CI run is the hardware-fit/performance proof,
+rather than an additional duplicate neural smoke run.
 
 The pool has `min_containers=0`, `buffer_containers=0` and `max_containers=1`.
 `MODAL_GPU_IDLE_SECONDS` accepts a positive integer and defaults to **60 seconds**.
@@ -993,7 +1002,7 @@ npx --prefix frontend playwright install --with-deps chromium
 export MODAL_ENVIRONMENT=ehpc-audio
 export E2E_MODAL_APP_NAME="audio-separator-e2e-$(date +%s)"
 export MODAL_APP_NAME="$E2E_MODAL_APP_NAME"
-export MODAL_TEST_GPU=L4
+export MODAL_TEST_GPU=L40S
 trap 'uv run modal app stop --env "$MODAL_ENVIRONMENT" -y "$E2E_MODAL_APP_NAME" || true' EXIT
 uv run modal deploy --env "$MODAL_ENVIRONMENT" separator/modal_app.py --name "$E2E_MODAL_APP_NAME"
 make smoke
@@ -1005,23 +1014,23 @@ On NixOS, use a native Chromium executable through
 helper with `npx --prefix frontend playwright install ffmpeg`. The direct GPU
 smoke also uses the shared voiced fixture, so it requires Node and FFmpeg.
 
-For a self-contained real-model mixer proof without deploying any app:
+For a focused real-model mixer proof using the isolated app deployed above:
 
 ```sh
 MIXER_EVIDENCE_DIR=/tmp/stem-mixer-proof \
   uv run pytest -m smoke tests/test_mixer_smoke.py -s
 ```
 
-This starts a uniquely named ephemeral Modal app using the shared, verified,
-read-only model weights and a private local computed-artifact cache, then a real
-local HTTP server and queue. It processes the licensed voiced fixture through
+This uses the isolated app's shared, verified, read-only model weights and a
+private local computed-artifact cache, then starts a real local HTTP server and
+queue. It processes the licensed voiced fixture through
 all four requested pairs, a three-component mix, and all four
 vocal-variant/instrument mixes. Downloaded audio, Title tags, timing, stereo/48 kHz,
 peak levels, hidden prerequisites and unchanged original bytes are checked.
 The cleanup case additionally compares mixes against independently exported real
-cleaned/dry component audio. The app and local server are released on exit;
-shared weights are never deleted. MP3s and `proof.json` remain in the evidence
-directory. Deterministic local tests
+cleaned/dry component audio. The local server is released on exit; the deployment
+cleanup trap above stops the Modal app. Shared weights are never deleted.
+MP3s and `proof.json` remain in the evidence directory. Deterministic local tests
 separately measure per-component spectral amplitudes, non-normalized sums,
 multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
 interrupted-job recovery, retry and historical migrations.
@@ -1416,7 +1425,7 @@ recordings are included or fetched.
 | `MODEL_VOLUME_NAME` | `audio-separator-models` | Existing verified model volume; mounted read-only in the GPU pool |
 | `PRODUCER_MANIFEST` | `separator/model_manifest.json` | Exact captured image, native producer identities and consumed model assets |
 | `PREPARED_MODELS_ROOT` | `$DATA_DIR/artifacts` | Private shared weight-verification receipts; independent of computed-output namespaces |
-| `MODAL_TEST_GPU` | *(unset)* | Strict isolated-test-only `L4` override; production remains `L40S` |
+| `MODAL_TEST_GPU` | *(unset)* | Strict isolated-test-only `L4` or `L40S` override; production remains `L40S` |
 | `MODAL_GPU_IDLE_SECONDS` | `60` | Positive GPU idle-window seconds, a deployment setting rather than an algorithm version |
 | `OPENROUTER_API_KEY` | *(unset)* | Server-only VPS discovery credential; never sent to Modal or browsers |
 | `COOKIE_SECRET` | *(insecure dev default)* | Signs the session cookie — **must** be set to a stable secret in prod; rotating it logs everyone out |
