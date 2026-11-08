@@ -1,34 +1,25 @@
-"""Opt-in real separation + singing ASR against the isolated Modal app."""
+"""Real singing ASR through the single GPU pool and VPS-side assembly."""
 
+import io
 import json
 import re
 import subprocess
+import wave
+from pathlib import Path
 
-import modal
 import pytest
+from gpu_smoke import gpu_context
 from lyrics_fixture import intelligible_speech, sung_excerpt
 
-from backend import config
-from backend.modal_client import LYRICS_FUNCTION_NAME
-from separator.lyrics import transcript_from_json, transcript_text
-from separator.modal_app import (
-    ASR_PYTHON,
-    GPU,
-    MODEL_CACHE,
-    MODEL_VOLUME_NAME,
-    TIMEOUT,
-    image,
-)
-from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
-from separator.processing import ProcessingResult
+from separator.lyrics import transcript_text
+from separator.modal_app import TIMEOUT
+from separator.options import SeparationOptions
+from separator.processing import run_processing, transcribe_source
 
 pytestmark = [pytest.mark.smoke, pytest.mark.timeout(TIMEOUT + 300)]
-model_volume = modal.Volume.from_name(
-    MODEL_VOLUME_NAME, environment_name=config.MODAL_ENVIRONMENT
-)
 
 
-def test_deployed_lyrics_recognizes_reference_speech() -> None:
+def test_deployed_lyrics_recognizes_reference_speech(tmp_path: Path) -> None:
     source = intelligible_speech()
     duration = float(
         json.loads(
@@ -49,17 +40,13 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
             ).stdout
         )["format"]["duration"]
     )
-    function = modal.Function.from_name(
-        config.MODAL_APP_NAME,
-        LYRICS_FUNCTION_NAME,
-        environment_name=config.MODAL_ENVIRONMENT,
-    )
-    result: ProcessingResult = function.remote(
-        source,
-        "jfk-reference.flac",
+    source_path = tmp_path / "jfk-reference.flac"
+    source_path.write_bytes(source)
+    result = run_processing(
+        source_path,
         SeparationOptions(extract_lyrics=True),
-        analysis_schema=2,
-        options_schema=OPTIONS_SCHEMA_VERSION,
+        tmp_path,
+        gpu_context(tmp_path / "computed"),
     )
     assert result.audio == {}, "the prerequisite vocal stem must remain internal"
     transcript = result.transcript
@@ -91,18 +78,14 @@ def test_deployed_lyrics_recognizes_reference_speech() -> None:
     )
 
 
-def test_deployed_lyrics_retains_later_sung_verse() -> None:
-    function = modal.Function.from_name(
-        config.MODAL_APP_NAME,
-        LYRICS_FUNCTION_NAME,
-        environment_name=config.MODAL_ENVIRONMENT,
-    )
-    result: ProcessingResult = function.remote(
-        sung_excerpt(),
-        "public-domain-singing.flac",
+def test_deployed_lyrics_retains_later_sung_verse(tmp_path: Path) -> None:
+    source_path = tmp_path / "public-domain-singing.flac"
+    source_path.write_bytes(sung_excerpt())
+    result = run_processing(
+        source_path,
         SeparationOptions(extract_lyrics=True),
-        analysis_schema=2,
-        options_schema=OPTIONS_SCHEMA_VERSION,
+        tmp_path,
+        gpu_context(tmp_path / "computed"),
     )
     assert result.audio == {}
     transcript = result.transcript
@@ -117,100 +100,45 @@ def test_deployed_lyrics_retains_later_sung_verse() -> None:
     print("SMOKE_SINGING " + transcript_text(transcript.segments, transcript.sections))
 
 
-def test_gpu_asr_silence_is_empty_and_runtime_dependencies_are_isolated() -> None:
-    # Exercise actual ASR directly: audio-separator rejects all-zero source audio
-    # before producing a vocal stem. That is an honest separation failure, not
-    # an empty recognition or a reason to fabricate a fallback vocal file.
-    assert config.MODAL_APP_NAME != "audio-separator", "Use an isolated test app"
-    script = f"""
-import importlib.metadata
-import json
-import subprocess
-import wave
-from pathlib import Path
-import onnxruntime
-transcripts = []
-for duration in (4, 30):
-    with wave.open('/tmp/silence.wav', 'wb') as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(16000)
-        audio.writeframes(bytes(16000 * duration * 2))
+def test_gpu_asr_silence_is_empty(tmp_path: Path) -> None:
+    # Actual ASR, without separation: separators legitimately reject zero audio.
+    # No substitute vocal file, standalone GPU process or extra function exists.
+    context = gpu_context(tmp_path / "computed")
+    evidence = []
+    for duration in (4, 30):
+        stream = io.BytesIO()
+        with wave.open(stream, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(bytes(16000 * duration * 2))
+        transcript = transcribe_source(stream.getvalue(), context, None)
+        assert transcript.status == "empty"
+        assert transcript.segments == []
+        evidence.append(
+            {
+                "duration_s": duration,
+                "status": transcript.status,
+                "model": transcript.asr_model,
+            }
+        )
+    print("SMOKE_ASR_SILENCE " + json.dumps(evidence))
+
+
+def test_gpu_asr_preserves_language_and_clock_after_long_silent_intro(
+    tmp_path: Path,
+) -> None:
+    speech = tmp_path / "speech.flac"
+    speech.write_bytes(intelligible_speech())
+    intro = tmp_path / "intro.wav"
     subprocess.run(
-        [{ASR_PYTHON!r}, '-m', 'separator.transcribe', '/tmp/silence.wav',
-         {MODEL_CACHE + "/qwen-asr"!r}, '/tmp/transcript.json'],
-        check=True, cwd='/root',
-    )
-    transcripts.append(dict(duration_s=duration,
-        transcript=json.loads(Path('/tmp/transcript.json').read_text())))
-asr = subprocess.run(
-    [{ASR_PYTHON!r}, '-c',
-     'import json, torch, transformers, importlib.metadata as m; '
-     'print(json.dumps(dict(cuda=torch.cuda.is_available(), '
-     'transformers=transformers.__version__, qwen=m.version("qwen-asr"), '
-     'torch=torch.__version__)))'],
-    capture_output=True, text=True, check=True,
-)
-print(json.dumps(dict(
-    separator_providers=onnxruntime.get_available_providers(),
-    separator_runtime=importlib.metadata.version('onnxruntime-gpu'),
-    asr=json.loads(asr.stdout),
-    transcripts=transcripts,
-)))
-"""
-    sandbox = modal.Sandbox.create(
-        "python",
-        "-c",
-        script,
-        app=modal.App.lookup(
-            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
-        ),
-        image=image,
-        gpu=GPU,
-        volumes={MODEL_CACHE: model_volume},
-        timeout=TIMEOUT,
-        workdir="/root",
-    )
-    try:
-        sandbox.wait()
-        stdout = sandbox.stdout.read()
-        stderr = sandbox.stderr.read()
-        assert sandbox.returncode == 0, stderr
-        result = json.loads(stdout.splitlines()[-1])
-        assert "CUDAExecutionProvider" in result["separator_providers"]
-        assert result["asr"]["cuda"] is True
-        assert result["asr"]["transformers"] == "4.57.6"
-        for case in result["transcripts"]:
-            assert case["transcript"]["status"] == "empty", case
-            assert case["transcript"]["segments"] == [], case
-        print("SMOKE_ASR_RUNTIME " + json.dumps(result))
-    finally:
-        sandbox.terminate()
-
-
-def test_gpu_asr_preserves_language_and_clock_after_long_silent_intro() -> None:
-    assert config.MODAL_APP_NAME != "audio-separator", "Use an isolated test app"
-    sandbox = modal.Sandbox.create(
-        "sleep",
-        str(TIMEOUT),
-        app=modal.App.lookup(
-            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
-        ),
-        image=image,
-        gpu=GPU,
-        volumes={MODEL_CACHE: model_volume},
-        timeout=TIMEOUT,
-        workdir="/root",
-    )
-    try:
-        sandbox.filesystem.write_bytes(intelligible_speech(), "/tmp/speech.flac")
-        decode = sandbox.exec(
+        [
             "ffmpeg",
             "-nostdin",
             "-v",
             "error",
             "-i",
-            "/tmp/speech.flac",
+            str(speech),
             "-af",
             "adelay=35000:all=1",
             "-ar",
@@ -219,33 +147,21 @@ def test_gpu_asr_preserves_language_and_clock_after_long_silent_intro() -> None:
             "1",
             "-c:a",
             "pcm_s16le",
-            "/tmp/intro.wav",
-        )
-        decode.wait()
-        assert decode.returncode == 0, decode.stderr.read()
-        process = sandbox.exec(
-            ASR_PYTHON,
-            "-m",
-            "separator.transcribe",
-            "/tmp/intro.wav",
-            MODEL_CACHE + "/qwen-asr",
-            "/tmp/transcript.json",
-        )
-        process.wait()
-        assert process.returncode == 0, process.stderr.read()
-        transcript = transcript_from_json(
-            sandbox.filesystem.read_text("/tmp/transcript.json")
-        )
-        assert transcript.status == "recognized"
-        assert transcript.language == "English"
-        assert transcript.timestamp_reference == "original"
-        words = " ".join(segment.text for segment in transcript.segments).lower()
-        for phrase in ("my fellow americans", "your country", "do for you"):
-            assert phrase in words
-        # The old one-second initial-timestamp constraint misdated this onset
-        # at30s, although all35s of leading zero audio were still present.
-        assert 34 <= transcript.segments[0].start_s <= 36
-        assert all(s.start_s < s.end_s <= 46 for s in transcript.segments)
-        print("SMOKE_SILENT_INTRO " + transcript_text(transcript.segments))
-    finally:
-        sandbox.terminate()
+            str(intro),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    transcript = transcribe_source(
+        intro.read_bytes(), gpu_context(tmp_path / "computed"), None
+    )
+    assert transcript.status == "recognized"
+    assert transcript.language == "English"
+    assert transcript.timestamp_reference == "original"
+    words = " ".join(segment.text for segment in transcript.segments).lower()
+    for phrase in ("my fellow americans", "your country", "do for you"):
+        assert phrase in words
+    # The old initial-timestamp constraint misplaced this onset at 30 seconds.
+    assert 34 <= transcript.segments[0].start_s <= 36
+    assert all(s.start_s < s.end_s <= 46 for s in transcript.segments)
+    print("SMOKE_SILENT_INTRO " + transcript_text(transcript.segments))

@@ -578,6 +578,39 @@ it("does not invent lyrics for an unlinked note", () => {
   expect(tooltip).not.toHaveTextContent(/world|approximate|confidence/i);
 });
 
+it.each([300, 900])("follows after three quarters of the visible note region at viewport width %i", width => {
+  const player = scrollPlayer();
+  Object.defineProperty(player.viewport, "clientWidth", { configurable: true, value: width });
+  player.time(10);
+  const left = player.viewport.scrollLeft;
+  expect(left).toBeGreaterThan(0);
+  const crossing = (left + (width - 54) * 0.75) / 100;
+  player.time(crossing - 0.001);
+  expect(player.viewport.scrollLeft).toBe(left);
+  player.time(crossing + 0.001);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(left);
+  expect(player.audio.currentTime).toBe(crossing + 0.001);
+});
+
+it("keeps the three-quarter trigger suspended until a settled manual return", () => {
+  const player = scrollPlayer();
+  player.time(10);
+  player.wheel(3000);
+  player.end();
+  player.time(30.5);
+  player.time(32);
+  expect(player.viewport.scrollLeft).toBe(3000);
+  player.wheel(3500);
+  player.end();
+  player.wheel(3077); // Return the current playhead to the middle of the note region.
+  player.end();
+  const crossing = (3077 + (300 - 54) * 0.75) / 100;
+  player.time(crossing - 0.001);
+  expect(player.viewport.scrollLeft).toBe(3077);
+  player.time(crossing + 0.001);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(3077);
+});
+
 it("does not confuse automatic scrolling with browsing, and resumes only after a manual return", () => {
   const player = scrollPlayer();
   player.time(5);

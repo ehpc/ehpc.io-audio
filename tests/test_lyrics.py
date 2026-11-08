@@ -2,14 +2,13 @@ import asyncio
 import json
 import sqlite3
 from dataclasses import asdict
-from unittest.mock import MagicMock
 from urllib.parse import quote
 
 import pytest
 from audio_samples import decode_audio, frequency_amplitude, tone_wav
 from fastapi.testclient import TestClient
 
-from backend import config, db, modal_client, queue
+from backend import config, db, queue
 from separator.lyrics import (
     Transcript,
     TranscriptSegment,
@@ -31,11 +30,9 @@ def _complete(
     )
     assert response.status_code == 200
     job_id = response.json()["id"]
-    call = MagicMock(object_id="fc-lyrics")
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
-    monkeypatch.setattr(modal_client, "spawn_with_lyrics", lambda *args: call)
     monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, transcript)
+        queue, "process_source", lambda *args: ProcessingResult({}, transcript)
     )
     record = db.get_job(job_id)
     assert record is not None
@@ -179,10 +176,7 @@ def test_transformed_audio_does_not_rescale_original_lyrics_clock(
     job_id = response.json()["id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-time")
-    )
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, transcript)
+        queue, "process_source", lambda *args: ProcessingResult({}, transcript)
     )
     record = db.get_job(job_id)
     assert record is not None

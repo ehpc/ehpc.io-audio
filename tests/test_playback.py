@@ -12,8 +12,9 @@ from threading import Thread
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import config, db, modal_client, playback
+from backend import config, db, inference, modal_client, playback, queue
 from backend.models import ResultManifestEntry
+from backend.routes import results
 from separator import cache_versions
 from separator.pitch import PitchAnalysis, PitchTrack, pitch_to_json
 from tests.audio_samples import decode_audio, ffmpeg_tone, frequency_amplitude
@@ -166,8 +167,10 @@ def _no_models(monkeypatch: pytest.MonkeyPatch) -> None:
     def forbidden(*args, **kwargs):
         pytest.fail("Listening requests must not run or recover models")
 
-    for name in ("spawn", "spawn_with_lyrics", "cached_pitch_vocals"):
-        monkeypatch.setattr(modal_client, name, forbidden)
+    monkeypatch.setattr(modal_client, "spawn", forbidden)
+    monkeypatch.setattr(queue, "process_source", forbidden)
+    monkeypatch.setattr(inference, "recover_vocals", forbidden)
+    monkeypatch.setattr(results, "recover_vocals", forbidden)
 
 
 @pytest.mark.parametrize(

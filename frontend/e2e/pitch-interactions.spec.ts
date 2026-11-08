@@ -20,6 +20,7 @@ const completeStemSignals: Record<string, StemSignalFixture> = {
 
 const seedTimelineJob = String.raw`
 import json,os,subprocess,sys
+from functools import partial
 from pathlib import Path
 from backend import config,db
 from backend.pitch_reference import persist_pitch_vocals
@@ -32,29 +33,42 @@ assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
 value=json.load(sys.stdin)
 job=db.get_job(int(sys.argv[1]))
 assert job is not None and job.status == 'queued' and job.modal_call_id is None
-source=(config.UPLOADS_DIR / str(job.id) / job.source_value).read_bytes()
-complete=value.get('complete_outputs',False)
-if not complete:
- converted=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-i','pipe:0','-t','20','-codec:a','libmp3lame','-f','mp3','pipe:1'],input=source,capture_output=True,check=True).stdout
- persist_pitch_vocals(job,converted)
-# Distinct CPU-generated fixture backgrounds exercise real output encoding and
-# native playback, not separation quality or another model invocation.
-profiles=[('instruments',220,16),('drums',80,18)]
-if complete:
+input_path=config.UPLOADS_DIR / str(job.id) / job.source_value
+source=input_path.read_bytes()
+if value.get('complete_outputs',False):
+ from separator.processing import ProcessingContext,run_processing
+ sys.path.insert(0,str(Path('tests').resolve()))
+ from inference_fixture import StemSignal,cpu_inference,fixture_manifest
  assert job.options.detect_pitch and job.options.extract_lyrics
  assert set(job.options.output_labels)=={'vocals','instruments','drums','bass','other-instruments'}
- profiles=[(label,signal['frequencyHz'],signal['durationSeconds']) for label,signal in value['stem_signals'].items()]
-backgrounds={}
-for label,frequency,duration in profiles:
- wav=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i',f'sine=frequency={frequency}:duration={duration}:sample_rate=24000',*(['-ac','2'] if complete else []),'-f','wav','pipe:1'],capture_output=True,check=True).stdout
- backgrounds[label]=StemResult(wav,0)
-if complete:
+ root=config.DATA_DIR / 'synthetic-producers' / str(job.id)
+ signals={label:StemSignal(signal['frequencyHz'],signal['durationSeconds']) for label,signal in value['stem_signals'].items()}
+ producer=fixture_manifest(root,signals=signals,pitch=pitch_from_json(json.dumps(value['pitch'])),transcript=transcript_from_json(json.dumps(value['transcript'])))
+ context=ProcessingContext(root / 'cache',producer,partial(cpu_inference,root=root))
+ processed=run_processing(input_path,job.options,root / 'cold',context)
+ def unexpected_inference(request,key):
+  raise AssertionError('Warm graph must reuse its actual CPU-produced inference artifacts')
+ warm=run_processing(input_path,job.options,root / 'warm',ProcessingContext(context.root,producer,unexpected_inference))
+ assert {label:stem.data for label,stem in warm.audio.items()}=={label:stem.data for label,stem in processed.audio.items()}
+ assert warm.pitch_json==processed.pitch_json
+ assert warm.transcript.words==processed.transcript.words
+ backgrounds=processed.audio
  if 'song' in job.options.result_labels:
   backgrounds={'song':StemResult(source,0),**backgrounds}
  assert set(backgrounds)==set(job.options.result_labels)
-manifest=_persist_results(job,backgrounds)
-transcript=transcript_from_json(json.dumps(value['transcript'])) if complete else None
-db.mark_done(job.id,manifest,transcript,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
+ manifest=_persist_results(job,backgrounds)
+ db.mark_done(job.id,manifest,processed.transcript,processed.pitch_json)
+else:
+ # Historical partial jobs intentionally retain stored analysis and no public
+ # vocal output; loading them must not need producer provenance or credentials.
+ converted=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-i','pipe:0','-t','20','-codec:a','libmp3lame','-f','mp3','pipe:1'],input=source,capture_output=True,check=True).stdout
+ persist_pitch_vocals(job,converted)
+ backgrounds={}
+ for label,frequency,duration in [('instruments',220,16),('drums',80,18)]:
+  wav=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i',f'sine=frequency={frequency}:duration={duration}:sample_rate=24000','-f','wav','pipe:1'],capture_output=True,check=True).stdout
+  backgrounds[label]=StemResult(wav,0)
+ manifest=_persist_results(job,backgrounds)
+ db.mark_done(job.id,manifest,None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 `;
 
 const corruptPrivateReference = String.raw`
@@ -356,6 +370,45 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
         await afterPanSettles(() => page.mouse.wheel(distance, 0));
       }
     };
+    // Observe the real playhead crossing three quarters of the visible note
+    // region, rather than waiting until it reaches the viewport's far edge.
+    await player.evaluate(async element => { element.currentTime = 0; await element.play(); });
+    await expect.poll(() => scroll.evaluate(element => element.scrollLeft)).toBe(0);
+    await player.evaluate(element => element.pause());
+    const nativeCrossing = await scroll.evaluate(element =>
+      (element.clientWidth - element.querySelector('.pitch-axis')!.getBoundingClientRect().width) * 0.75 / 640 * 1.25);
+    await player.evaluate((element, seconds) => { element.currentTime = Math.max(0, seconds - 0.25); }, nativeCrossing);
+    await expect.poll(() => player.evaluate(element => element.seeking)).toBe(false);
+    const crossingTrace = await scroll.evaluateHandle(element => {
+      const origin = element.scrollLeft;
+      const width = element.clientWidth - element.querySelector('.pitch-axis')!.getBoundingClientRect().width;
+      const line = element.querySelector('.pitch-playhead')!;
+      const state = { done: false, samples: [] as { fraction: number; left: number }[] };
+      const sample = () => {
+        state.samples.push({ fraction: (Number(line.getAttribute('x1')) - origin) / width, left: element.scrollLeft });
+        if (element.scrollLeft > origin) state.done = true;
+        else requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+      return state;
+    });
+    await activate(playButton);
+    await expect.poll(() => crossingTrace.evaluate(state => state.done)).toBe(true);
+    await activate(pauseButton);
+    const crossingSamples = await crossingTrace.evaluate(state => state.samples);
+    await crossingTrace.dispose();
+    const lastBefore = crossingSamples.at(-2)!;
+    const firstAfter = crossingSamples.at(-1)!;
+    expect(lastBefore.fraction).toBeGreaterThan(0.5);
+    expect(lastBefore.fraction).toBeLessThanOrEqual(0.75);
+    expect(firstAfter.fraction).toBeGreaterThan(0.75);
+    expect(firstAfter.fraction).toBeLessThan(1);
+    expect(firstAfter.left).toBeGreaterThan(lastBefore.left);
+    await info.attach('native-three-quarter-follow', {
+      body: Buffer.from(JSON.stringify({ viewport, nativeCrossing, lastBefore, firstAfter })),
+      contentType: 'application/json',
+    });
+
     await player.evaluate(async element => { element.currentTime = 6.25; await element.play(); });
     await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(6.3);
     await scroll.scrollIntoViewIfNeeded();

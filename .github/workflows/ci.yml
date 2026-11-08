@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full_gpu:
+        description: Run isolated GPU and live-browser validation without production promotion
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -38,6 +44,32 @@ jobs:
       - name: Run tests (pytest)
         # Excludes the Modal smoke test (needs credentials) via pyproject addopts.
         run: uv run pytest
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+      - name: Install Chromium, Firefox, and system dependencies
+        run: npx --prefix frontend playwright install --with-deps chromium firefox
+      - name: Check Firefox native listening clock without GPU work
+        run: node frontend/e2e/run.mjs --visual --throttle-media --config=playwright.listening.config.ts
+      - name: Check seeded Chromium interactions without GPU work
+        run: node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
+      - name: Check controlled song-discovery browser contracts
+        run: node frontend/e2e/run.mjs --visual song-discovery.spec.ts
+      - name: Upload CPU browser failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-browser-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
   frontend:
     name: Build & test frontend
@@ -55,8 +87,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci
-      # Parse-only check over e2e specs: they run only in the deploy-modal job,
-      # so a syntax error there would otherwise burn a full GPU CI cycle.
+      # Parse every E2E spec before any release GPU work can start.
       - name: Parse-check e2e specs
         run: node_modules/.bin/esbuild e2e/*.spec.ts e2e/audio.ts --outdir=/tmp/e2e-parse-check --log-level=error
       - name: Build
@@ -93,7 +124,7 @@ jobs:
     # Publish only after native/frontend checks, pinned visual comparisons,
     # real GPU smoke/browser E2E against the isolated app, and production promotion.
     needs: [backend, frontend, visual, deploy-modal, deploy-production]
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
@@ -113,15 +144,18 @@ jobs:
   deploy-modal:
     name: Deploy & test isolated Modal app
     runs-on: ubuntu-latest
-    needs: [backend, frontend]
-    # Deploy a unique non-production app on every push and PR. Secrets are
-    # required; unset/denied credentials fail visibly rather than skipping.
+    needs: [backend, frontend, visual]
+    # PRs run the CPU/browser/visual gates only. Every main push and explicitly
+    # requested manual validation runs the complete isolated neural/live suite.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.full_gpu)
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: ehpc-audio
       MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}
       E2E_MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      MODAL_TEST_GPU: L4
+      MODAL_GPU_IDLE_SECONDS: ${{ vars.MODAL_GPU_IDLE_SECONDS || '60' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
@@ -142,8 +176,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies
         run: npm --prefix frontend ci
-      - name: Install Chromium, Firefox, and system dependencies
-        run: npx --prefix frontend playwright install --with-deps chromium firefox
+      - name: Install Chromium and system dependencies
+        run: npx --prefix frontend playwright install --with-deps chromium
       - name: Check native tools and test app isolation
         run: |
           for tool in ffmpeg ffprobe rubberband keyfinder-cli; do
@@ -153,15 +187,22 @@ jobs:
           test -n "$E2E_MODAL_APP_NAME"
           test "$E2E_MODAL_APP_NAME" != audio-separator
           test "$E2E_MODAL_APP_NAME" != audio-separator-v2
+          test "$E2E_MODAL_APP_NAME" != audio-inference-v3
           test "$MODAL_APP_NAME" = "$E2E_MODAL_APP_NAME"
-      - name: Check Firefox native listening clock without GPU work
-        run: node frontend/e2e/run.mjs --visual --throttle-media --config=playwright.listening.config.ts
-      - name: Check seeded Chromium interactions without GPU work
-        run: node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
+          test "$MODAL_TEST_GPU" = L4
+      - name: Provision verified shared model receipts before GPU work
+        run: |
+          echo "PREPARED_MODELS_ROOT=$RUNNER_TEMP/audio-prepared-models" >> "$GITHUB_ENV"
+          uv run python -m separator.prepare_models \
+            --manifest separator/model_manifest.json \
+            --receipt separator/model_assets_receipt.json \
+            --volume audio-separator-models \
+            --environment "$MODAL_ENVIRONMENT" \
+            --prepared-models-root "$RUNNER_TEMP/audio-prepared-models"
       - name: Deploy isolated Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: GPU smoke test (spawns deployed function)
-        run: uv run pytest -m smoke
+        run: uv run pytest -m smoke --log-cli-level=INFO
       - name: Run full-stack browser E2E
         run: npm --prefix frontend run test:e2e
       - name: Upload E2E failure artifacts
@@ -184,12 +225,13 @@ jobs:
     name: Promote tested Modal app to production
     runs-on: ubuntu-latest
     needs: [deploy-modal, visual]
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: ehpc-audio
-      MODAL_APP_NAME: audio-separator-v2
+      MODAL_APP_NAME: audio-inference-v3
+      MODAL_GPU_IDLE_SECONDS: ${{ vars.MODAL_GPU_IDLE_SECONDS || '60' }}
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -201,4 +243,5 @@ jobs:
       - name: Deploy production Modal app
         run: |
           test "$MODAL_ENVIRONMENT" = ehpc-audio
+          test -z "${MODAL_TEST_GPU+x}"
           uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"

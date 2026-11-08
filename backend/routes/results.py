@@ -6,7 +6,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from backend import config, db, modal_client
+from backend import config, db
+from backend.inference import recover_vocals
 from backend.metadata import ensure_download_title
 from backend.models import (
     JobRecord,
@@ -119,7 +120,7 @@ async def recover_pitch_vocals(
             )
         source = await asyncio.to_thread(sources[0].read_bytes)
         try:
-            vocals = await modal_client.cached_pitch_vocals(source)
+            vocals = await asyncio.to_thread(recover_vocals, source)
         except Exception as exc:
             raise HTTPException(
                 503, "Vocal cache lookup is unavailable. Please try again later."

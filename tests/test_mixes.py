@@ -46,7 +46,6 @@ def test_arbitrary_graph_sums_every_selected_component_at_unity_gain(
     components: tuple[str, ...],
     dereverb: bool,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     frequencies = {
         "drums": 330,
@@ -57,7 +56,9 @@ def test_arbitrary_graph_sums_every_selected_component_at_unity_gain(
         "instruments": 110,
     }
 
-    def inference(input_path: Path, stem: Stem, out_dir: Path, *args, **kwargs):
+    def inference(
+        input_path: Path, stem: Stem, out_dir: Path
+    ) -> dict[str, tuple[StemResult, Path]]:
         if "vocals" not in components and stem.model == stems.VOCALS_STEM.model:
             raise AssertionError("instrument-only mixes cannot require vocal inference")
         out_dir.mkdir(parents=True)
@@ -72,13 +73,12 @@ def test_arbitrary_graph_sums_every_selected_component_at_unity_gain(
             outputs[output.label] = (StemResult(path.read_bytes(), 0.1), path)
         return outputs
 
-    monkeypatch.setattr(stems, "run_separator", inference)
     options = SeparationOptions(
         mixes=(MixSpec("mix-example-dry", "Requested mix", components),),
         dereverb=dereverb,
     )
     result = stems.run_separation(
-        tmp_path / "source.wav", options, tmp_path, "models", "cache"
+        tmp_path / "source.wav", options, tmp_path, tmp_path / "cache", inference
     )
     assert list(result) == ["mix-example-dry"]
     audio = decode_audio(result["mix-example-dry"].data)
@@ -295,9 +295,12 @@ def test_interrupted_mix_job_requeues_same_identities(client: TestClient) -> Non
     ).json()["id"]
     claimed = db.claim_oldest_queued()
     assert claimed is not None and claimed.id == job_id
-    db.set_modal_call_id(job_id, "cancelled-test-call")
+    db.set_active_stage(job_id, "owned-separation-stage", "cancelled-test-call")
+    db.init_db()
     db.reap_running_to_queued()
     resumed = db.claim_oldest_queued()
     assert resumed is not None and resumed.id == job_id
     assert resumed.options == claimed.options
     assert resumed.options.output_labels == ["mix-1"]
+    assert resumed.active_stage_key == "owned-separation-stage"
+    assert resumed.modal_call_id == "cancelled-test-call"

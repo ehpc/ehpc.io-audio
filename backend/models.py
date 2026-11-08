@@ -5,7 +5,17 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, JsonValue, PrivateAttr, computed_field, field_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    PrivateAttr,
+    ValidationInfo,
+    computed_field,
+    field_serializer,
+    field_validator,
+)
 
 from backend import config
 from separator.audio import modification_suffix, transposed_key
@@ -23,6 +33,7 @@ from separator.lyrics_reference import ReferenceReview
 from separator.options import SeparationOptions
 from separator.pitch import PitchAnalysis, pitch_from_json, pitch_to_json
 from separator.pitched_lyrics import PitchedLyricsTrack, pitched_lyrics_tracks
+from separator.song_search import MAX_PLAY_COUNT, RESULT_LIMIT, trusted_thumbnail_url
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
 _UNSAFE_FILENAME = re.compile(r'[/\\:*?"<>|\x00-\x1f]')
@@ -181,6 +192,7 @@ class JobRecord:
     original_key: str | None = None
     transcript: Transcript | None = None
     pitch_json: str | None = None
+    active_stage_key: str | None = None
 
 
 class JobDTO(BaseModel):
@@ -313,3 +325,43 @@ class StatusDTO(BaseModel):
     disk: DiskUsage
     recent: list[RecentJob]
     modal_app: str
+
+
+class SongMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1)
+    artists: list[str]
+    url: str = Field(
+        pattern=r"^https://music\.youtube\.com/watch\?v=[A-Za-z0-9_-]{11}$"
+    )
+    duration_seconds: float | None = Field(ge=0, allow_inf_nan=False)
+    thumbnail_url: str | None = Field(strict=True)
+    play_count: int | None = Field(strict=True, ge=0, le=MAX_PLAY_COUNT)
+    play_count_approximate: bool = Field(strict=True)
+
+    @field_validator("thumbnail_url")
+    @classmethod
+    def trusted_artwork(cls, value: str | None) -> str | None:
+        if value is not None and trusted_thumbnail_url(value) is None:
+            raise ValueError("Artwork must use a trusted HTTPS image provider.")
+        return value
+
+    @field_validator("play_count_approximate")
+    @classmethod
+    def known_approximation(cls, value: bool, info: ValidationInfo) -> bool:
+        if value and info.data.get("play_count") is None:
+            raise ValueError("Unavailable plays cannot be approximate.")
+        return value
+
+
+class SearchDone(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["done"] = "done"
+    songs: list[SongMatch] = Field(min_length=1, max_length=RESULT_LIMIT)
+
+    @field_validator("songs")
+    @classmethod
+    def unique_versions(cls, songs: list[SongMatch]) -> list[SongMatch]:
+        if len({song.url for song in songs}) != len(songs):
+            raise ValueError("Song versions must have distinct catalog IDs.")
+        return songs

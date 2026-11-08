@@ -2,13 +2,14 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-import modal
 from fastapi import FastAPI
 
-from backend import config, db, events, modal_client
+from backend import config, db, events, song_search_worker
+from backend.inference import process_source
 from backend.metadata import ensure_download_title
 from backend.models import (
     JobRecord,
@@ -95,23 +96,21 @@ def _persist_results(
     return manifest
 
 
-async def _await_modal[T](job_id: int, call: modal.functions.FunctionCall[T]) -> T:
-    log.info("job %s spawned on modal (call_id=%s)", job_id, call.object_id)
-    await asyncio.to_thread(db.set_modal_call_id, job_id, call.object_id)
-    result: T | None = None
-    polls = 0
-    while result is None:
-        polls += 1
-        result = await asyncio.to_thread(
-            lambda: modal_client.poll(call, config.MODAL_CALL_POLL_TIMEOUT_S)
-        )
-        if result is None:
-            log.info(
-                "job %s still running (waited %.0fs)",
-                job_id,
-                polls * config.MODAL_CALL_POLL_TIMEOUT_S,
-            )
-    return result
+async def _process(
+    job: JobRecord, audio: bytes, filename: str, metadata
+) -> ProcessingResult:
+    stop = threading.Event()
+    task = asyncio.create_task(
+        asyncio.to_thread(process_source, job, audio, filename, metadata, stop)
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Stop between stages/polls, preserving an accepted remote call for
+        # restart. The owning thread cleans its own temporary files first.
+        stop.set()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 async def _run_job(job: JobRecord) -> None:
@@ -143,12 +142,16 @@ async def _run_job(job: JobRecord) -> None:
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
         await _publish_status(job.id)
         processed = ProcessingResult(audio={})
-        # Serialize identical sources across web processes until remote artifacts
-        # have committed. The next remote call reloads that persistent volume.
+        # Coalesce identical sources on the authoritative VPS filesystem.
+        # Completed stages persist before later stages or CPU exports begin.
         async with async_locked(
             config.DATA_DIR / "artifacts" / "gpu-locks" / digest(audio_bytes)
         ):
-            if job.options.needs_lyrics or job.options.needs_pitch:
+            if (
+                job.options.needs_lyrics
+                or job.options.needs_pitch
+                or job.options.output_labels
+            ):
                 metadata = None
                 if job.options.needs_lyrics:
                     metadata = await asyncio.to_thread(
@@ -160,28 +163,14 @@ async def _run_job(job: JobRecord) -> None:
                             else None
                         ),
                     )
-                analysis_call = await asyncio.to_thread(
-                    modal_client.spawn_with_lyrics,
-                    audio_bytes,
-                    filename,
-                    job.options,
-                    *([metadata] if metadata is not None else []),
-                )
-                processed = await _await_modal(job.id, analysis_call)
-            elif job.options.output_labels:
-                audio_call = await asyncio.to_thread(
-                    modal_client.spawn, audio_bytes, filename, job.options
-                )
-                processed = ProcessingResult(
-                    audio=await _await_modal(job.id, audio_call)
-                )
+                processed = await _process(job, audio_bytes, filename, metadata)
         if (
             job.options.output_labels
             or job.options.needs_lyrics
             or job.options.needs_pitch
         ):
             log.info(
-                "job %s modal returned %d outputs: %s",
+                "job %s processing produced %d outputs: %s",
                 job.id,
                 len(processed.audio),
                 ", ".join(processed.audio),
@@ -232,9 +221,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     tasks = [
         asyncio.create_task(_worker_loop(i)) for i in range(config.QUEUE_CONCURRENCY)
     ]
-    try:
-        yield
-    finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+    async with contextlib.AsyncExitStack() as stack:
+        stop_search = None
+        if config.QUEUE_CONCURRENCY > 0:
+            stop_search = await stack.enter_async_context(song_search_worker.lifespan())
+        try:
+            yield
+        finally:
+            if stop_search is not None:
+                stop_search.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

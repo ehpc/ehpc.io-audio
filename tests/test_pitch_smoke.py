@@ -2,36 +2,34 @@
 
 import json
 import os
+import subprocess
 import time
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-import modal
 import pytest
+from gpu_smoke import gpu_context
 from lyrics_fixture import full_sung_song
 
-from backend import config
-from backend.modal_client import LYRICS_FUNCTION_NAME
-from separator.modal_app import GPU, STRUCTURE_PYTHON, TIMEOUT, image
-from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
-from separator.pitch import pitch_from_json
-from separator.processing import ProcessingResult
+from separator.artifact_cache import digest
+from separator.modal_app import TIMEOUT
+from separator.options import SeparationOptions
+from separator.pitch import assemble_pitch_prediction, pitch_from_json
+from separator.processing import run_processing
 
 pytestmark = [pytest.mark.smoke, pytest.mark.timeout(TIMEOUT + 600)]
 
 
-def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None:
-    assert config.MODAL_APP_NAME != "audio-separator", "Use an isolated test app"
+def test_deployed_full_singing_per_stem_words_and_fractional_transform(
+    tmp_path: Path,
+) -> None:
     source = full_sung_song()
     started = time.monotonic()
-    result: ProcessingResult = modal.Function.from_name(
-        config.MODAL_APP_NAME,
-        LYRICS_FUNCTION_NAME,
-        environment_name=config.MODAL_ENVIRONMENT,
-    ).remote(
-        source,
-        "auld-lang-syne-full.ogg",
+    source_path = tmp_path / "auld-lang-syne-full.ogg"
+    source_path.write_bytes(source)
+    result = run_processing(
+        source_path,
         SeparationOptions(
             detect_pitch=True,
             extract_lyrics=True,
@@ -40,8 +38,8 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
             pitch_semitones=1.25,
             tempo_percent=125,
         ),
-        analysis_schema=2,
-        options_schema=OPTIONS_SCHEMA_VERSION,
+        tmp_path,
+        gpu_context(tmp_path / "computed"),
     )
     elapsed = time.monotonic() - started
     assert list(result.audio) == ["vocals", "lead", "backing"]
@@ -122,71 +120,55 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform() -> None
     )
 
 
-def test_real_estimator_known_pitches_and_silence_keep_gpu_dependencies_isolated() -> (
-    None
-):
-    assert config.MODAL_APP_NAME != "audio-separator", "Use an isolated test app"
-    script = f"""
-import importlib.metadata
-import json
-import subprocess
-from pathlib import Path
-import onnxruntime
-for label, frequency, start, end in (
-    ('lead', 261.625565, 0.6, 1.6), ('backing', 440, 2, 3.2),
-):
-    expression = (
-        f'aevalsrc=if(between(t\\\\,{{start}}\\\\,{{end}})\\\\,'
-        f'0.2*sin(2*PI*{{frequency}}*t)+0.08*sin(4*PI*{{frequency}}*t)\\\\,0):s=16000:d=4'
-    )
-    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
-        expression, f'/tmp/{{label}}.wav'], check=True)
-Path('/tmp/sources.json').write_text(json.dumps(dict(
-    lead='/tmp/lead.wav', backing='/tmp/backing.wav',
-)))
-subprocess.run([{STRUCTURE_PYTHON!r}, '-m', 'separator.detect_pitch',
-    '/tmp/sources.json', '/tmp/calibrated.json'], check=True, cwd='/root')
-print('PITCH_CALIBRATED ' + json.dumps(dict(
-    analysis=json.loads(Path('/tmp/calibrated.json').read_text()),
-    separator_runtime=importlib.metadata.version('onnxruntime-gpu'),
-    separator_providers=onnxruntime.get_available_providers(),
-)))
-"""
-    sandbox = modal.Sandbox.create(
-        "python",
-        "-c",
-        script,
-        app=modal.App.lookup(
-            config.MODAL_APP_NAME, environment_name=config.MODAL_ENVIRONMENT
-        ),
-        image=image,
-        gpu=GPU,
-        timeout=300,
-        workdir="/root",
-    )
-    try:
-        sandbox.wait()
-        stdout, stderr = sandbox.stdout.read(), sandbox.stderr.read()
-        assert sandbox.returncode == 0, stderr
-        result = json.loads(
-            next(
-                line.removeprefix("PITCH_CALIBRATED ")
-                for line in stdout.splitlines()
-                if line.startswith("PITCH_CALIBRATED ")
-            )
+def test_real_estimator_known_pitches_and_silence_through_single_pool(
+    tmp_path: Path,
+) -> None:
+    context = gpu_context(tmp_path / "computed")
+    tracks = []
+    analyses = []
+    for label, frequency, start, end in (
+        ("lead", 261.625565, 0.6, 1.6),
+        ("backing", 440, 2, 3.2),
+    ):
+        expression = (
+            f"aevalsrc=if(between(t\\,{start}\\,{end})\\,"
+            f"0.2*sin(2*PI*{frequency}*t)+0.08*sin(4*PI*{frequency}*t)\\,0):s=16000:d=4"
         )
-        assert "CUDAExecutionProvider" in result["separator_providers"]
-        tracks = result["analysis"]["tracks"]
-        assert [track["label"] for track in tracks] == ["lead", "backing"]
-        assert [note["note"] for note in tracks[0]["notes"]] == ["C4"]
-        assert [note["note"] for note in tracks[1]["notes"]] == ["A4"]
-        lead, backing = tracks[0]["notes"][0], tracks[1]["notes"][0]
-        assert lead["start_s"] == pytest.approx(0.6, abs=0.08)
-        assert lead["end_s"] == pytest.approx(1.6, abs=0.08)
-        assert backing["start_s"] == pytest.approx(2, abs=0.08)
-        assert backing["end_s"] == pytest.approx(3.2, abs=0.08)
-        assert abs(lead["midi"] - 60) < 0.35
-        assert abs(backing["midi"] - 69) < 0.35
-        print("SMOKE_PITCH_CALIBRATED " + json.dumps(result))
-    finally:
-        sandbox.terminate()
+        source_path = tmp_path / f"{label}.wav"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                expression,
+                str(source_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        source = source_path.read_bytes()
+        analysis = context.stage(
+            "pitch",
+            source,
+            source_path.name,
+            {},
+            digest(source),
+            lambda payload, label=label: assemble_pitch_prediction(payload, label),
+        )
+        tracks.extend(analysis.tracks)
+        analyses.append(asdict(analysis))
+    assert [track.label for track in tracks] == ["lead", "backing"]
+    assert [note.note for note in tracks[0].notes] == ["C4"]
+    assert [note.note for note in tracks[1].notes] == ["A4"]
+    lead, backing = tracks[0].notes[0], tracks[1].notes[0]
+    assert lead.start_s == pytest.approx(0.6, abs=0.08)
+    assert lead.end_s == pytest.approx(1.6, abs=0.08)
+    assert backing.start_s == pytest.approx(2, abs=0.08)
+    assert backing.end_s == pytest.approx(3.2, abs=0.08)
+    assert abs(lead.midi - 60) < 0.35
+    assert abs(backing.midi - 69) < 0.35
+    print("SMOKE_PITCH_CALIBRATED " + json.dumps(analyses))

@@ -8,42 +8,30 @@ candidate text to audio; failed/unsupported alignment never invents timestamps.
 # ruff: noqa: PLC0415
 from __future__ import annotations
 
-import json
 import math
-import os
-import sys
-from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import numpy as np  # ty: ignore[unresolved-import]
+    import numpy as np
 
     from separator.align_lyrics import VocalAligner
 
 from separator import cache_versions
-from separator.artifact_cache import cache_key, cached_bytes, digest
-from separator.cache_versions import ALIGNMENT_MODEL as ALIGNER_MODEL
 from separator.cache_versions import ASR_SAMPLE_RATE as SAMPLE_RATE
 from separator.lyrics import (
     RecognitionChunk,
-    Transcript,
     TranscriptWord,
-    recognition_transcript,
-    transcript_from_json,
 )
 from separator.lyrics_reference import (
     AcousticEvidence,
+    ReferencePhrase,
     ReferenceReview,
-    apply_reference,
     counterfactual_line,
-    plan_reference,
-    reference_review_from_dict,
     tokens,
 )
 
 MODEL = cache_versions.QWEN_MODEL
-_MIN_ACOUSTIC_SCORE = 0.03
 
 
 def _windows(audio: np.ndarray) -> list[tuple[int, int]]:
@@ -101,136 +89,14 @@ def _recognize_windows(
     return chunks
 
 
-def transcribe(
-    source: Path, model_cache: Path, review: ReferenceReview | None = None
-) -> Transcript:
-    os.environ["HF_HOME"] = str(model_cache / "huggingface")
-    audio, sample_rate = _load_audio(source)
-    duration_s = len(audio) / sample_rate
-    if not math.isfinite(duration_s) or duration_s <= 0:
-        raise ValueError("Lyrics extraction requires audio with a finite duration")
-    windows = _windows(audio)
-    root = model_cache / "results"
-    source_digest = digest(source.read_bytes())
-    # Hash the decoded buffer directly: container tags and unchanged Qwen text
-    # cannot hide a decoder change that moves acoustic boundaries.
-    pcm = memoryview(audio)
-    pcm_identity = (sample_rate, pcm.format, pcm.shape, digest(pcm))
-
-    def recognize() -> bytes:
-        chunks = _recognize_windows(audio, sample_rate, windows)
-        return json.dumps([asdict(chunk) for chunk in chunks]).encode()
-
-    raw = cached_bytes(
-        root / "recognition",
-        cache_key(
-            cache_versions.ASR,
-            cache_versions.QWEN_REVISION,
-            source_digest,
-            cache_versions.binary_revision("ffmpeg"),
-            cache_versions.environment_revisions(None, cache_versions.ASR_PACKAGES),
-        ),
-        recognize,
-    )
-    chunks = [RecognitionChunk(**chunk) for chunk in json.loads(raw)]
-    aligner = None
-
-    def get_aligner() -> VocalAligner:
-        nonlocal aligner
-        if aligner is None:
-            aligner = _load_aligner(model_cache)
-        return aligner
-
-    def align_recognition() -> bytes:
-        alignments = []
-        for (start, end), chunk in zip(windows, chunks, strict=True):
-            if chunk.text.strip():
-                model = get_aligner()
-                emission, frame_s = model.emissions(audio[start:end])
-                alignments.append(
-                    model.align(
-                        emission,
-                        frame_s,
-                        chunk.text,
-                        start / sample_rate,
-                    )
-                )
-            else:
-                alignments.append([])
-        transcript = recognition_transcript(
-            chunks,
-            alignments,
-            MODEL,
-            ALIGNER_MODEL,
-            _MIN_ACOUSTIC_SCORE,
-        )
-        evidence = [
-            word
-            for chunk, alignment in zip(chunks, alignments, strict=True)
-            for word in alignment
-            if chunk.ownership_start_s
-            <= (word.start_s + word.end_s) / 2
-            < chunk.ownership_end_s
-        ]
-        return json.dumps(
-            {
-                "transcript": asdict(transcript),
-                "evidence": [asdict(word) for word in evidence],
-            }
-        ).encode()
-
-    aligned = json.loads(
-        cached_bytes(
-            root / "recognition-alignment",
-            cache_key(
-                cache_versions.ALIGNMENT,
-                cache_versions.ALIGNMENT_MODEL,
-                pcm_identity,
-                digest(raw),
-                cache_versions.environment_revisions(
-                    None, cache_versions.ALIGNMENT_PACKAGES
-                ),
-            ),
-            align_recognition,
-        )
-    )
-    transcript = transcript_from_json(json.dumps(aligned["transcript"]))
-    if review is None:
-        return transcript
-    if not review.lines:
-        return replace(
-            transcript,
-            reference=replace(
-                review,
-                original_segments=transcript.segments,
-                original_words=transcript.words,
-                original_untimed=transcript.untimed,
-            ),
-        )
-    evidence = [TranscriptWord(**word) for word in aligned["evidence"]]
-    return align_reference_audio(transcript, audio, get_aligner(), review, evidence)
-
-
-def align_reference_audio(
-    transcript: Transcript,
+def align_reference_acoustics(
     audio: np.ndarray,
     aligner: VocalAligner,
-    review: ReferenceReview | None,
-    evidence_words: list[TranscriptWord],
-) -> Transcript:
-    """Reference-first refinement, also usable with retained real ASR evidence."""
-    if review is None:
-        return transcript
-    review = replace(
-        review,
-        original_segments=transcript.segments,
-        original_words=transcript.words,
-        original_untimed=transcript.untimed,
-    )
-    if not review.lines:
-        return replace(transcript, reference=review)
+    review: ReferenceReview,
+    phrases: list[ReferencePhrase],
+) -> tuple[dict[int, list[TranscriptWord]], dict[int, AcousticEvidence]]:
+    """Measure prepared reference candidates without planning or acceptance."""
     duration_s = len(audio) / SAMPLE_RATE
-    review, phrases = plan_reference(transcript, review, duration_s, evidence_words)
     aligned_lines = {}
     acoustic_evidence = {}
     previous_candidate_end = 0.0
@@ -305,16 +171,4 @@ def align_reference_audio(
                     score_start,
                     score_end,
                 )
-    return apply_reference(transcript, review, aligned_lines, acoustic_evidence)
-
-
-if __name__ == "__main__":
-    review = (
-        reference_review_from_dict(json.loads(Path(sys.argv[4]).read_text("utf-8")))
-        if len(sys.argv) > 4
-        else None
-    )
-    result = transcribe(Path(sys.argv[1]), Path(sys.argv[2]), review)
-    Path(sys.argv[3]).write_text(
-        json.dumps(asdict(result), ensure_ascii=False, allow_nan=False), "utf-8"
-    )
+    return aligned_lines, acoustic_evidence

@@ -1,14 +1,14 @@
 import asyncio
 import json
-import subprocess
 from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
+from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
+from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
-from backend import config, db, modal_client, queue
+from backend import config, db, queue
 from separator.lyrics import (
     Transcript,
     TranscriptSection,
@@ -17,8 +17,7 @@ from separator.lyrics import (
     transcript_text,
 )
 from separator.options import SeparationOptions
-from separator.processing import ProcessingResult, run_processing
-from separator.stems import StemResult
+from separator.processing import ProcessingContext, ProcessingResult, run_processing
 from separator.structure import MODEL_PROVENANCE
 
 
@@ -122,12 +121,7 @@ def test_canonical_json_controls_txt_without_rewriting_legacy_files(
     legacy.write_text("old timestamp format, do not rewrite", encoding="utf-8")
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client,
-        "spawn_with_lyrics",
-        lambda *args: MagicMock(object_id="fc-structure"),
-    )
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, transcript)
+        queue, "process_source", lambda *args: ProcessingResult({}, transcript)
     )
     job = db.get_job(job_id)
     assert job is not None
@@ -146,81 +140,80 @@ def test_canonical_json_controls_txt_without_rewriting_legacy_files(
     assert other_client.get(f"/api/jobs/{job_id}/lyrics/download").status_code == 404
 
 
-def test_processing_analyzes_original_mix_after_raw_vocal_asr(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_processing_analyzes_original_mix_after_raw_vocal_asr(tmp_path: Path) -> None:
     source = tmp_path / "original.wav"
-    source.write_bytes(b"original mix")
-    transcript = Transcript([TranscriptSegment(3, 5, "Actual recognition")], "en")
-    monkeypatch.setattr(
-        "separator.processing.run_separation",
-        lambda *args: {"vocals": StemResult(b"raw vocal", 10)},
-    )
+    source.write_bytes(tone_wav((330,), 4))
+    producer = tmp_path / "producer"
+    manifest = fixture_manifest(producer, signals={"vocals": StemSignal(220, 4)})
     calls = []
+    vocal_durations = []
 
-    def run(command, **kwargs):
-        calls.append(command)
-        if command[2] == "separator.transcribe":
-            assert Path(command[3]).read_bytes() == b"raw vocal"
-            Path(command[5]).write_text(json.dumps(asdict(transcript)))
-        else:
-            assert command[2] == "separator.structure"
-            assert Path(command[3]) == source
-            Path(command[-1]).write_text(
-                json.dumps(
-                    {
-                        "sections": [
-                            {"start_s": 0, "end_s": 10, "label": "pre-chorus"}
-                        ],
-                        "structure_model": MODEL_PROVENANCE,
-                    }
-                )
-            )
-        assert kwargs["timeout"] > 0
-        return subprocess.CompletedProcess(command, 0)
+    def infer(request, key):
+        calls.append(request.operation)
+        if request.operation == "structure":
+            assert request.audio_bytes == source.read_bytes()
+            assert request.filename == source.name
+        elif request.operation in {"recognition", "alignment"}:
+            assert request.audio_bytes != source.read_bytes()
+            duration, frequency = mp3_measurements(request.audio_bytes)
+            assert duration == pytest.approx(4, abs=0.1)
+            assert frequency == pytest.approx(220, rel=0.025)
+            if request.operation == "recognition":
+                vocal_durations.append(duration)
+        return cpu_inference(request, key, root=producer)
 
-    monkeypatch.setattr("separator.processing.subprocess.run", run)
+    context = ProcessingContext(tmp_path / "cache", manifest, infer)
     result = run_processing(
-        source,
-        SeparationOptions(extract_lyrics=True),
-        tmp_path,
-        str(tmp_path / "models"),
-        str(tmp_path / "stems"),
-        1200,
-        "/asr/python",
-        "/structure/python",
+        source, SeparationOptions(extract_lyrics=True), tmp_path, context
     )
-    assert [call[0] for call in calls] == ["/asr/python", "/structure/python"]
+    assert calls == ["separation", "recognition", "alignment", "structure"]
     assert result.audio == {}
     assert result.transcript is not None
-    assert result.transcript.segments == transcript.segments
-    assert result.transcript.sections == [TranscriptSection(0, 10, "pre-chorus")]
-
-
-def test_structure_failure_does_not_return_asr_only_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "separator.processing.run_separation",
-        lambda *args: {"vocals": StemResult(b"raw", 3)},
+    assert [word.text for word in result.transcript.words] == ["fixture"]
+    assert result.transcript.words[0].start_s == pytest.approx(
+        vocal_durations[0] / 4, abs=1 / 16000
     )
+    assert result.transcript.sections == [TranscriptSection(0, 4, "verse")]
 
-    def run(command, **kwargs):
-        if command[2] == "separator.transcribe":
-            Path(command[5]).write_text(json.dumps(asdict(Transcript())))
-            return subprocess.CompletedProcess(command, 0)
-        raise subprocess.CalledProcessError(1, command, stderr="real model failure")
 
-    monkeypatch.setattr("separator.processing.subprocess.run", run)
-    (tmp_path / "source.wav").write_bytes(b"source")
-    with pytest.raises(
-        RuntimeError, match="Musical structure analysis failed: real model failure"
-    ):
-        run_processing(
-            tmp_path / "source.wav",
-            SeparationOptions(extract_lyrics=True),
-            tmp_path,
-            str(tmp_path / "models"),
-            str(tmp_path / "stems"),
-            1200,
-        )
+def test_structure_failure_preserves_completed_dependencies_for_retry(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(tone_wav((220,), 4))
+    producer = tmp_path / "producer"
+    manifest = fixture_manifest(producer)
+    calls = []
+
+    def infer(request, key):
+        calls.append(request.operation)
+        if request.operation == "structure":
+            raise RuntimeError("real model failure")
+        return cpu_inference(request, key, root=producer)
+
+    context = ProcessingContext(tmp_path / "cache", manifest, infer)
+    options = SeparationOptions(extract_lyrics=True)
+    with pytest.raises(RuntimeError, match="real model failure"):
+        run_processing(source, options, tmp_path, context)
+    assert calls == ["separation", "recognition", "alignment", "structure"]
+    assert len(list((context.root / "inference").glob("*.bin"))) == 3
+    assert len(list((context.root / "transcripts").glob("*.bin"))) == 1
+
+    def missing(request, key):
+        assert request.operation == "structure", "completed dependency was recomputed"
+        calls.append(request.operation)
+        return cpu_inference(request, key, root=producer)
+
+    context.infer = missing
+    result = run_processing(source, options, tmp_path, context)
+    assert calls[-2:] == ["structure", "structure"]
+    assert result.transcript is not None
+    assert result.transcript.sections == [TranscriptSection(0, 4, "verse")]
+    assert len(list((context.root / "inference").glob("*.bin"))) == 4
+
+    def forbidden(*args):
+        raise AssertionError("successful retry was not cached")
+
+    context.infer = forbidden
+    repeated = run_processing(source, options, tmp_path, context)
+    assert repeated.transcript == result.transcript

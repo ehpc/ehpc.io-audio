@@ -1,0 +1,476 @@
+{
+  "asr": {
+    "alignment_packages": {
+      "torch": "2.8.0+cu128",
+      "torchaudio": "2.8.0+cu128",
+      "uroman": "1.3.1.1"
+    },
+    "ffmpeg": "e544279b98498cc8113015e871120de6c9976bfbf7889556ec879bdde86b8d78",
+    "packages": {
+      "librosa": "1.0.0",
+      "numpy": "2.5.4",
+      "qwen-asr": "0.0.6",
+      "soundfile": "0.14.0",
+      "torch": "2.8.0+cu128",
+      "transformers": "4.57.6"
+    },
+    "pitch_packages": {}
+  },
+  "assets": [
+    {
+      "path": "vocals_mel_band_roformer.ckpt",
+      "sha256": "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e",
+      "size_bytes": 913106900,
+      "storage": "volume"
+    },
+    {
+      "path": "vocals_mel_band_roformer.yaml",
+      "sha256": "b958b29c8f7195f0d86bee6759a33980db675c4ecaf2fcaa80fa125828e6cd38",
+      "size_bytes": 944,
+      "storage": "volume"
+    },
+    {
+      "path": "melband_roformer_inst_v2.ckpt",
+      "sha256": "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2",
+      "size_bytes": 1574477088,
+      "storage": "volume"
+    },
+    {
+      "path": "config_melbandroformer_inst_v2.yaml",
+      "sha256": "4b902a7360a930c178edb4846b30e4e326aa1219d1b2daf660d46a311e0cd50b",
+      "size_bytes": 921,
+      "storage": "volume"
+    },
+    {
+      "path": "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt",
+      "sha256": "ca8799531fe51c94172cc047226209ed48bf7d8c02e04671795a15d2a1c318af",
+      "size_bytes": 913096801,
+      "storage": "volume"
+    },
+    {
+      "path": "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144_config.yaml",
+      "sha256": "029e5dce3abae9d9895ea19449c2b1fe749417437751676474affe255846d0de",
+      "size_bytes": 1621,
+      "storage": "volume"
+    },
+    {
+      "path": "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+      "sha256": "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970",
+      "size_bytes": 913107578,
+      "storage": "volume"
+    },
+    {
+      "path": "dereverb_mel_band_roformer_anvuew.yaml",
+      "sha256": "1599d9ea717ea2b5b3bc55d936f752b8d0f67baaa3de95acd6d03259a2f37784",
+      "size_bytes": 1846,
+      "storage": "volume"
+    },
+    {
+      "path": "model_chorus_bs_roformer_ep_267_sdr_24.1275.ckpt",
+      "sha256": "123c00786bdbc6bd462dddb35cd21fd6ae99ab8319f93f63a8abc1012e593d94",
+      "size_bytes": 527121477,
+      "storage": "volume"
+    },
+    {
+      "path": "config_chorus_male_female_bs_roformer.yaml",
+      "sha256": "363ef6bef5f0fd89b69e6e0f90dcc102dec6aaeb6e55790cae1796bebdf5097e",
+      "size_bytes": 1847,
+      "storage": "volume"
+    },
+    {
+      "path": "mel_band_roformer_karaoke_gabox_v2.ckpt",
+      "sha256": "ec34be50327aeaf1a996c27977f5c30d1ac80c0076d69683d3e5184c31ea29d3",
+      "size_bytes": 913090472,
+      "storage": "volume"
+    },
+    {
+      "path": "config_mel_band_roformer_karaoke_gabox.yaml",
+      "sha256": "16b726891076fd0bebab9ce038240b51afb22b04eac6026a7f0356178dcb65b7",
+      "size_bytes": 1811,
+      "storage": "volume"
+    },
+    {
+      "path": "htdemucs_ft.yaml",
+      "sha256": "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346",
+      "size_bytes": 149,
+      "storage": "volume"
+    },
+    {
+      "path": "04573f0d-f3cf25b2.th",
+      "sha256": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
+      "size_bytes": 84141271,
+      "storage": "volume"
+    },
+    {
+      "path": "92cfc3b6-ef3bcb9c.th",
+      "sha256": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
+      "size_bytes": 84141271,
+      "storage": "volume"
+    },
+    {
+      "path": "d12395a8-e57c48e6.th",
+      "sha256": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
+      "size_bytes": 84141271,
+      "storage": "volume"
+    },
+    {
+      "path": "f7e0c4bc-ba3fe64a.th",
+      "sha256": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
+      "size_bytes": 84141271,
+      "storage": "volume"
+    },
+    {
+      "path": "mdx_model_data.json",
+      "sha256": "1aca8f9bcc57233bc714029663a9ec2345d9c7721f91e5e08f46392a879c6a9a",
+      "size_bytes": 15358,
+      "storage": "volume"
+    },
+    {
+      "path": "vr_model_data.json",
+      "sha256": "6a2021b9aa355c10f845b68c73944d47bd9e1fdf37b8a584b14ce8f88b09bb2f",
+      "size_bytes": 4380,
+      "storage": "volume"
+    },
+    {
+      "path": "download_checks.json",
+      "sha256": "d3622e1fa19c161d3cf704927711b453d593a3f1eb0f2e0838c3136907935151",
+      "size_bytes": 28267,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/chat_template.json",
+      "sha256": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+      "size_bytes": 1161,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/config.json",
+      "sha256": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+      "size_bytes": 6194,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/generation_config.json",
+      "sha256": "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c",
+      "size_bytes": 142,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/merges.txt",
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "size_bytes": 1671853,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00001-of-00002.safetensors",
+      "sha256": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6",
+      "size_bytes": 4220320824,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00002-of-00002.safetensors",
+      "sha256": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc",
+      "size_bytes": 478200688,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/model.safetensors.index.json",
+      "sha256": "f994739fe38e5210b9e3e8ce6c6307315e2ceac3cb630e7b7414d69dce520f60",
+      "size_bytes": 64821,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/preprocessor_config.json",
+      "sha256": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d",
+      "size_bytes": 330,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/tokenizer_config.json",
+      "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c",
+      "size_bytes": 12487,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/vocab.json",
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+      "size_bytes": 2776833,
+      "storage": "volume"
+    },
+    {
+      "path": "qwen-asr/torch/checkpoints/model.pt",
+      "sha256": "20ef12963ab4924bef49ac4fc7f58ad5da2ee43b2c11bc8c853c9b90ecdbc680",
+      "size_bytes": 1262047414,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/config.json",
+      "sha256": "912c39afb6543fedfd47f27eb1596ed971bb4911e374e24e9ffe329bf6cb303d",
+      "size_bytes": 655,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/configuration_songformer.py",
+      "sha256": "8d4b5660645901c0a54ffb3a7b7e4667e35b572981c3b203fbdc04a614e210fa",
+      "size_bytes": 736,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/dataset/custom_types.py",
+      "sha256": "93510ccd1b7d4b7ab06f9a15ff04dac557d7aab9b5a36d68fb5881a7e04844c3",
+      "size_bytes": 358,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/dataset/label2id.py",
+      "sha256": "beae7c16d5878c42772be06fc1ac307d8d55b56ce7aa395864b2263d9c5b6e83",
+      "size_bytes": 3341,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/model.py",
+      "sha256": "d0e32c179f044ccca553375bf31d71c3fc24ff2c723f0e2dbb3f77bc867bb28a",
+      "size_bytes": 18578,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/model.safetensors",
+      "sha256": "8dcabf4ea19973edd51b9e5794004775fa7e8de3ecfa07eb1dbce00f516ce7f7",
+      "size_bytes": 2755035132,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/model_config.py",
+      "sha256": "3676ead26f900d664dc89d86a216482e778833a65f2279fb8e726b61290680f6",
+      "size_bytes": 2725,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/modeling_songformer.py",
+      "sha256": "904c8e650f753c918038ac24e776df94464df61de911bf5d35eb1a0f17e83cb3",
+      "size_bytes": 12436,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/msd_stats.json",
+      "sha256": "10a2ca43de6b94522bfb651fdfccc2336d89a8a746af0a597528f66f56e64586",
+      "size_bytes": 2531,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/muq_config2.json",
+      "sha256": "8de4a64926105f3377d715615e59f6798db60bcae94a9aa45d21edb18fc370fa",
+      "size_bytes": 3719,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/LICENSE",
+      "sha256": "5684e11c103b652a5fc59a2cc930c4bb63b5d4aa497e8519aaeb147bc4d34877",
+      "size_bytes": 12888,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/model/__init__.py",
+      "sha256": "75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070",
+      "size_bytes": 2,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/model/musicfm_25hz.py",
+      "sha256": "33071676d19f953318ead3099bead5a44f40ec455fb4ff550d9d7d0616a215a1",
+      "size_bytes": 8615,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/__init__.py",
+      "sha256": "75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070",
+      "size_bytes": 2,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/conv.py",
+      "sha256": "585705a6450db374e8c411034e846491f7f48d4ed0516fbf8d3b84855ef0d7d1",
+      "size_bytes": 3154,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/features.py",
+      "sha256": "aa8e99711f4a4eab522ff89fe86fc27e281e373ed0ae416743736da229f171da",
+      "size_bytes": 1869,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/flash_conformer.py",
+      "sha256": "c0bf5df817a9c50e4706b4414b75e5399bcbdf89cec3a03de05f5ad8d0b3abfb",
+      "size_bytes": 95453,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/random_quantizer.py",
+      "sha256": "2ffae390fbf7fefa8a62000ba0490af92ecc001d3b5715fb98f7a1e1578c2aa2",
+      "size_bytes": 3055,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/postprocessing/functional.py",
+      "sha256": "0bafe5406ee38fefabdf4537c5c0572331e717e950bf05c4ee3d9c6a5be6b898",
+      "size_bytes": 2567,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/postprocessing/helpers.py",
+      "sha256": "06f970fdcf42e02b4ae9395a69a5a902ec96ecc2aaa38a949ecc34517984ffbb",
+      "size_bytes": 3732,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--facebook--wav2vec2-conformer-rope-large-960h-ft/refs/main",
+      "sha256": "f81cb61745db87132e982f5a4f2aa8f2c24404742230540eb34f3f0b4a9be131",
+      "size_bytes": 40,
+      "storage": "volume"
+    },
+    {
+      "path": "songformer/huggingface/hub/models--facebook--wav2vec2-conformer-rope-large-960h-ft/snapshots/6b36ef01c6443c67ae7ed0822876d091ab50e4aa/config.json",
+      "sha256": "7a63cb5706c9a37483f1973a3c226d54eb504ce15cf62cb52637019540c8a75d",
+      "size_bytes": 2239,
+      "storage": "volume"
+    },
+    {
+      "path": "lib/python3.12/site-packages/torchcrepe/assets/full.pth",
+      "sha256": "133225604dedd2e4005f8bbd1bd0a2ec073ba8b7a6cd31ff6d5edbbfa3539986",
+      "size_bytes": 88991291,
+      "storage": "image"
+    }
+  ],
+  "format": 1,
+  "image_id": "im-tEk6TkOniS4zbFSdqBQsLv",
+  "model_assets": {
+    "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt": [
+      "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+      "dereverb_mel_band_roformer_anvuew.yaml"
+    ],
+    "htdemucs_ft.yaml": [
+      "htdemucs_ft.yaml",
+      "04573f0d-f3cf25b2.th",
+      "92cfc3b6-ef3bcb9c.th",
+      "d12395a8-e57c48e6.th",
+      "f7e0c4bc-ba3fe64a.th"
+    ],
+    "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt": [
+      "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt",
+      "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144_config.yaml"
+    ],
+    "mel_band_roformer_karaoke_gabox_v2.ckpt": [
+      "mel_band_roformer_karaoke_gabox_v2.ckpt",
+      "config_mel_band_roformer_karaoke_gabox.yaml"
+    ],
+    "melband_roformer_inst_v2.ckpt": [
+      "melband_roformer_inst_v2.ckpt",
+      "config_melbandroformer_inst_v2.yaml"
+    ],
+    "model_chorus_bs_roformer_ep_267_sdr_24.1275.ckpt": [
+      "model_chorus_bs_roformer_ep_267_sdr_24.1275.ckpt",
+      "config_chorus_male_female_bs_roformer.yaml"
+    ],
+    "vocals_mel_band_roformer.ckpt": [
+      "vocals_mel_band_roformer.ckpt",
+      "vocals_mel_band_roformer.yaml"
+    ]
+  },
+  "models": {
+    "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt": "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970",
+    "htdemucs_ft.yaml": "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346",
+    "mel_band_roformer_crowd_aufr33_viperx_sdr_8.7144.ckpt": "ca8799531fe51c94172cc047226209ed48bf7d8c02e04671795a15d2a1c318af",
+    "mel_band_roformer_karaoke_gabox_v2.ckpt": "ec34be50327aeaf1a996c27977f5c30d1ac80c0076d69683d3e5184c31ea29d3",
+    "melband_roformer_inst_v2.ckpt": "bd19766620f7d6f58fdf7aaada7e89907fe41bc64490ce3faa9a6dab15d6e1f2",
+    "model_chorus_bs_roformer_ep_267_sdr_24.1275.ckpt": "123c00786bdbc6bd462dddb35cd21fd6ae99ab8319f93f63a8abc1012e593d94",
+    "vocals_mel_band_roformer.ckpt": "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e"
+  },
+  "operation_assets": {
+    "alignment": [
+      "qwen-asr/torch/checkpoints/model.pt"
+    ],
+    "pitch": [
+      "lib/python3.12/site-packages/torchcrepe/assets/full.pth"
+    ],
+    "recognition": [
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/chat_template.json",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/config.json",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/generation_config.json",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/merges.txt",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00001-of-00002.safetensors",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/model-00002-of-00002.safetensors",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/model.safetensors.index.json",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/preprocessor_config.json",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/tokenizer_config.json",
+      "qwen-asr/huggingface/hub/models--Qwen--Qwen3-ASR-1.7B/snapshots/7278e1e70fe206f11671096ffdd38061171dd6e5/vocab.json"
+    ],
+    "structure": [
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/config.json",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/configuration_songformer.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/dataset/custom_types.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/dataset/label2id.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/model.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/model.safetensors",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/model_config.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/modeling_songformer.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/msd_stats.json",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/muq_config2.json",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/LICENSE",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/model/__init__.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/model/musicfm_25hz.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/__init__.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/conv.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/features.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/flash_conformer.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/musicfm/modules/random_quantizer.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/postprocessing/functional.py",
+      "songformer/huggingface/hub/models--ASLP-lab--SongFormer/snapshots/a75880ed1b7375ac71860ec6c4fc9c899cf99515/postprocessing/helpers.py",
+      "songformer/huggingface/hub/models--facebook--wav2vec2-conformer-rope-large-960h-ft/refs/main",
+      "songformer/huggingface/hub/models--facebook--wav2vec2-conformer-rope-large-960h-ft/snapshots/6b36ef01c6443c67ae7ed0822876d091ab50e4aa/config.json"
+    ]
+  },
+  "separator": {
+    "alignment_packages": {},
+    "ffmpeg": "e544279b98498cc8113015e871120de6c9976bfbf7889556ec879bdde86b8d78",
+    "packages": {
+      "audio-separator": "0.44.1",
+      "librosa": "0.11.0",
+      "onnxruntime-gpu": "1.31.1",
+      "torch": "2.15.0"
+    },
+    "pitch_packages": {}
+  },
+  "structure": {
+    "alignment_packages": {},
+    "ffmpeg": "e544279b98498cc8113015e871120de6c9976bfbf7889556ec879bdde86b8d78",
+    "packages": {
+      "librosa": "0.11.0",
+      "muq": "0.1.0",
+      "numpy": "1.26.4",
+      "torch": "2.4.0+cu124",
+      "torchaudio": "2.4.0+cu124",
+      "transformers": "4.51.1"
+    },
+    "pitch_packages": {
+      "numpy": "1.26.4",
+      "scipy": "1.15.2",
+      "torch": "2.4.0+cu124",
+      "torchcrepe": "0.0.24"
+    }
+  },
+  "versions": {
+    "ALIGNMENT": "torchaudio-MMS_FA-qwen-reference-ctc-canonical-positions-v1",
+    "ALIGNMENT_MODEL": "torchaudio/MMS_FA",
+    "ASR": "qwen3-asr-bf16-window25-batch2-tokens512-v1",
+    "ASR_SAMPLE_RATE": 16000,
+    "PITCH": "torchcrepe-0.0.24-full-weighted-argmax-rms-gating-v1",
+    "QWEN_MODEL": "Qwen/Qwen3-ASR-1.7B",
+    "QWEN_REVISION": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+    "STEM": "audio-separator-0.44.1-mp3-defaults-v1",
+    "STRUCTURE": "songformer-short-tail-v1",
+    "STRUCTURE_MODEL": "ASLP-lab/SongFormer",
+    "STRUCTURE_REVISION": "a75880ed1b7375ac71860ec6c4fc9c899cf99515",
+    "STRUCTURE_SHA256": "8dcabf4ea19973edd51b9e5794004775fa7e8de3ecfa07eb1dbce00f516ce7f7"
+  }
+}

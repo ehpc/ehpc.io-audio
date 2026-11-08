@@ -1,12 +1,15 @@
+import asyncio
 import json
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any
 
+import modal
 import pytest
 
-from backend import config, db, modal_client
+from backend import config, db, song_search_worker
 from backend.routes.song_search import SongSearchRequest
 from separator import cache_versions, song_search
 
@@ -181,24 +184,31 @@ def test_rewrite_cannot_poison_lyric_search_with_hallucinated_artist(tmp_path):
     )
 
 
+@dataclass
+class ControlledProducer:
+    result: object
+    calls: int = 0
+
+    def run(self, query: str, cache_root: str) -> object:
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    def finish(self) -> bool:
+        return asyncio.run(song_search_worker.run_next_search())
+
+
 @pytest.fixture
-def remote(monkeypatch):
-    state: dict[str, Any] = {"starts": [], "polls": [], "result": None}
+def producer(monkeypatch):
+    producer = ControlledProducer({"status": "done", "songs": [SONG]})
+    monkeypatch.setattr(song_search_worker, "run_search", producer.run)
 
-    async def start(query):
-        state["starts"].append(query)
-        return "fc-owned-discovery-call"
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Local discovery must not submit a Modal workload")
 
-    async def poll(call_id):
-        state["polls"].append(call_id)
-        result = state["result"]
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-    monkeypatch.setattr(modal_client, "spawn_song_search", start)
-    monkeypatch.setattr(modal_client, "poll_song_search", poll)
-    return state
+    monkeypatch.setattr(modal.Function, "from_name", forbidden)
+    return producer
 
 
 def start(client, query="  Desired\nsong  "):
@@ -209,24 +219,26 @@ def start(client, query="  Desired\nsong  "):
 
 
 def test_async_private_search_survives_reopen_and_never_creates_audio_job(
-    client,
-    other_client,
-    remote,
+    client, other_client, producer
 ):
     path = start(client)
     assert client.get(path).json() == {"status": "pending"}
     assert other_client.get(path).status_code == 404
     assert other_client.get("/api/song-search/unknown").status_code == 404
-    assert len(remote["polls"]) == 1  # Unauthorized request never touches Modal.
-    remote["result"] = {"status": "done", "songs": [SONG]}
-    assert client.get(path).json() == remote["result"]
-    db.init_db()  # Idempotent schema/reopen keeps terminal discovery and existing jobs.
-    remote["result"] = RuntimeError("must not poll completed work")
+    assert producer.calls == 0
+    assert producer.finish()
+    assert client.get(path).json() == producer.result
+    db.init_db()
+    producer.result = RuntimeError("must not repeat completed work")
     assert client.get(path).json() == {"status": "done", "songs": [SONG]}
-    assert remote["starts"] == ["Desired song"]
-    assert len(remote["polls"]) == 2
+    assert not producer.finish()
+    assert producer.calls == 1
     assert client.get("/api/jobs").json() == []
     assert other_client.get("/api/jobs").json() == []
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert connection.execute(
+            "SELECT modal_call_id, pending_query, claimed_at FROM song_searches"
+        ).fetchall() == [(None, None, None)]
 
 
 @pytest.mark.parametrize(
@@ -256,21 +268,24 @@ def test_async_private_search_survives_reopen_and_never_creates_audio_job(
         (RuntimeError("private infrastructure information"), 503),
     ],
 )
-def test_terminal_failures_are_private_durable_and_do_not_respawn(
-    client, remote, result, status
+def test_terminal_failures_are_private_durable_and_do_not_repeat(
+    client, producer, result, status
 ):
     path = start(client)
-    remote["result"] = result
+    producer.result = result
+    assert producer.finish()
     first = client.get(path)
     assert first.status_code == status
     assert "private infrastructure" not in first.text
-    remote["result"] = {"status": "done", "songs": [SONG]}
+    producer.result = {"status": "done", "songs": [SONG]}
+    db.recover_song_searches(song_search.SEARCH_TTL)
     assert client.get(path).json() == first.json()
-    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    assert not producer.finish()
+    assert producer.calls == 1
     assert client.get("/api/jobs").json() == []
 
 
-def test_expired_search_does_not_touch_remote(client, remote):
+def test_expired_search_does_not_run_provider_and_clears_query(client, producer):
     path = start(client)
     with sqlite3.connect(config.DB_PATH) as connection:
         connection.execute(
@@ -278,30 +293,22 @@ def test_expired_search_does_not_touch_remote(client, remote):
             (int(time.time()) - song_search.SEARCH_TTL, path.rsplit("/", 1)[1]),
         )
     assert client.get(path).status_code == 404
-    assert remote["polls"] == []
+    assert not producer.finish()
+    assert producer.calls == 0
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert connection.execute(
+            "SELECT pending_query, claimed_at, successful_at FROM song_searches"
+        ).fetchall() == [(None, None, None)]
 
 
 @pytest.mark.parametrize("query", ["", "\n\t ", "a" * 501, 123, None])
-def test_invalid_http_query_does_not_spawn(client, remote, query):
+def test_invalid_http_query_never_enters_local_queue(client, producer, query):
     assert client.post("/api/song-search", json={"query": query}).status_code == 422
-    assert remote["starts"] == []
+    assert not producer.finish()
+    assert producer.calls == 0
 
 
-def test_unavailable_start_is_clear_and_does_not_create_search(client, monkeypatch):
-    async def unavailable(query):
-        raise RuntimeError("secret transport detail")
-
-    monkeypatch.setattr(modal_client, "spawn_song_search", unavailable)
-    response = client.post("/api/song-search", json={"query": "song"})
-    assert response.status_code == 503
-    assert "secret transport" not in response.text
-    with sqlite3.connect(config.DB_PATH) as connection:
-        assert (
-            connection.execute("SELECT COUNT(*) FROM song_searches").fetchone()[0] == 0
-        )
-
-
-def test_discovery_schema_and_results_preserve_existing_jobs(client, remote):
+def test_discovery_schema_and_results_preserve_existing_jobs(client, producer):
     job = client.post(
         "/api/jobs", data={"url": "https://example.com/owned-song"}
     ).json()
@@ -309,12 +316,11 @@ def test_discovery_schema_and_results_preserve_existing_jobs(client, remote):
         before = connection.execute(
             "SELECT * FROM jobs WHERE id = ?", (job["id"],)
         ).fetchone()
-        # Simulate upgrading an existing database that predates discovery.
         connection.execute("DROP TABLE song_searches")
     db.init_db()
     db.init_db()
     path = start(client)
-    remote["result"] = {"status": "done", "songs": [SONG]}
+    assert producer.finish()
     assert client.get(path).status_code == 200
     with sqlite3.connect(config.DB_PATH) as connection:
         after = connection.execute(
@@ -331,51 +337,54 @@ def clock(monkeypatch):
 
 
 def test_query_cache_survives_reopen_and_shares_result_not_session_handle(
-    client, other_client, remote, clock
+    client, other_client, producer, clock
 ):
-    remote["result"] = {"status": "done", "songs": [SONG]}
     original = start(client, "  Björk\n東京  ")
-    assert client.get(original).json() == remote["result"]
+    assert producer.finish()
+    assert client.get(original).json() == producer.result
     db.init_db()
-    clock.now += 1000  # Original handle expires, but its successful query does not.
-    remote["result"] = RuntimeError("cached query must not contact a supplier")
+    clock.now += 1000
+    producer.result = RuntimeError("cached query must not contact a supplier")
     cached = start(other_client, "Björk \t 東京")
     assert cached != original
     assert other_client.get(cached).json() == {"status": "done", "songs": [SONG]}
     assert client.get(cached).status_code == 404
     assert client.get(original).status_code == 404
-    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    assert not producer.finish()
+    assert producer.calls == 1
     assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []
 
 
 def test_query_cache_expires_exactly_one_day_after_first_success_not_last_hit(
-    client, remote, clock
+    client, producer, clock
 ):
     original = start(client)
     clock.now += 899.25
-    remote["result"] = {"status": "done", "songs": [SONG]}
-    assert client.get(original).json() == remote["result"]
+    assert producer.finish()
+    assert client.get(original).json() == producer.result
     completed_at = clock.now
     clock.now = completed_at + 86399.75
     cached = start(client)
-    assert client.get(cached).json() == remote["result"]
-    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    assert client.get(cached).json() == producer.result
+    assert not producer.finish()
+    assert producer.calls == 1
     clock.now = completed_at + 86400
     updated = {"status": "done", "songs": [dict(SONG, title="Updated catalog title")]}
-    remote["result"] = updated
+    producer.result = updated
     refreshed = start(client)
+    assert producer.finish()
     assert client.get(refreshed).json() == updated
-    assert len(remote["starts"]) == len(remote["polls"]) == 2
-    # An already issued handle is immutable, even when the query cache expires.
+    assert producer.calls == 2
     assert client.get(cached).json() == {"status": "done", "songs": [SONG]}
 
 
 @pytest.mark.parametrize("change", ["query", "producer", "model", "dependency"])
 def test_query_cache_does_not_hide_changed_inputs_or_producer(
-    client, remote, clock, monkeypatch, change
+    client, producer, clock, monkeypatch, change
 ):
-    remote["result"] = {"status": "done", "songs": [SONG]}
-    assert client.get(start(client)).json() == remote["result"]
+    original = start(client)
+    assert producer.finish()
+    assert client.get(original).json() == producer.result
     query = "Desired song"
     if change == "query":
         query = "Other artist"
@@ -386,28 +395,30 @@ def test_query_cache_does_not_hide_changed_inputs_or_producer(
     else:
         monkeypatch.setattr(cache_versions, "package_revision", lambda name: "changed")
     updated = {"status": "done", "songs": [dict(SONG, title="New producer selection")]}
-    remote["result"] = updated
-    assert client.get(start(client, query)).json() == updated
-    assert len(remote["starts"]) == len(remote["polls"]) == 2
+    producer.result = updated
+    fresh = start(client, query)
+    assert producer.finish()
+    assert client.get(fresh).json() == updated
+    assert producer.calls == 2
 
 
 @pytest.mark.parametrize("abandoned", [False, True])
 def test_pending_or_abandoned_search_is_not_a_successful_query_cache(
-    client, remote, clock, abandoned
+    client, producer, clock, abandoned
 ):
     original = start(client)
     if not abandoned:
         assert client.get(original).json() == {"status": "pending"}
     second = start(client)
     assert client.get(second).json() == {"status": "pending"}
-    assert len(remote["starts"]) == 2
+    assert producer.calls == 0
     clock.now += 900
-    polls = len(remote["polls"])
     assert client.get(original).status_code == client.get(second).status_code == 404
-    assert len(remote["polls"]) == polls
-    remote["result"] = {"status": "done", "songs": [SONG]}
-    assert client.get(start(client)).json() == remote["result"]
-    assert len(remote["starts"]) == 3
+    assert not producer.finish()
+    fresh = start(client)
+    assert producer.finish()
+    assert client.get(fresh).json() == producer.result
+    assert producer.calls == 1
 
 
 @pytest.mark.parametrize(
@@ -418,12 +429,16 @@ def test_pending_or_abandoned_search_is_not_a_successful_query_cache(
         RuntimeError("private infrastructure detail"),
     ],
 )
-def test_failed_query_is_not_cached_as_a_success(client, remote, clock, failed):
-    remote["result"] = failed
-    assert client.get(start(client)).status_code >= 400
-    remote["result"] = {"status": "done", "songs": [SONG]}
-    assert client.get(start(client)).json() == remote["result"]
-    assert len(remote["starts"]) == len(remote["polls"]) == 2
+def test_failed_query_is_not_cached_as_a_success(client, producer, clock, failed):
+    producer.result = failed
+    original = start(client)
+    assert producer.finish()
+    assert client.get(original).status_code >= 400
+    producer.result = {"status": "done", "songs": [SONG]}
+    fresh = start(client)
+    assert producer.finish()
+    assert client.get(fresh).json() == producer.result
+    assert producer.calls == 2
 
 
 @pytest.mark.parametrize(
@@ -434,16 +449,18 @@ def test_failed_query_is_not_cached_as_a_success(client, remote, clock, failed):
         json.dumps({"status": "failed", "code": "no_match", "detail": "No song."}),
     ],
 )
-def test_invalid_cached_match_is_rejected_without_fallback_or_remote_work(
-    client, remote, clock, corrupt
+def test_invalid_cached_match_is_rejected_without_fallback_or_provider_work(
+    client, producer, clock, corrupt
 ):
-    remote["result"] = {"status": "done", "songs": [SONG]}
-    assert client.get(start(client)).status_code == 200
+    original = start(client)
+    assert producer.finish()
+    assert client.get(original).status_code == 200
     with sqlite3.connect(config.DB_PATH) as connection:
         connection.execute("UPDATE song_searches SET result_json = ?", (corrupt,))
     response = client.post("/api/song-search", json={"query": "Desired song"})
     assert response.status_code == 502
-    assert len(remote["starts"]) == len(remote["polls"]) == 1
+    assert not producer.finish()
+    assert producer.calls == 1
     with sqlite3.connect(config.DB_PATH) as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM song_searches").fetchone()[0] == 1
@@ -451,16 +468,17 @@ def test_invalid_cached_match_is_rejected_without_fallback_or_remote_work(
 
 
 def test_query_cache_migration_preserves_legacy_rows_and_private_handle_behavior(
-    client, other_client, remote, clock
+    client, other_client, producer, clock
 ):
-    remote["result"] = {"status": "done", "songs": [SONG]}
     original = start(client)
-    assert client.get(original).json() == remote["result"]
+    assert producer.finish()
+    assert client.get(original).json() == producer.result
     with sqlite3.connect(config.DB_PATH) as connection:
         original_row = connection.execute(
             "SELECT id, session_id, modal_call_id, result_json, created_at "
             "FROM song_searches"
         ).fetchone()
+        original_row = (*original_row[:2], "fc-old-completed", *original_row[3:])
         expired_row = (
             "expired-pending-search",
             original_row[1],
@@ -480,6 +498,7 @@ def test_query_cache_migration_preserves_legacy_rows_and_private_handle_behavior
         )
     db.init_db()
     db.init_db()
+    db.recover_song_searches(song_search.SEARCH_TTL)
     with sqlite3.connect(config.DB_PATH) as connection:
         assert (
             connection.execute(
@@ -489,15 +508,109 @@ def test_query_cache_migration_preserves_legacy_rows_and_private_handle_behavior
             == before
         )
         assert connection.execute(
-            "SELECT query_key, successful_at FROM song_searches"
-        ).fetchall() == [(None, None), (None, None)]
-    assert client.get(original).json() == remote["result"]
+            "SELECT query_key, successful_at, pending_query, claimed_at "
+            "FROM song_searches"
+        ).fetchall() == [(None, None, None, None), (None, None, None, None)]
+    assert client.get(original).json() == producer.result
     assert other_client.get(original).status_code == 404
     assert client.get("/api/song-search/expired-pending-search").status_code == 404
+    assert not producer.finish()
     updated = {
         "status": "done",
         "songs": [dict(SONG, title="Fresh nonlegacy selection")],
     }
-    remote["result"] = updated
-    assert client.get(start(client)).json() == updated
-    assert len(remote["starts"]) == len(remote["polls"]) == 2
+    producer.result = updated
+    fresh = start(client)
+    assert producer.finish()
+    assert client.get(fresh).json() == updated
+    assert producer.calls == 2
+
+
+def test_atomic_claims_do_not_duplicate_work_and_restart_recovers_local_only(
+    client, producer, clock
+):
+    paths = [start(client, f"song {number}") for number in range(8)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        claimed = list(
+            pool.map(lambda _: db.claim_song_search(song_search.SEARCH_TTL), range(16))
+        )
+    ids = [row["id"] for row in claimed if row is not None]
+    assert len(ids) == len(set(ids)) == 8
+    assert set(ids) == {path.rsplit("/", 1)[1] for path in paths}
+    assert not producer.finish()
+    assert producer.calls == 0
+    db.init_db()
+    db.recover_song_searches(song_search.SEARCH_TTL)
+    for _ in paths:
+        assert producer.finish()
+    assert not producer.finish()
+    assert producer.calls == 8
+    assert all(client.get(path).json() == producer.result for path in paths)
+
+
+def test_restart_discards_expired_claim_without_publishing_success(
+    client, producer, clock
+):
+    path = start(client)
+    assert db.claim_song_search(song_search.SEARCH_TTL) is not None
+    clock.now += 900
+    db.init_db()
+    db.recover_song_searches(song_search.SEARCH_TTL)
+    assert not producer.finish()
+    assert producer.calls == 0
+    assert client.get(path).status_code == 404
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert connection.execute(
+            "SELECT pending_query, claimed_at, result_json, successful_at "
+            "FROM song_searches"
+        ).fetchall() == [(None, None, None, None)]
+
+
+def test_result_finishing_after_handle_expiry_is_not_success_cached(
+    client, producer, clock, monkeypatch
+):
+    def finish_after_expiry(query, cache_root):
+        clock.now += 900
+        return {"status": "done", "songs": [SONG]}
+
+    monkeypatch.setattr(song_search_worker, "run_search", finish_after_expiry)
+    path = start(client)
+    assert producer.finish()
+    assert client.get(path).status_code == 404
+    assert (
+        db.get_cached_song_search(
+            song_search.query_cache_key("Desired song"), song_search.SEARCH_RESULT_TTL
+        )
+        is None
+    )
+    with sqlite3.connect(config.DB_PATH) as connection:
+        assert connection.execute(
+            "SELECT pending_query, result_json, successful_at FROM song_searches"
+        ).fetchall() == [(None, None, None)]
+
+
+def test_recovered_query_is_cached_under_the_producer_that_actually_completed_it(
+    client, producer, clock, monkeypatch
+):
+    previous_version = cache_versions.SONG_SEARCH
+    original = start(client)
+    assert db.claim_song_search(song_search.SEARCH_TTL) is not None
+    monkeypatch.setattr(cache_versions, "SONG_SEARCH", "updated-after-queueing")
+    db.recover_song_searches(song_search.SEARCH_TTL)
+    producer.result = {
+        "status": "done",
+        "songs": [dict(SONG, title="Updated selection")],
+    }
+    assert producer.finish()
+    assert client.get(original).json() == producer.result
+    current = start(client)
+    assert client.get(current).json() == producer.result
+    assert not producer.finish()
+    assert producer.calls == 1
+    monkeypatch.setattr(cache_versions, "SONG_SEARCH", previous_version)
+    rolled_back = start(client)
+    assert client.get(rolled_back).json() == {"status": "pending"}
+    producer.result = {"status": "done", "songs": [SONG]}
+    assert producer.finish()
+    assert client.get(rolled_back).json() == producer.result
+    assert producer.calls == 2

@@ -1,15 +1,22 @@
+import asyncio
+import hashlib
 import json
+import shutil
 import threading
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
+import modal
 import pytest
 import requests
+import ytmusicapi
 
+from backend import config, db, song_search_worker
 from separator import cache_versions, song_search
 
 CLUE = "Find Desired Artist Desired Song"
-CANDIDATES = [
+CANDIDATES: song_search.CatalogCandidates = [
     {
         "video_id": "aaaaaaaaaaa",
         "title": "Unrelated Song",
@@ -255,3 +262,86 @@ def test_provider_redirect_never_contacts_unexpected_target(tmp_path, provider_h
         target.shutdown()
         target.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize("migrated_cache", [False, True])
+def test_local_api_reuses_copied_inference_and_persisted_query_cache(
+    client, other_client, tmp_path, monkeypatch, provider_http, migrated_cache
+):
+    responses, received = provider_http
+    responses.extend([(200, completion(EXTRACTION)), (200, completion(SELECTION))])
+    catalog_calls = []
+    plays = {"value": "9M"}
+    clock = SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(db, "time", SimpleNamespace(time=lambda: clock.now))
+
+    class Catalog:
+        def __init__(self, **kwargs):
+            pass
+
+        def search(self, *args, **kwargs):
+            catalog_calls.append(None)
+            return [
+                {
+                    "resultType": "song",
+                    "videoId": candidate["video_id"],
+                    "title": candidate["title"],
+                    "artists": [{"name": artist} for artist in candidate["artists"]],
+                    "duration_seconds": candidate["duration_seconds"],
+                    "views": plays["value"],
+                }
+                for candidate in CANDIDATES
+            ]
+
+    def forbidden_modal(*args, **kwargs):
+        raise AssertionError("Local discovery must not use Modal")
+
+    monkeypatch.setattr(ytmusicapi, "YTMusic", Catalog)
+    monkeypatch.setattr(modal.Function, "from_name", forbidden_modal)
+    target = config.DATA_DIR / "artifacts" / "song-search" / "results"
+    imported_hashes = {}
+    if migrated_cache:
+        source = tmp_path / "previous-worker"
+        seeded = song_search.run_search(CLUE, str(source))
+        assert seeded["status"] == "done"
+        shutil.copytree(source / "results", target)
+        imported_hashes = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in target.iterdir()
+        }
+
+    started = client.post("/api/song-search", json={"query": CLUE})
+    assert started.status_code == 202
+    path = "/api/song-search/" + started.json()["search_id"]
+    assert client.get(path).json() == {"status": "pending"}
+    assert other_client.get(path).status_code == 404
+    assert asyncio.run(song_search_worker.run_next_search())
+    result = client.get(path).json()
+    assert result["songs"][0]["url"].endswith("bbbbbbbbbbb")
+    assert result["songs"][0]["play_count"] == 9_000_000
+    assert len(received) == 2
+    assert len(catalog_calls) == (2 if migrated_cache else 1)
+    if migrated_cache:
+        assert {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in target.iterdir()
+        } == imported_hashes
+    db.init_db()
+    db.recover_song_searches(song_search.SEARCH_TTL)
+    cached = other_client.post("/api/song-search", json={"query": f"  {CLUE}\n"})
+    cached_path = "/api/song-search/" + cached.json()["search_id"]
+    assert other_client.get(cached_path).json() == result
+    assert client.get(cached_path).status_code == 404
+    assert not asyncio.run(song_search_worker.run_next_search())
+    assert len(received) == 2
+    assert len(catalog_calls) == (2 if migrated_cache else 1)
+
+    clock.now += 86400
+    plays["value"] = "19M"
+    refreshed = client.post("/api/song-search", json={"query": CLUE})
+    refreshed_path = "/api/song-search/" + refreshed.json()["search_id"]
+    assert asyncio.run(song_search_worker.run_next_search())
+    assert client.get(refreshed_path).json()["songs"][0]["play_count"] == 19_000_000
+    assert len(received) == 2  # Expiry refreshes catalog, not unchanged inference.
+    assert len(catalog_calls) == (3 if migrated_cache else 2)
+    assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []

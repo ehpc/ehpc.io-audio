@@ -1,20 +1,19 @@
 import asyncio
 import json
 import math
-import pickle
 import shutil
 import zipfile
-from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
+from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
-from backend import db, modal_client, queue
-from separator import cache_versions, stems
-from separator.artifact_cache import cache_key, digest
+from backend import config, db, inference, modal_client, queue
+from backend.routes import results as results_route
+from separator import stems
+from separator.artifact_cache import digest
 from separator.lyrics import TranscriptWord
 from separator.options import MixSpec, SeparationOptions
 from separator.pitch import (
@@ -26,7 +25,7 @@ from separator.pitch import (
     segment_frames,
     transform_analysis,
 )
-from separator.processing import ProcessingResult
+from separator.processing import ProcessingContext, ProcessingResult, asdict_output
 
 _NATIVE_TRANSFORM = all(
     shutil.which(tool) is not None for tool in ("ffmpeg", "rubberband")
@@ -159,10 +158,7 @@ def test_pitch_lifecycle_download_history_retry_and_session_isolation(
     job_id = response.json()["id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-pitch")
-    )
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, pitch_json=encoded)
+        queue, "process_source", lambda *args: ProcessingResult({}, pitch_json=encoded)
     )
     job = db.get_job(job_id)
     assert job is not None
@@ -214,11 +210,8 @@ def test_pitch_only_job_serves_its_private_vocal_reference_to_its_owner(
     job_id = response.json()["id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-pitch")
-    )
-    monkeypatch.setattr(
-        modal_client,
-        "poll",
+        queue,
+        "process_source",
         lambda *args: ProcessingResult(
             {}, pitch_json=encoded, pitch_vocals=private_audio
         ),
@@ -274,48 +267,57 @@ def test_legacy_pitch_vocal_recovery_reuses_only_an_exact_cached_stem(
         return job_id
 
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
-    producer_calls = 0
+    processing_calls = 0
 
-    def spawn_pitch(*args: object, **kwargs: object) -> MagicMock:
-        nonlocal producer_calls
-        producer_calls += 1
-        return MagicMock(object_id="fc-pitch")
+    def process_pitch(*args: object) -> ProcessingResult:
+        nonlocal processing_calls
+        processing_calls += 1
+        return ProcessingResult({}, pitch_json=encoded)
 
-    monkeypatch.setattr(modal_client, "spawn_with_lyrics", spawn_pitch)
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, pitch_json=encoded)
-    )
+    def forbidden_inference(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Vocal recovery must not dispatch model inference")
+
+    monkeypatch.setattr(queue, "process_source", process_pitch)
+    monkeypatch.setattr(modal_client, "spawn", forbidden_inference)
     job_id = submit_legacy_pitch_job()
-    assert producer_calls == 1
+    assert processing_calls == 1
     assert client.get(f"/api/jobs/{job_id}").json()["has_pitch_vocals"] is False
 
-    model_cache = tmp_path / "models"
-    model_path = model_cache / stems.VOCALS_STEM.model
-    model_path.parent.mkdir(parents=True)
-    model_path.write_bytes(b"cached vocal model")
-    stem_cache = tmp_path / "stems"
+    producer_root = tmp_path / "cpu-producer"
+    manifest = fixture_manifest(producer_root)
+    monkeypatch.setattr(
+        config, "PRODUCER_MANIFEST", producer_root / "fixture-manifest.json"
+    )
+    artifact_root = config.DATA_DIR / "artifacts"
     cache_calls: list[bytes] = []
 
-    async def exact_cached_vocals(source: bytes) -> bytes | None:
+    def exact_cached_vocals(source: bytes) -> bytes | None:
         cache_calls.append(source)
-        return stems.cached_pitch_vocals(source, str(model_cache), str(stem_cache))
+        return inference.recover_vocals(source)
 
-    monkeypatch.setattr(modal_client, "cached_pitch_vocals", exact_cached_vocals)
+    monkeypatch.setattr(results_route, "recover_vocals", exact_cached_vocals)
     assert client.post(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code == 404
     assert client.get(f"/api/jobs/{job_id}").json()["has_pitch_vocals"] is False
     assert cache_calls == [source_bytes]
 
-    identity = stems._stem_identity(digest(source_bytes), stems.VOCALS_STEM)
-    cache_id = cache_key(*identity, cache_versions.file_revision(model_path))
-    archive_path = stem_cache / "versioned" / "outputs" / f"{cache_id}.bin"
-    archive_path.parent.mkdir(parents=True)
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        archive.writestr("vocals", source_bytes)
+    producer_calls = 0
+
+    def produce(request, key):
+        nonlocal producer_calls
+        producer_calls += 1
+        return cpu_inference(request, key, root=producer_root)
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(source_bytes)
+    context = ProcessingContext(artifact_root, manifest, produce)
+    context.separate(source, stems.VOCALS_STEM, tmp_path / "separated")
+    assert producer_calls == 1
 
     recovered = client.post(f"/api/jobs/{job_id}/pitch-reference/vocals")
     assert recovered.status_code == 204
     assert cache_calls == [source_bytes, source_bytes]
     assert producer_calls == 1
+    assert processing_calls == 1
     payload = client.get(f"/api/jobs/{job_id}").json()
     assert payload["has_pitch_vocals"] is True
     assert [entry["label"] for entry in payload["manifest"]] == ["song"]
@@ -328,12 +330,12 @@ def test_legacy_pitch_vocal_recovery_reuses_only_an_exact_cached_stem(
     assert client.post(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code == 204
     assert cache_calls == [source_bytes, source_bytes]
     assert producer_calls == 1
+    assert processing_calls == 1
 
-    model_path.write_bytes(
-        b"changed model revision invalidates this exact cache archive"
-    )
+    # A genuinely different configured CPU producer must not reuse old vocals.
+    fixture_manifest(producer_root, signals={"vocals": StemSignal(660, 2)})
     changed_model_job_id = submit_legacy_pitch_job()
-    assert producer_calls == 2
+    assert processing_calls == 2
     assert (
         client.post(
             f"/api/jobs/{changed_model_job_id}/pitch-reference/vocals"
@@ -345,7 +347,8 @@ def test_legacy_pitch_vocal_recovery_reuses_only_an_exact_cached_stem(
         is False
     )
     assert cache_calls == [source_bytes, source_bytes, source_bytes]
-    assert producer_calls == 2
+    assert processing_calls == 2
+    assert producer_calls == 1
     assert (
         other_client.post(f"/api/jobs/{job_id}/pitch-reference/vocals").status_code
         == 404
@@ -376,34 +379,39 @@ def test_unreadable_cached_vocal_archives_return_http_unavailable(
     job_id = response.json()["id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-pitch")
-    )
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, pitch_json=encoded)
+        queue, "process_source", lambda *args: ProcessingResult({}, pitch_json=encoded)
     )
     job = db.get_job(job_id)
     assert job is not None
     asyncio.run(queue._run_job(job))
 
-    model_cache = tmp_path / "models"
-    model_path = model_cache / stems.VOCALS_STEM.model
-    model_path.parent.mkdir(parents=True)
-    model_path.write_bytes(b"present cached checkpoint")
-    stem_cache = tmp_path / "stems"
-    identity = stems._stem_identity(digest(source_bytes), stems.VOCALS_STEM)
-    cache_id = cache_key(*identity, cache_versions.file_revision(model_path))
-    archive_path = stem_cache / "versioned" / "outputs" / f"{cache_id}.bin"
-    archive_path.parent.mkdir(parents=True)
+    producer_root = tmp_path / "cpu-producer"
+    manifest = fixture_manifest(producer_root)
+    monkeypatch.setattr(
+        config, "PRODUCER_MANIFEST", producer_root / "fixture-manifest.json"
+    )
+
+    def forbidden_inference(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("Invalid cached vocals must not trigger model inference")
+
+    monkeypatch.setattr(modal_client, "spawn", forbidden_inference)
+    artifact_root = config.DATA_DIR / "artifacts"
+    context = ProcessingContext(artifact_root, manifest, forbidden_inference)
+    parameters = {
+        "model": stems.VOCALS_STEM.model,
+        "outputs": [asdict_output(output) for output in stems.VOCALS_STEM.outputs],
+    }
+    cache_id = context.key(
+        "separation", [digest(source_bytes), parameters], stems.VOCALS_STEM.model
+    )
+    archive_path = artifact_root / "inference" / f"{cache_id}.bin"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
     if archive_kind == "corrupt":
         archive_path.write_bytes(b"not a ZIP archive")
     else:
         with zipfile.ZipFile(archive_path, "w") as archive:
             archive.writestr("other-output", b"not vocal audio")
 
-    async def read_exact_cache(audio_bytes: bytes) -> bytes | None:
-        return stems.cached_pitch_vocals(audio_bytes, str(model_cache), str(stem_cache))
-
-    monkeypatch.setattr(modal_client, "cached_pitch_vocals", read_exact_cache)
     recovery = client.post(f"/api/jobs/{job_id}/pitch-reference/vocals")
     assert recovery.status_code == 503
     assert client.get(f"/api/jobs/{job_id}").json()["has_pitch_vocals"] is False
@@ -419,10 +427,7 @@ def test_missing_analysis_fails_instead_of_fake_success(
         queue, "_load_source_bytes", lambda *args: (b"source", "song.mp3")
     )
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
-    monkeypatch.setattr(
-        modal_client, "spawn_with_lyrics", lambda *args: MagicMock(object_id="fc-pitch")
-    )
-    monkeypatch.setattr(modal_client, "poll", lambda *args: ProcessingResult({}))
+    monkeypatch.setattr(queue, "process_source", lambda *args: ProcessingResult({}))
     job = db.get_job(job_id)
     assert job is not None
     asyncio.run(queue._run_job(job))
@@ -431,14 +436,3 @@ def test_missing_analysis_fails_instead_of_fake_success(
     assert result["error_message"] == "Pitch detection returned no analysis"
     assert result["pitch"] is None
     assert client.get(f"/api/jobs/{job_id}/pitch").status_code == 404
-
-
-def test_new_processing_transport_contains_no_new_nested_pitch_classes() -> None:
-    analysis = PitchAnalysis(5, 5, [PitchTrack("vocals", [])])
-    result = ProcessingResult({}, pitch_json=pitch_to_json(analysis))
-    encoded = pickle.dumps(result)
-    assert b"PitchAnalysis" not in encoded
-    assert b"PitchTrack" not in encoded
-    restored = pickle.loads(encoded)
-    assert pitch_from_json(restored.pitch_json) == analysis
-    assert asdict(restored)["audio"] == {}

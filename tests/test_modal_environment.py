@@ -1,145 +1,105 @@
-import runpy
-from collections.abc import Callable
-from types import SimpleNamespace
-from typing import Any
+import os
+import subprocess
+import sys
 
 import pytest
 
-from backend import config, modal_client
-from separator.options import SeparationOptions
-from separator.processing import ProcessingResult
-from separator.stems import StemResult
+_REJECTED_DEPLOYMENT_PROBE = """
+import socket
+import modal
 
-type EndpointKey = tuple[str, str]
-type RemoteOperation = Callable[..., Any]
+def forbidden(*args, **kwargs):
+    raise AssertionError("Deployment validation must not allocate remote resources")
+
+socket.socket.connect = forbidden
+socket.create_connection = forbidden
+modal.App = forbidden
+modal.Volume.from_name = forbidden
+
+try:
+    from separator import modal_app
+except ValueError:
+    pass
+else:
+    raise AssertionError("Unsafe deployment settings were not rejected")
+"""
 
 
-class Operation:
-    """Synchronous/asynchronous entrypoints at the controlled SDK boundary."""
-
-    def __init__(self, function: RemoteOperation):
-        self.function = function
-
-    def __call__(self, *args, **kwargs):
-        return self.function(*args, **kwargs)
-
-    async def aio(self, *args, **kwargs):
-        return self.function(*args, **kwargs)
-
-
-@pytest.fixture
-def environment_registry(monkeypatch):
-    # A missing explicit destination really selects the wrong existing worker,
-    # rather than making a copied-kwargs assertion pass or fail.
-    endpoints: dict[EndpointKey, Any] = {}
-    calls: dict[str, Any] = {}
-    for environment, title, video_id in (
-        ("main", "Obsolete worker song", "aaaaaaaaaaa"),
-        ("ehpc-audio", "Migrated worker song", "bbbbbbbbbbb"),
-        ("isolated-review", "Review worker song", "ccccccccccc"),
+def assert_deployment_rejected(
+    gpu: str | None,
+    target: str | None,
+    browser_target: str | None,
+    *,
+    idle_seconds: str | None = None,
+) -> None:
+    environment = os.environ.copy()
+    for name, value in (
+        ("MODAL_TEST_GPU", gpu),
+        ("MODAL_APP_NAME", target),
+        ("E2E_MODAL_APP_NAME", browser_target),
+        ("MODAL_GPU_IDLE_SECONDS", idle_seconds),
     ):
-        endpoints[environment, "search_song"] = {
-            "status": "done",
-            "songs": [
-                {
-                    "title": title,
-                    "artists": ["Owned routing fixture"],
-                    "url": f"https://music.youtube.com/watch?v={video_id}",
-                    "duration_seconds": 120,
-                    "thumbnail_url": None,
-                    "play_count": None,
-                    "play_count_approximate": False,
-                }
-            ],
-        }
-        endpoints[environment, "separate"] = {
-            "vocals": StemResult(f"{environment} separated audio".encode(), 1.0)
-        }
-        endpoints[environment, "separate_with_lyrics"] = ProcessingResult(
-            audio={"vocals": StemResult(f"{environment} analyzed audio".encode(), 1.0)}
-        )
-
-    def lookup(app_name, function_name, *, environment_name=None):
-        result = endpoints[environment_name or "main", function_name]
-
-        def spawn(*args, **kwargs):
-            call_id = f"fc-owned-routing-{len(calls)}"
-            call = SimpleNamespace(
-                object_id=call_id,
-                get=Operation(lambda **kwargs: result),
-            )
-            calls[call_id] = call
-            return call
-
-        return SimpleNamespace(spawn=Operation(spawn))
-
-    modal_client._get_function.cache_clear()
-    monkeypatch.setattr(modal_client.modal.Function, "from_name", lookup)
-    monkeypatch.setattr(modal_client.modal.FunctionCall, "from_id", calls.__getitem__)
-    try:
-        yield endpoints
-    finally:
-        modal_client._get_function.cache_clear()
-
-
-def configure_environment(monkeypatch, override):
-    if override is None:
-        monkeypatch.delenv("MODAL_ENVIRONMENT", raising=False)
-    else:
-        monkeypatch.setenv("MODAL_ENVIRONMENT", override)
-    # Read production config with the selected process environment without
-    # reloading/mutating unrelated configuration in the shared test process.
-    configured = runpy.run_path(config.__file__)["MODAL_ENVIRONMENT"]
-    monkeypatch.setattr(config, "MODAL_ENVIRONMENT", configured)
+        environment.pop(name, None)
+        if value is not None:
+            environment[name] = value
+    subprocess.run(
+        [sys.executable, "-c", _REJECTED_DEPLOYMENT_PROBE],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
 
 
 @pytest.mark.parametrize(
-    ("override", "expected_title"),
+    ("gpu", "target", "browser_target"),
     [
-        (None, "Migrated worker song"),
-        ("", "Migrated worker song"),
-        (" \t ", "Migrated worker song"),
-        ("isolated-review", "Review worker song"),
-        (" isolated-review ", "Review worker song"),
+        *[
+            ("L4", target, None)
+            for target in (
+                None,
+                "",
+                " ",
+                "audio-separator",
+                "audio-separator-v2",
+                "audio-inference-v3",
+                " audio-inference-v3 ",
+                " audio-separator-v2 ",
+                " audio-separator-dev-owned ",
+            )
+        ],
+        *[
+            (gpu, "audio-separator-ci-owned", None)
+            for gpu in ("", "T4", "A10", "L40S", "L4:2", "l4")
+        ],
+        (
+            "L4",
+            "audio-separator-ci-owned",
+            "audio-separator-v2",
+        ),
+        (
+            "L4",
+            "audio-separator-ci-owned",
+            "audio-inference-v3",
+        ),
+        (
+            "L4",
+            "audio-separator-ci-owned",
+            "",
+        ),
     ],
 )
-def test_http_search_uses_configured_environment_not_ambient_main(
-    client, monkeypatch, environment_registry, override, expected_title
+def test_test_gpu_rejects_unsafe_deployment_before_resource_declarations(
+    gpu, target, browser_target
 ):
-    configure_environment(monkeypatch, override)
-    started = client.post("/api/song-search", json={"query": "Find a song"})
-    assert started.status_code == 202
-    result = client.get("/api/song-search/" + started.json()["search_id"])
-    assert result.status_code == 200
-    assert result.json()["songs"][0]["title"] == expected_title
-    assert client.get("/api/jobs").json() == []
+    assert_deployment_rejected(gpu, target, browser_target)
 
 
-def test_missing_destination_worker_does_not_fall_back_to_existing_main(
-    client, monkeypatch, environment_registry
-):
-    configure_environment(monkeypatch, None)
-    del environment_registry["ehpc-audio", "search_song"]
-    response = client.post("/api/song-search", json={"query": "Find a song"})
-    assert response.status_code == 503
-    assert client.get("/api/jobs").json() == []
-
-
-@pytest.mark.parametrize("analysis", [False, True])
-def test_audio_rpc_returns_destination_audio_not_obsolete_main(
-    monkeypatch, environment_registry, analysis
-):
-    configure_environment(monkeypatch, None)
-    options = SeparationOptions(extract_vocals=True, extract_lyrics=analysis)
-    spawn = modal_client.spawn_with_lyrics if analysis else modal_client.spawn
-    call = spawn(b"owned input", "owned.wav", options)
-    result = modal_client.poll(call, timeout=0)
-    if analysis:
-        assert isinstance(result, ProcessingResult)
-        audio = result.audio
-        expected = b"ehpc-audio analyzed audio"
-    else:
-        assert isinstance(result, dict)
-        audio = result
-        expected = b"ehpc-audio separated audio"
-    assert audio["vocals"].data == expected
+@pytest.mark.parametrize(
+    "idle_seconds", ["0", "-1", "NaN", "1.5", "", " ", " 60", "60 "]
+)
+def test_invalid_idle_window_rejected_before_resource_declarations(
+    idle_seconds: str,
+) -> None:
+    assert_deployment_rejected(None, None, None, idle_seconds=idle_seconds)

@@ -1,9 +1,10 @@
+import asyncio
 import json
 from typing import Any
 
 import pytest
 
-from backend import modal_client
+from backend import song_search_worker
 from separator import song_search
 
 
@@ -245,28 +246,23 @@ def test_selection_bound_and_catalog_membership_do_not_expand_candidate_pool(
 
 
 @pytest.fixture
-def remote_versions(monkeypatch, version_rows):
-    state: dict[str, Any] = {"spawns": 0, "polls": 0}
+def local_versions(monkeypatch, version_rows):
+    state: dict[str, Any] = {"calls": 0}
     state["result"] = {
         "status": "done",
         "songs": choose(version_rows, ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]),
     }
 
-    async def spawn(query):
-        state["spawns"] += 1
-        return "fc-owned-version-fixture"
-
-    async def poll(call_id):
-        state["polls"] += 1
+    def run(query, cache_root):
+        state["calls"] += 1
         return state["result"]
 
-    monkeypatch.setattr(modal_client, "spawn_song_search", spawn)
-    monkeypatch.setattr(modal_client, "poll_song_search", poll)
+    monkeypatch.setattr(song_search_worker, "run_search", run)
     return state
 
 
 def test_plural_api_and_query_cache_preserve_metadata_and_private_handles(
-    client, other_client, remote_versions
+    client, other_client, local_versions
 ):
     response = client.post(
         "/api/song-search", json={"query": "Desired Artist Desired Song"}
@@ -274,6 +270,7 @@ def test_plural_api_and_query_cache_preserve_metadata_and_private_handles(
     assert response.status_code == 202
     path = "/api/song-search/" + response.json()["search_id"]
     assert other_client.get(path).status_code == 404
+    assert asyncio.run(song_search_worker.run_next_search())
     result = client.get(path)
     assert result.status_code == 200
     assert [song["play_count"] for song in result.json()["songs"]] == [
@@ -293,7 +290,8 @@ def test_plural_api_and_query_cache_preserve_metadata_and_private_handles(
     cached_path = "/api/song-search/" + hit.json()["search_id"]
     assert client.get(cached_path).status_code == 404
     assert other_client.get(cached_path).json() == result.json()
-    assert remote_versions["spawns"] == remote_versions["polls"] == 1
+    assert not asyncio.run(song_search_worker.run_next_search())
+    assert local_versions["calls"] == 1
     assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []
 
 
@@ -313,17 +311,17 @@ def test_plural_api_and_query_cache_preserve_metadata_and_private_handles(
     ],
 )
 def test_invalid_version_response_is_never_published_as_success(
-    client, remote_versions, invalid
+    client, local_versions, invalid
 ):
-    songs = remote_versions["result"]["songs"]
+    songs = local_versions["result"]["songs"]
     if invalid == "empty":
-        remote_versions["result"]["songs"] = []
+        local_versions["result"]["songs"] = []
     elif invalid == "too_many":
-        remote_versions["result"]["songs"] = [*songs, songs[0]]
+        local_versions["result"]["songs"] = [*songs, songs[0]]
     elif invalid == "duplicate":
-        remote_versions["result"]["songs"] = [songs[0], songs[0]]
+        local_versions["result"]["songs"] = [songs[0], songs[0]]
     elif invalid == "singular":
-        remote_versions["result"] = {"status": "done", "song": songs[0]}
+        local_versions["result"] = {"status": "done", "song": songs[0]}
     elif invalid == "unsafe_artwork":
         songs[0]["thumbnail_url"] = "https://evil.test/track-browser"
     elif invalid == "unknown_approximation":
@@ -337,12 +335,14 @@ def test_invalid_version_response_is_never_published_as_success(
         }[invalid]
     response = client.post("/api/song-search", json={"query": "Desired Song"})
     path = "/api/song-search/" + response.json()["search_id"]
+    assert asyncio.run(song_search_worker.run_next_search())
     assert client.get(path).status_code == 502
     assert client.get(path).status_code == 502
-    assert remote_versions["polls"] == 1
+    assert local_versions["calls"] == 1
     # Invalid terminal rows must not become one-day successful query hits.
     assert (
         client.post("/api/song-search", json={"query": "Desired Song"}).status_code
         == 202
     )
-    assert remote_versions["spawns"] == 2
+    assert asyncio.run(song_search_worker.run_next_search())
+    assert local_versions["calls"] == 2

@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, fields
+from typing import NamedTuple
 
 from backend import config
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
@@ -13,6 +14,11 @@ from separator.options import SeparationOptions
 _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
 # Renamed options in older stored jobs → current field names.
 _RENAMED_OPTIONS = {"chorus": "genders", "vocalists": "lead_backing"}
+
+
+class InferenceStageClaim(NamedTuple):
+    owner: JobRecord
+    newly_claimed: bool
 
 
 def _load_options(options_json: str) -> SeparationOptions:
@@ -25,7 +31,21 @@ def _load_options(options_json: str) -> SeparationOptions:
     return SeparationOptions(**{k: v for k, v in data.items() if k in _OPTION_FIELDS})
 
 
-_SCHEMA = """
+_SEARCH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS song_searches (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    modal_call_id TEXT,
+    result_json TEXT,
+    created_at INTEGER NOT NULL,
+    query_key TEXT,
+    successful_at REAL,
+    pending_query TEXT,
+    claimed_at REAL
+);
+"""
+
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
@@ -36,6 +56,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     original_key TEXT,
     options_json TEXT NOT NULL,
     modal_call_id TEXT,
+    active_stage_key TEXT,
     result_manifest_json TEXT,
     transcript_json TEXT,
     pitch_json TEXT,
@@ -46,15 +67,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id, id DESC);
-CREATE TABLE IF NOT EXISTS song_searches (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    modal_call_id TEXT NOT NULL,
-    result_json TEXT,
-    created_at INTEGER NOT NULL,
-    query_key TEXT,
-    successful_at REAL
-);
+{_SEARCH_SCHEMA}
 """
 
 
@@ -62,22 +75,60 @@ def _migrate(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
     if "title" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN title TEXT")
+    if "active_stage_key" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN active_stage_key TEXT")
     if "original_key" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN original_key TEXT")
     if "transcript_json" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN transcript_json TEXT")
     if "pitch_json" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN pitch_json TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_stage_key "
+        "ON jobs(active_stage_key) WHERE active_stage_key IS NOT NULL"
+    )
     search_columns = {
-        row["name"] for row in conn.execute("PRAGMA table_info(song_searches)")
+        row["name"]: row for row in conn.execute("PRAGMA table_info(song_searches)")
     }
     if "query_key" not in search_columns:
         conn.execute("ALTER TABLE song_searches ADD COLUMN query_key TEXT")
     if "successful_at" not in search_columns:
         conn.execute("ALTER TABLE song_searches ADD COLUMN successful_at REAL")
+    if "pending_query" not in search_columns:
+        conn.execute("ALTER TABLE song_searches ADD COLUMN pending_query TEXT")
+    if "claimed_at" not in search_columns:
+        conn.execute("ALTER TABLE song_searches ADD COLUMN claimed_at REAL")
+    if search_columns["modal_call_id"]["notnull"]:
+        # SQLite cannot relax NOT NULL in place. Preserve historical IDs and raw
+        # payloads, including expired NULL-result rows; new local work has no call ID.
+        schema_objects = [
+            row["sql"]
+            for row in conn.execute(
+                "SELECT sql FROM sqlite_schema WHERE tbl_name = 'song_searches' "
+                "AND type IN ('index', 'trigger') AND sql IS NOT NULL "
+                "ORDER BY type, name"
+            )
+        ]
+        conn.execute("ALTER TABLE song_searches RENAME TO song_searches_before_local")
+        conn.execute(_SEARCH_SCHEMA)
+        conn.execute(
+            "INSERT INTO song_searches "
+            "(rowid, id, session_id, modal_call_id, result_json, created_at, "
+            "query_key, successful_at, pending_query, claimed_at) "
+            "SELECT rowid, id, session_id, modal_call_id, result_json, created_at, "
+            "query_key, successful_at, pending_query, claimed_at "
+            "FROM song_searches_before_local"
+        )
+        conn.execute("DROP TABLE song_searches_before_local")
+        for statement in schema_objects:
+            conn.execute(statement)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_song_search_query_success "
         "ON song_searches(query_key, successful_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_song_search_pending "
+        "ON song_searches(created_at) WHERE pending_query IS NOT NULL"
     )
     # Prior to explicit extraction, every job always requested both base stems.
     # Persist that intent once so history and retries retain the old behavior.
@@ -121,6 +172,7 @@ def _session() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with _session() as conn:
         conn.executescript(_SCHEMA)
+        conn.execute("BEGIN IMMEDIATE")
         _migrate(conn)
 
 
@@ -132,23 +184,23 @@ def health_check() -> None:
 def create_song_search(
     search_id: str,
     session_id: str,
-    call_id: str,
     query_key: str,
     *,
+    pending_query: str | None = None,
     result: dict | None = None,
     successful_at: float | None = None,
 ) -> None:
     with _session() as conn:
         conn.execute(
             "INSERT INTO song_searches "
-            "(id, session_id, modal_call_id, created_at, query_key, "
+            "(id, session_id, created_at, query_key, pending_query, "
             "result_json, successful_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 search_id,
                 session_id,
-                call_id,
                 int(time.time()),
                 query_key,
+                pending_query,
                 json.dumps(result) if result is not None else None,
                 successful_at,
             ),
@@ -158,7 +210,7 @@ def create_song_search(
 def get_cached_song_search(query_key: str, max_age: int) -> dict | None:
     with _session() as conn:
         row = conn.execute(
-            "SELECT modal_call_id, result_json, successful_at FROM song_searches "
+            "SELECT result_json, successful_at FROM song_searches "
             "WHERE query_key = ? AND successful_at > ? "
             "ORDER BY successful_at DESC LIMIT 1",
             (query_key, time.time() - max_age),
@@ -169,21 +221,73 @@ def get_cached_song_search(query_key: str, max_age: int) -> dict | None:
 def get_song_search(search_id: str, session_id: str, max_age: int) -> dict | None:
     with _session() as conn:
         row = conn.execute(
-            "SELECT modal_call_id, result_json FROM song_searches "
-            "WHERE id = ? AND session_id = ? AND created_at > ?",
-            (search_id, session_id, int(time.time()) - max_age),
+            "SELECT result_json, created_at FROM song_searches "
+            "WHERE id = ? AND session_id = ?",
+            (search_id, session_id),
         ).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        if row["created_at"] <= int(time.time()) - max_age:
+            conn.execute(
+                "UPDATE song_searches SET pending_query = NULL, claimed_at = NULL "
+                "WHERE id = ? AND pending_query IS NOT NULL",
+                (search_id,),
+            )
+            return None
+        return {"result_json": row["result_json"]}
 
 
-def finish_song_search(search_id: str, result: dict) -> None:
+def _expire_song_searches(conn: sqlite3.Connection, max_age: int) -> None:
+    conn.execute(
+        "UPDATE song_searches SET pending_query = NULL, claimed_at = NULL "
+        "WHERE pending_query IS NOT NULL AND created_at <= ?",
+        (int(time.time()) - max_age,),
+    )
+
+
+def recover_song_searches(max_age: int) -> None:
+    """Restart only local work; historical Modal rows never become queue entries."""
     with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _expire_song_searches(conn, max_age)
         conn.execute(
-            "UPDATE song_searches SET result_json = ?, successful_at = ? "
-            "WHERE id = ? AND result_json IS NULL",
+            "UPDATE song_searches SET claimed_at = NULL "
+            "WHERE pending_query IS NOT NULL AND result_json IS NULL"
+        )
+
+
+def claim_song_search(max_age: int) -> dict | None:
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _expire_song_searches(conn, max_age)
+        row = conn.execute(
+            "SELECT id, pending_query FROM song_searches "
+            "WHERE pending_query IS NOT NULL AND result_json IS NULL "
+            "AND claimed_at IS NULL ORDER BY created_at, rowid LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE song_searches SET claimed_at = ? WHERE id = ?",
+            (time.time(), row["id"]),
+        )
+        return dict(row)
+
+
+def finish_song_search(
+    search_id: str, result: dict, max_age: int, *, query_key: str
+) -> None:
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _expire_song_searches(conn, max_age)
+        conn.execute(
+            "UPDATE song_searches SET result_json = ?, successful_at = ?, "
+            "pending_query = NULL, claimed_at = NULL, query_key = ? "
+            "WHERE id = ? AND result_json IS NULL AND pending_query IS NOT NULL",
             (
                 json.dumps(result),
                 time.time() if result.get("status") == "done" else None,
+                query_key,
                 search_id,
             ),
         )
@@ -201,6 +305,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         original_key=row["original_key"],
         options=_load_options(row["options_json"]),
         modal_call_id=row["modal_call_id"],
+        active_stage_key=row["active_stage_key"],
         result_manifest=(
             [
                 ResultManifestEntry.model_validate(entry)
@@ -322,6 +427,7 @@ def queue_position(job_id: int) -> int:
 
 def claim_oldest_queued() -> JobRecord | None:
     with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
         ).fetchone()
@@ -337,10 +443,43 @@ def claim_oldest_queued() -> JobRecord | None:
         )
 
 
-def set_modal_call_id(job_id: int, call_id: str) -> None:
+def claim_inference_stage(job_id: int, stage_key: str) -> InferenceStageClaim:
+    """A failed or uncertain owner still blocks redispatch by a different job."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE active_stage_key = ?", (stage_key,)
+        ).fetchone()
+        if row is not None:
+            return InferenceStageClaim(_row_to_job(row), False)
+        conn.execute(
+            "UPDATE jobs SET active_stage_key = ?, modal_call_id = NULL WHERE id = ?",
+            (stage_key, job_id),
+        )
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise ValueError("Job not found.")
+        return InferenceStageClaim(_row_to_job(row), True)
+
+
+def set_active_stage(job_id: int, stage_key: str, call_id: str | None) -> None:
     with _session() as conn:
         conn.execute(
-            "UPDATE jobs SET modal_call_id = ? WHERE id = ?", (call_id, job_id)
+            "UPDATE jobs SET active_stage_key = ?, modal_call_id = ? WHERE id = ?",
+            (stage_key, call_id, job_id),
+        )
+
+
+def release_inference_stage(job_id: int, stage_key: str) -> bool:
+    """Operator-only release; a recorded remote call must never be discarded."""
+    with _session() as conn:
+        return (
+            conn.execute(
+                "UPDATE jobs SET active_stage_key = NULL "
+                "WHERE id = ? AND active_stage_key = ? AND modal_call_id IS NULL",
+                (job_id, stage_key),
+            ).rowcount
+            == 1
         )
 
 

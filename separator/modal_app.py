@@ -1,223 +1,166 @@
-"""
-Modal app definition for GPU-accelerated vocal/instrument separation.
+"""One finite inference pool; DAGs, caches, network lookups and exports run on VPS."""
 
-Deploy with `modal deploy --env ehpc-audio separator/modal_app.py`.
-The backend looks up deployed functions by name and explicit environment
-(see backend/modal_client.py), rather than importing this module directly.
-"""
-
+import json
+import os
+import subprocess
+import sys
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 
 import modal
 
-from separator.lyrics_reference import ReferenceMetadata
-from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
-from separator.processing import ProcessingResult, analysis_transport, run_processing
-from separator.stems import SeparationResult, cached_pitch_vocals, run_separation
+from separator.inference import InferenceRequest, InferenceResult
+from separator.producer_manifest import load_manifest, verify_runtime
 
-app = modal.App("audio-separator-v2")
 
-MODEL_VOLUME_NAME = "audio-separator-models"
-model_volume = modal.Volume.from_name(MODEL_VOLUME_NAME, create_if_missing=True)
+def _deployment_settings() -> tuple[str, str]:
+    """Keep production resources fixed; cheaper hardware is an isolated opt-in."""
+    test_gpu = os.environ.get("MODAL_TEST_GPU")
+    if test_gpu is None:
+        return "audio-inference-v3", "L40S"
+    if test_gpu != "L4":
+        raise ValueError("MODAL_TEST_GPU must be L4 when set")
+    target = os.environ.get("MODAL_APP_NAME", "")
+    if (
+        not target
+        or target != target.strip()
+        or target in {"audio-separator", "audio-separator-v2", "audio-inference-v3"}
+    ):
+        raise ValueError(
+            "MODAL_TEST_GPU requires an explicit non-production MODAL_APP_NAME "
+            "without surrounding whitespace"
+        )
+    browser_target = os.environ.get("E2E_MODAL_APP_NAME")
+    if browser_target is not None and browser_target != target:
+        raise ValueError(
+            "E2E_MODAL_APP_NAME must match MODAL_APP_NAME for MODAL_TEST_GPU"
+        )
+    return target, test_gpu
+
+
+def _idle_window() -> int:
+    """Deployment-only positive seconds, matching the SDK's scaledown constraint."""
+    value = os.environ.get("MODAL_GPU_IDLE_SECONDS", "60")
+    if not value.isascii() or not value.isdecimal() or int(value) <= 0:
+        raise ValueError("MODAL_GPU_IDLE_SECONDS must be a positive integer")
+    return int(value)
+
+
+_app_name, GPU = _deployment_settings()
+IDLE_SECONDS = _idle_window()
+# Sixty seconds is an explicit unoptimized starting point, not a savings claim.
+# Infrastructure-only tuning never changes a producer/artifact identity.
+MODEL_VOLUME_NAME = os.environ.get("MODEL_VOLUME_NAME", "audio-separator-models")
 MODEL_CACHE = "/model-cache"
-# Per-stem output cache, keyed by sha256(input) + model filename. audio-separator is
-# deterministic given input + model, so cached output directories can be reused
-# verbatim.
-STEM_CACHE = f"{MODEL_CACHE}/stems"
-TIMEOUT = 1200  # 20 minutes — up to nine sequential separator passes on L40S
-# Benchmarked on one 6.8 MB song (2 stems); times include model load.
-# GPU    time   $/song  rel cost  rel speed  $/min faster than T4
-# T4     231s   $0.038  x1.0      x1.0       — (dominated by L4)
-# L4     157s   $0.035  x0.9      x1.5       cheaper AND faster
-# A10G   125s   $0.038  x1.0      x1.8       ~$0.00  (essentially free)
-# L40S    86s   $0.046  x1.2      x2.7       $0.003  ← sweet spot
-# H100    75s   $0.082  x2.2      x3.1       $0.017
-# B200    69s   $0.119  x3.1      x3.4       $0.030
-GPU = "L40S"
+TIMEOUT = 1200  # Preserve the existing ceiling until unchanged-model timings exist.
 ASR_PYTHON = "/opt/lyrics-reference/bin/python"
 STRUCTURE_PYTHON = "/opt/lyrics-structure/bin/python"
-
+_manifest_path = Path(
+    os.environ.get(
+        "PRODUCER_MANIFEST",
+        str(Path(__file__).with_name("model_manifest.json"))
+        if modal.is_local()
+        else "/producer-manifest.json",
+    )
+)
+_manifest = load_manifest(_manifest_path)
+app = modal.App(_app_name)
+model_volume = modal.Volume.from_name(MODEL_VOLUME_NAME)
+# Source deployments never re-resolve native dependencies or rebuild model images.
+# Intentional producer builds live in separator.build_image and require new capture.
 image = (
-    # onnxruntime-gpu needs CUDA 12 + cuDNN 9 system libraries.
-    modal.Image.from_registry(
-        # Ubuntu 24.04 supplies FFmpeg 6+ with latency-compensated alimiter.
-        "nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04",
-        # Separate from the Python 3.15 client: torch/torchaudio/onnxruntime-gpu
-        # do not yet publish cp315 wheels for this GPU dependency environment.
-        add_python="3.13",
-    )
-    # clang is needed to build diffq's C extension (transitive dep of audio-separator).
-    .apt_install("ffmpeg", "clang", "python3.12-venv")
-    .pip_install(
-        "audio-separator[gpu]==0.44.1",
-        # librosa 1 removed audioread, which this separator version imports.
-        "librosa==0.11.0",
-        extra_index_url="https://download.pytorch.org/whl/cu124",
-    )
-    # SongFormer incorporates CC-BY-NC-4.0 MuQ weights. Noncommercial use only;
-    # commercial deployment needs separate rights clearance. Never install this
-    # dependency tree over the separator's ONNX GPU or singing-ASR environments.
-    .run_commands(
-        "python3.12 -m venv /opt/lyrics-structure",
-        "/opt/lyrics-structure/bin/pip install "
-        "torch==2.4.0 torchaudio==2.4.0 torchvision==0.19.0 "
-        "--index-url https://download.pytorch.org/whl/cu124",
-        "/opt/lyrics-structure/bin/pip install "
-        "torch==2.4.0 torchaudio==2.4.0 torchvision==0.19.0 "
-        "numpy==1.26.4 scipy==1.15.2 transformers==4.51.1 "
-        "huggingface-hub==0.33.5 safetensors==0.5.3 accelerate==1.5.2 "
-        "librosa==0.11.0 muq==0.1.0 nnAudio==0.3.3 easydict==1.13 x-clip==0.14.4 "
-        "omegaconf==2.3.0 ema-pytorch==0.7.7 x-transformers==2.4.14 "
-        "msaf==0.1.80 loguru==0.7.3",
-        "/opt/lyrics-structure/bin/pip install torchcrepe==0.0.24",
-    )
-    # Qwen ASR (Apache-2.0) requires transformers 4.57.6. MMS_FA alignment
-    # weights are CC-BY-NC-4.0, like MuQ above: noncommercial use only.
-    # Keep these dependencies isolated from SongFormer and ONNX.
-    .run_commands(
-        "python3.12 -m venv /opt/lyrics-reference",
-        "/opt/lyrics-reference/bin/pip install "
-        "torch==2.8.0 torchaudio==2.8.0 "
-        "--index-url https://download.pytorch.org/whl/cu128",
-        "/opt/lyrics-reference/bin/pip install qwen-asr==0.0.6 uroman==1.3.1.1",
-    )
-    # This module lives inside the `separator` package and imports its siblings
-    # (separator.options / separator.stems). Modal only auto-includes the entrypoint
-    # file itself, so the package must be added explicitly or the container
-    # crash-loops with `ModuleNotFoundError: No module named 'separator'`.
+    modal.Image.from_id(_manifest.image_id)
     .add_local_python_source("separator")
+    .add_local_file(_manifest_path, "/producer-manifest.json")
 )
 
-# Text discovery has no audio dependencies and never runs in the web container.
-song_search_image = (
-    modal.Image.debian_slim(python_version="3.13")
-    .pip_install(
-        "requests==2.34.2",
-        "ytmusicapi==1.11.5",
+
+@cache
+def _verify_producer(operation: str, model: str | None) -> None:
+    # Check actual GPU-host native libraries once per selected cold producer.
+    # Weight SHA verification is preprovisioning work, never GPU hashing work.
+    verify_runtime(
+        _manifest,
+        operation,
+        model,
+        asr_python=ASR_PYTHON,
+        structure_python=STRUCTURE_PYTHON,
     )
-    .add_local_python_source("separator")
-)
-song_search_volume = modal.Volume.from_name(
-    "audio-song-discovery", create_if_missing=True
-)
-
-
-@app.function(
-    image=song_search_image,
-    secrets=[
-        modal.Secret.from_name(
-            "audio-openrouter",
-            required_keys=["OPENROUTER_API_KEY"],
-        )
-    ],
-    volumes={"/song-search-cache": song_search_volume},
-    timeout=180,
-    max_containers=1,
-)
-def search_song(query: str) -> dict:
-    from separator.song_search import run_search  # noqa: PLC0415
-
-    song_search_volume.reload()
-    try:
-        return run_search(query, "/song-search-cache")
-    finally:
-        song_search_volume.commit()
-
-
-@app.function(image=image)
-def healthcheck() -> str:
-    # CPU-only, no models. Reaching the function body at all proves the container
-    # started, which requires this module's top-level `from separator...` imports
-    # to succeed inside the deployed image — the exact thing that crash-loops if
-    # the image omits the package. The opt-in smoke test spawns this.
-    return "ok"
-
-
-@contextmanager
-def _source_audio(audio_bytes: bytes, filename: str) -> Iterator[tuple[Path, Path]]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        input_path = tmp / filename
-        input_path.write_bytes(audio_bytes)
-        yield tmp, input_path
 
 
 @app.function(
     image=image,
-    # Native library fingerprints differ between CPU and GPU containers.
-    # Match the producer runtime without loading or running a separation model.
     gpu=GPU,
-    cpu=2,
-    memory=2048,
     volumes={MODEL_CACHE: model_volume.with_mount_options(read_only=True)},
-    timeout=120,
-)
-def recover_pitch_vocals(audio_bytes: bytes) -> bytes | None:
-    """Exact cache read in the producer runtime; no inference or cache writes."""
-    model_volume.reload()
-    return cached_pitch_vocals(audio_bytes, MODEL_CACHE, STEM_CACHE)
-
-
-@app.function(
-    image=image,
-    gpu=GPU,
-    volumes={MODEL_CACHE: model_volume},
     timeout=TIMEOUT,
+    min_containers=0,
+    buffer_containers=0,
+    max_containers=1,
+    scaledown_window=IDLE_SECONDS,
+    block_network=True,
 )
-def separate(
-    audio_bytes: bytes,
-    filename: str,
-    options: SeparationOptions,
-    *,
-    options_schema: int,
-) -> SeparationResult:
-    """Core audio RPC: keep its dictionary result usable by audio-only clients."""
-    if options_schema != OPTIONS_SCHEMA_VERSION:
-        raise ValueError("incompatible separation options schema")
-    model_volume.reload()
-    with _source_audio(audio_bytes, filename) as (tmp, input_path):
-        try:
-            return run_separation(input_path, options, tmp, MODEL_CACHE, STEM_CACHE)
-        finally:
-            # A later stage failing must not discard earlier validated work.
-            model_volume.commit()
-
-
-@app.function(
-    image=image,
-    gpu=GPU,
-    volumes={MODEL_CACHE: model_volume},
-    timeout=TIMEOUT,
-)
-def separate_with_lyrics(
-    audio_bytes: bytes,
-    filename: str,
-    options: SeparationOptions,
-    reference_metadata: ReferenceMetadata | None = None,
-    *,
-    analysis_schema: int = 1,
-    options_schema: int,
-) -> ProcessingResult:
-    """Optional lyrics/pitch RPC; audio-only clients retain their dict RPC."""
-    if options_schema != OPTIONS_SCHEMA_VERSION:
-        raise ValueError("incompatible separation options schema")
-    model_volume.reload()
-    with _source_audio(audio_bytes, filename) as (tmp, input_path):
-        try:
-            results = run_processing(
-                input_path,
-                options,
-                tmp,
-                MODEL_CACHE,
-                STEM_CACHE,
-                TIMEOUT,
-                ASR_PYTHON,
-                STRUCTURE_PYTHON,
-                reference_metadata,
+def infer(request: InferenceRequest) -> InferenceResult:
+    """Execute one prepared native model operation, without graph/cache/network work."""
+    # Pickle does not call dataclass validation. Reject malformed inputs before I/O.
+    request = InferenceRequest(
+        operation=request.operation,
+        audio_bytes=request.audio_bytes,
+        filename=request.filename,
+        producer_digest=request.producer_digest,
+        parameters=request.parameters,
+    )
+    fingerprint = request.fingerprint()
+    model = (
+        request.parameters.get("model") if request.operation == "separation" else None
+    )
+    if model is not None and not isinstance(model, str):
+        raise ValueError("Separation model must be a configured filename")
+    if request.producer_digest != _manifest.digest_for(request.operation, model):
+        raise ValueError("Inference producer does not match the deployed manifest")
+    _verify_producer(request.operation, model)
+    python = (
+        ASR_PYTHON
+        if request.operation in {"recognition", "alignment"}
+        else STRUCTURE_PYTHON
+        if request.operation in {"pitch", "structure"}
+        else sys.executable
+    )
+    model_cache = Path(MODEL_CACHE)
+    if request.operation in {"recognition", "alignment"}:
+        model_cache /= "qwen-asr"
+    elif request.operation == "structure":
+        model_cache /= "songformer"
+    with tempfile.TemporaryDirectory(prefix="model-stage-") as directory:
+        temporary = Path(directory)
+        source = temporary / "input"
+        source.write_bytes(request.audio_bytes)
+        metadata = temporary / "request.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "operation": request.operation,
+                    "filename": request.filename,
+                    "producer_digest": request.producer_digest,
+                    "parameters": request.parameters,
+                },
+                allow_nan=False,
             )
-            return analysis_transport(results, analysis_schema)
-        finally:
-            model_volume.commit()
+        )
+        output = temporary / "result"
+        subprocess.run(
+            [
+                python,
+                "-m",
+                "separator.inference_runtime",
+                str(metadata),
+                str(source),
+                str(output),
+                str(model_cache),
+            ],
+            check=True,
+            timeout=TIMEOUT,
+        )
+        result = InferenceResult(fingerprint, output.read_bytes())
+        result.for_request(request)
+        return result

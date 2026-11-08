@@ -391,7 +391,6 @@ def test_real_mix_limits_overload_without_clipping_or_long_tail(
 @pytest.mark.parametrize("clean", [False, True])
 def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequisites(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     clean: bool,
 ) -> None:
     frequencies = {
@@ -415,8 +414,6 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
         input_path: Path,
         stem: Stem,
         out_dir: Path,
-        model_cache: str,
-        stem_cache: str,
     ) -> dict[str, tuple[StemResult, Path]]:
         calls.append((input_path, stem))
         out_dir.mkdir(parents=True)
@@ -431,9 +428,8 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
             result[output.label] = (StemResult(path.read_bytes(), 0.1), path)
         return result
 
-    # Mock only model inference. Graph routing, FFmpeg mixing, encoding and
-    # decoded spectral measurements all execute for real.
-    monkeypatch.setattr(stems, "run_separator", separate)
+    # Supply only model-stage outputs. Graph routing, FFmpeg mixing, encoding
+    # and decoded spectral measurements all execute for real.
     result = stems.run_separation(
         tmp_path / "original.wav",
         SeparationOptions(
@@ -446,8 +442,8 @@ def test_real_graph_mix_content_uses_selected_cleaning_without_leaking_prerequis
             dereverb=clean,
         ),
         tmp_path,
-        str(tmp_path / "models"),
-        str(tmp_path / "cache"),
+        tmp_path / "cache",
+        separate,
     )
     assert list(result) == (
         ["vocals-decrowded", "vocals-decrowded-dry", "instruments-decrowded"]

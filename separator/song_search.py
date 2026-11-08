@@ -1,6 +1,6 @@
-"""Grounded text discovery; portable source shared with the Modal CPU worker."""
+"""Grounded text discovery with OpenRouter inference and a local artifact cache."""
 
-# Catalog/HTTP dependencies live in the isolated Modal image.
+# HTTP clients are loaded only when discovery actually needs the provider/catalog.
 # ruff: noqa: PLC0415
 
 import json
@@ -29,6 +29,13 @@ RESULT_LIMIT = 3
 MAX_PLAY_COUNT = 2**53 - 1  # JSON counts must remain exact in browser numbers.
 SEARCH_TTL = 900
 SEARCH_RESULT_TTL = 86400
+SEARCH_HTTP_ERRORS = {
+    "no_match": 404,
+    "ambiguous": 422,
+    "invalid_model": 502,
+    "catalog_unavailable": 502,
+    "unavailable": 503,
+}
 _VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -270,7 +277,7 @@ def select_songs(text: str, candidates: CatalogCandidates) -> SongMatches:
 
 def fetch_catalog(query: str) -> CatalogCandidates:
     import requests
-    from ytmusicapi import YTMusic  # ty: ignore[unresolved-import]
+    from ytmusicapi import YTMusic
 
     try:
         with requests.Session() as session:

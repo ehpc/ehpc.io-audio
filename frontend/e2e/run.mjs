@@ -21,10 +21,10 @@ const cpuOnly = visual || youtube || cpu;
 const arguments_ = process.argv.slice(2).filter(argument => !['--visual', '--youtube', '--cpu', '--throttle-media'].includes(argument));
 if (youtube) arguments_.unshift('--config=playwright.youtube.config.ts');
 const app = cpuOnly ? 'audio-separator-key-analysis-no-gpu' : process.env.E2E_MODAL_APP_NAME;
-// Both production namespaces are off-limits: the live app and the new v2
-// protocol app are only driven by authorized deployments, never ad-hoc tests.
-if (!app || app === 'audio-separator' || app === 'audio-separator-v2') {
-  throw new Error('Set E2E_MODAL_APP_NAME to an explicitly isolated Modal test deployment (not audio-separator or audio-separator-v2).');
+// Production namespaces stay off-limits, including those retained during cutover.
+// Only authorized deployments may drive them, never ad-hoc browser tests.
+if (!app || app === 'audio-separator' || app === 'audio-separator-v2' || app === 'audio-inference-v3') {
+  throw new Error('Set E2E_MODAL_APP_NAME to an explicitly isolated Modal test deployment, not a production app.');
 }
 console.log(youtube ? 'YouTube verification: real external download + full-song native key analysis, no GPU jobs' : visual ? 'Visual verification: real native key analysis, deterministic local audio, no GPU jobs' : cpu ? 'CPU verification: real native processing and key analysis, deterministic local audio, no GPU jobs' : `Real full-stack verification: Modal app=${app}; no mocked boundaries`);
 // Parse every browser spec before paying for the build/backend/model startup.

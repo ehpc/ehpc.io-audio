@@ -1,10 +1,11 @@
-"""CPU-only cache proof module, portable across client/worker Python versions."""
+"""Native CPU cache proof run in separate client-side processes."""
 
 import asyncio
 import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import wave
 from contextlib import suppress
@@ -13,9 +14,7 @@ from pathlib import Path
 from separator.artifact_cache import async_locked, cached_bytes, digest
 
 
-def isolated_cache(volume, source: bytes, version: str, prohibit: bool):
-    root = Path("/private-cache")
-    volume.reload()
+def isolated_cache(root: Path, source: bytes, version: str, prohibit: bool):
     trace = root / "producer-count"
 
     def produce():
@@ -73,7 +72,7 @@ def isolated_cache(volume, source: bytes, version: str, prohibit: bool):
         error_samples = abs(duration - source_duration) * decoded.getframerate()
         assert error_samples <= 1
     evidence = {
-        "container": os.environ["MODAL_TASK_ID"],
+        "process_id": os.getpid(),
         "producer_count": int(trace.read_text()),
         "sha256": digest(result),
         "bytes": len(result),
@@ -82,5 +81,17 @@ def isolated_cache(volume, source: bytes, version: str, prohibit: bool):
         "duration_error_samples": error_samples,
         "cancelled_waiter_released": True,
     }
-    volume.commit()
-    return json.dumps(evidence)
+    return evidence
+
+
+if __name__ == "__main__":
+    print(
+        json.dumps(
+            isolated_cache(
+                Path(sys.argv[1]),
+                Path(sys.argv[2]).read_bytes(),
+                sys.argv[3],
+                sys.argv[4] == "true",
+            )
+        )
+    )

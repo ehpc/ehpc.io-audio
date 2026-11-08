@@ -405,7 +405,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (viewport) onTimelineScroll();
     if (follow() && !browsing() && !gestureActive() && !(userScroll && userScrolled) && !audio.paused && viewport) {
       const x = AXIS_WIDTH + next * zoom();
-      if (x > viewport.scrollLeft + viewport.clientWidth - 40 || x < viewport.scrollLeft + AXIS_WIDTH) {
+      const forwardBoundary = viewport.scrollLeft + AXIS_WIDTH + (viewport.clientWidth - AXIS_WIDTH) * 0.75;
+      if (x > forwardBoundary || x < viewport.scrollLeft + AXIS_WIDTH) {
         moveViewport(x - AXIS_WIDTH - 30);
       }
     }

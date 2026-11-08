@@ -15,8 +15,23 @@ DOWNLOAD_MAX_ATTEMPTS = int(os.environ.get("DOWNLOAD_MAX_ATTEMPTS", "3"))
 DOWNLOAD_RETRY_BACKOFF_S = float(os.environ.get("DOWNLOAD_RETRY_BACKOFF_S", "10"))
 
 MODAL_ENVIRONMENT = os.environ.get("MODAL_ENVIRONMENT", "").strip() or "ehpc-audio"
-MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "audio-separator-v2")
-MODAL_FUNCTION_NAME = os.environ.get("MODAL_FUNCTION_NAME", "separate")
+MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "audio-inference-v3")
+MODEL_VOLUME_NAME = os.environ.get("MODEL_VOLUME_NAME", "audio-separator-models")
+PRODUCER_MANIFEST = Path(
+    os.environ.get(
+        "PRODUCER_MANIFEST",
+        str(
+            Path(__file__).resolve().parent.parent / "separator" / "model_manifest.json"
+        ),
+    )
+)
+
+
+def prepared_models_root() -> Path:
+    """Shared verification receipts, independent of private computed artifacts."""
+    explicit = os.environ.get("PREPARED_MODELS_ROOT")
+    return Path(explicit) if explicit else DATA_DIR / "artifacts"
+
 
 SESSION_COOKIE_NAME = "session_id"
 COOKIE_SECRET = os.environ.get("COOKIE_SECRET", "dev-insecure-secret-change-me")

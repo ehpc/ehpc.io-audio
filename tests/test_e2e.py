@@ -1,11 +1,9 @@
 """End-to-end tests: a real HTTP submit, picked up by the real queue worker, run
 through the real stem graph, and served back as a real stem download.
 
-The only thing faked is the Modal round-trip — the boundary where a GPU would
-run — so every piece of the app between the browser and that boundary is
-exercised for real: form parsing, sqlite, the worker loop, result persistence,
-the SSE stream and the download routes. `tests/test_smoke.py` covers the other
-side of that boundary against the deployed function.
+Finite inference runs through a synthetic CPU producer instead of Modal. The
+VPS graph, form parsing, sqlite, worker loop, result persistence, SSE stream,
+native audio processing and download routes all execute for real.
 """
 
 import asyncio
@@ -25,96 +23,102 @@ from urllib.parse import quote
 import pytest
 from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
+from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
-from backend import config, db, events, modal_client, queue
+from backend import config, db, events, inference, modal_client, queue
 from backend.models import JobStatus
 from backend.routes import jobs as jobs_route
 from separator import audio, stems
-from separator.options import OPTIONS_SCHEMA_VERSION, SeparationOptions
-from separator.stems import SeparationResult, Stem, StemResult
+from separator.inference import InferenceRequest, InferenceResult
+from separator.options import SeparationOptions
 
 _TERMINAL = (JobStatus.DONE, JobStatus.FAILED)
-_UPLOAD_BYTES = b"ID3\x03\x00fake-mp3-payload"
+_UPLOAD_BYTES = tone_wav((440.0,), duration_s=1)
+_STEM_FREQUENCIES = {
+    "vocals": 330,
+    "instruments": 220,
+    "vocals-decrowded": 440,
+    "vocals-decrowded-dry": 550,
+    "vocals-male": 660,
+    "vocals-male-dry": 770,
+    "vocals-female": 880,
+    "vocals-female-dry": 990,
+}
+pytestmark = pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in ("ffmpeg", "ffprobe")),
+    reason="CPU inference and decoded download measurements require FFmpeg",
+)
 
 
 @pytest.fixture(autouse=True)
 def _key_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
-    # These separation scenarios use placeholder bytes, not decodable audio.
+    # Native key detection has dedicated coverage; use a stable key for HTTP metadata.
     monkeypatch.setattr(queue, "detect_key", lambda audio, name, root: "C major")
 
 
 @dataclass
-class _FakeCall:
-    """Stands in for modal.functions.FunctionCall in the worker's spawn/poll loop."""
-
+class _CpuCall:
     object_id: str
-    result: SeparationResult
+    result: InferenceResult
     polls: int = 0
 
 
-def _fake_run_separator(
-    input_path: Path,
-    stem: Stem,
-    out_dir: Path,
-    model_cache: str,
-    stem_cache: str,
-) -> dict[str, tuple[StemResult, Path]]:
-    """Stand-in for the audio-separator subprocess: per-label bytes, no GPU.
+def _cpu_modal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    signals: dict[str, StemSignal] | None = None,
+) -> list[InferenceRequest]:
+    """Replace finite remote inference, retaining VPS orchestration and artifacts."""
+    root = tmp_path / "cpu-producer"
+    fixture_manifest(
+        root,
+        signals=(
+            {
+                label: StemSignal(frequency, 1)
+                for label, frequency in _STEM_FREQUENCIES.items()
+            }
+            if signals is None
+            else signals
+        ),
+    )
+    monkeypatch.setattr(config, "PRODUCER_MANIFEST", root / "fixture-manifest.json")
+    spawned: list[InferenceRequest] = []
 
-    Distinct bytes per label let the download assertions catch mis-wiring
-    between a manifest entry and the file it points at.
-    """
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for output in stem.outputs:
-        (out_dir / f"{output.label}.mp3").write_bytes(f"{output.label}-audio".encode())
-    return {
-        output.label: (
-            StemResult(data=f"{output.label}-audio".encode(), duration_s=1.5),
-            out_dir / f"{output.label}.mp3",
+    def prepare(manifest, request, artifact_root, volume_name, environment):
+        # This provider consumes local fixture assets, not a remote model volume.
+        manifest.verify_assets(root)
+        model = (
+            request.parameters.get("model")
+            if request.operation == "separation"
+            else None
         )
-        for output in stem.outputs
-    }
+        assert request.producer_digest == manifest.digest_for(request.operation, model)
 
-
-def _fake_modal(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> list[tuple[bytes, str, SeparationOptions]]:
-    """Run the real stem graph in-process instead of on Modal.
-
-    Returns the list of (audio_bytes, filename, options) the worker handed over,
-    so tests can assert what actually reached the separator.
-    """
-    spawned: list[tuple[bytes, str, SeparationOptions]] = []
-
-    def spawn(
-        audio_bytes: bytes,
-        filename: str,
-        options: SeparationOptions,
-        *,
-        options_schema: int = OPTIONS_SCHEMA_VERSION,
-    ) -> _FakeCall:
-        assert options_schema == OPTIONS_SCHEMA_VERSION
-        spawned.append((audio_bytes, filename, options))
-        return _FakeCall(
-            object_id=f"fc-{len(spawned)}",
-            result=stems.run_separation(
-                Path(filename),
-                options,
-                tmp_path / str(len(spawned)),
-                str(tmp_path / "models"),
-                str(tmp_path / "cache"),
+    def spawn(request: InferenceRequest) -> _CpuCall:
+        spawned.append(request)
+        return _CpuCall(
+            object_id=f"fc-cpu-{len(spawned)}",
+            result=InferenceResult(
+                request.fingerprint(),
+                cpu_inference(request, request.fingerprint(), root=root),
             ),
         )
 
-    def poll(call: _FakeCall, timeout: float) -> SeparationResult | None:
-        # The first poll reports "not ready" so the worker's wait loop is exercised.
+    def poll(call: _CpuCall, timeout: float) -> InferenceResult | None:
         call.polls += 1
         return call.result if call.polls > 1 else None
 
-    monkeypatch.setattr(stems, "run_separator", _fake_run_separator)
+    monkeypatch.setattr(inference, "ensure_prepared", prepare)
     monkeypatch.setattr(modal_client, "spawn", spawn)
     monkeypatch.setattr(modal_client, "poll", poll)
     return spawned
+
+
+def _assert_stem_audio(data: bytes, label: str) -> None:
+    duration, frequency = mp3_measurements(data)
+    assert duration == pytest.approx(1, abs=0.1)
+    assert frequency == pytest.approx(_STEM_FREQUENCIES[label], rel=0.02)
 
 
 def _submit_upload(
@@ -146,7 +150,7 @@ def _wait_for_terminal(
 def test_upload_is_separated_and_stems_are_downloadable(
     worker_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    spawned = _fake_modal(monkeypatch, tmp_path)
+    spawned = _cpu_modal(monkeypatch, tmp_path)
 
     job_id = _submit_upload(
         worker_client, extract_vocals=True, extract_instruments=True
@@ -155,19 +159,18 @@ def test_upload_is_separated_and_stems_are_downloadable(
 
     assert job["status"] == JobStatus.DONE, job["error_message"]
     assert [entry["label"] for entry in job["manifest"]] == ["vocals", "instruments"]
-    # The bytes the browser uploaded are the bytes the separator received.
-    assert spawned == [
-        (
-            _UPLOAD_BYTES,
-            "song.mp3",
-            SeparationOptions(extract_vocals=True, extract_instruments=True),
-        )
+    # Each independent base model receives the original uploaded bytes.
+    assert len(spawned) == 2
+    assert all(request.audio_bytes == _UPLOAD_BYTES for request in spawned)
+    assert [request.parameters["model"] for request in spawned] == [
+        stems.VOCALS_STEM.model,
+        stems.INSTRUMENTS_STEM.model,
     ]
 
     for label in ("vocals", "instruments"):
         stem = worker_client.get(f"/api/jobs/{job_id}/results/{label}")
         assert stem.status_code == 200
-        assert stem.content.endswith(f"{label}-audio".encode())
+        _assert_stem_audio(stem.content, label)
         assert stem.headers["content-type"] == "audio/mpeg"
         # Starlette percent-encodes the download name (RFC 5987 filename*=).
         assert (
@@ -186,7 +189,7 @@ def test_submitted_options_reach_the_separator_and_shape_the_manifest(
     # Which labels a given option set produces is test_stems' job; what matters
     # here is that the checkboxes survive the form -> sqlite -> worker trip and
     # that every stem they produce is served.
-    spawned = _fake_modal(monkeypatch, tmp_path)
+    _cpu_modal(monkeypatch, tmp_path)
 
     job_id = _submit_upload(
         worker_client, decrowd_vocals=True, dereverb=True, genders=True
@@ -194,7 +197,9 @@ def test_submitted_options_reach_the_separator_and_shape_the_manifest(
     job = _wait_for_terminal(worker_client, job_id)
 
     assert job["status"] == JobStatus.DONE, job["error_message"]
-    assert spawned[0][2] == SeparationOptions(
+    stored = db.get_job(job_id)
+    assert stored is not None
+    assert stored.options == SeparationOptions(
         decrowd_vocals=True, dereverb=True, genders=True
     )
     labels = [entry["label"] for entry in job["manifest"]]
@@ -207,13 +212,13 @@ def test_submitted_options_reach_the_separator_and_shape_the_manifest(
     for label in labels:
         stem = worker_client.get(f"/api/jobs/{job_id}/results/{label}")
         assert stem.status_code == 200, label
-        assert stem.content.endswith(f"{label}-audio".encode())
+        _assert_stem_audio(stem.content, label)
 
 
 def test_url_job_downloads_titles_and_separates(
     worker_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _fake_modal(monkeypatch, tmp_path)
+    _cpu_modal(monkeypatch, tmp_path)
 
     def fake_download(url: str, dest: str, **kwargs: object) -> tuple[bytes, str]:
         (Path(dest) / "My Song.mp3").write_bytes(_UPLOAD_BYTES)
@@ -233,7 +238,7 @@ def test_url_job_downloads_titles_and_separates(
     assert job["has_original"] is True
 
     stem = worker_client.get(f"/api/jobs/{job_id}/results/vocals")
-    assert stem.content.endswith(b"vocals-audio")
+    _assert_stem_audio(stem.content, "vocals")
     assert (
         quote("My Song - vocals - source-key-C-major.mp3")
         in stem.headers["content-disposition"]
@@ -241,12 +246,14 @@ def test_url_job_downloads_titles_and_separates(
 
 
 def test_failed_separation_surfaces_the_error_and_serves_no_stems(
-    worker_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    worker_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    _cpu_modal(monkeypatch, tmp_path)
+
     def boom(*args: object, **kwargs: object) -> object:
         raise RuntimeError("gpu exploded")
 
-    monkeypatch.setattr(modal_client, "spawn", boom)
+    monkeypatch.setattr(modal_client, "poll", boom)
 
     job_id = _submit_upload(worker_client, extract_vocals=True)
     job = _wait_for_terminal(worker_client, job_id)
@@ -264,7 +271,7 @@ def test_event_stream_serves_the_finished_job(
     # from the job row and closes. Subscribing to a *live* job over HTTP would
     # hang the whole suite if the publish path ever regressed (the stream would
     # simply never end), so that half is covered without HTTP below.
-    _fake_modal(monkeypatch, tmp_path)
+    _cpu_modal(monkeypatch, tmp_path)
     job_id = _submit_upload(
         worker_client, extract_vocals=True, extract_instruments=True
     )
@@ -289,7 +296,7 @@ def test_event_stream_serves_the_finished_job(
 def test_event_stream_heartbeats_and_delivers_terminal_event(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _fake_modal(monkeypatch, tmp_path)
+    _cpu_modal(monkeypatch, tmp_path)
     job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
     monkeypatch.setattr(jobs_route, "_SSE_HEARTBEAT_INTERVAL", 0.001)
 
@@ -313,7 +320,7 @@ def test_event_stream_heartbeats_and_delivers_terminal_event(
         return initial, heartbeat, payloads
 
     async def bounded_stream() -> tuple[dict, str, list[dict]]:
-        return await asyncio.wait_for(consume_stream(), timeout=1)
+        return await asyncio.wait_for(consume_stream(), timeout=10)
 
     initial, heartbeat, payloads = asyncio.run(bounded_stream())
 
@@ -365,7 +372,7 @@ def test_worker_publishes_progress_to_stream_subscribers(
     # the worker picks the job up and a done event carrying the manifest. Driven
     # directly (the `client` fixture runs no worker, so nothing else claims the
     # job) to keep a regression here a failure rather than a hang.
-    _fake_modal(monkeypatch, tmp_path)
+    _cpu_modal(monkeypatch, tmp_path)
     job_id = _submit_upload(client, extract_vocals=True, extract_instruments=True)
 
     async def run_claimed_job() -> list[dict]:
@@ -393,7 +400,7 @@ def test_results_are_persisted_under_the_data_dir(
     worker_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # Stems must survive a restart, so they live on disk rather than in memory.
-    _fake_modal(monkeypatch, tmp_path)
+    _cpu_modal(monkeypatch, tmp_path)
     job_id = _submit_upload(
         worker_client, extract_vocals=True, extract_instruments=True
     )
@@ -404,7 +411,7 @@ def test_results_are_persisted_under_the_data_dir(
         "instruments.mp3",
         "vocals.mp3",
     ]
-    assert (results / "vocals.mp3").read_bytes().endswith(b"vocals-audio")
+    _assert_stem_audio((results / "vocals.mp3").read_bytes(), "vocals")
 
 
 @pytest.mark.skipif(
@@ -415,19 +422,11 @@ def test_results_are_persisted_under_the_data_dir(
     reason="Native audio tools are required (available in nix develop)",
 )
 def test_pitch_and_tempo_modify_every_download_but_not_the_original(
-    worker_client: TestClient, monkeypatch: pytest.MonkeyPatch
+    worker_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = tone_wav((261.6256, 329.6276, 391.9954))
     monkeypatch.setattr(queue, "detect_key", audio.detect_key)
-    call = _FakeCall(
-        object_id="fc-audio",
-        result={
-            label: StemResult(data=source, duration_s=1.0)
-            for label in ("vocals", "instruments")
-        },
-    )
-    monkeypatch.setattr(modal_client, "spawn", lambda *args: call)
-    monkeypatch.setattr(modal_client, "poll", lambda *args: call.result)
+    _cpu_modal(monkeypatch, tmp_path, signals={})
 
     response = worker_client.post(
         "/api/jobs",
@@ -597,17 +596,16 @@ def test_whole_song_jobs_bypass_modal_and_preserve_original(
 def test_pitched_full_source_is_not_reconstructed_from_selected_stem(
     worker_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     pitch: float,
     tempo: float,
 ) -> None:
     source = tone_wav((440.0,), duration_s=2)
-    separated = tone_wav((220.0,), duration_s=2)
-    call = _FakeCall(
-        "fc-distinct-source",
-        {"instruments": StemResult(separated, 1.0)},
+    _cpu_modal(
+        monkeypatch,
+        tmp_path,
+        signals={"instruments": StemSignal(220, 2)},
     )
-    monkeypatch.setattr(modal_client, "spawn", lambda *args: call)
-    monkeypatch.setattr(modal_client, "poll", lambda *args: call.result)
     response = worker_client.post(
         "/api/jobs",
         files={"file": ("complete-source.wav", source, "audio/wav")},

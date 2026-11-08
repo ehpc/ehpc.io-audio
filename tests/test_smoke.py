@@ -1,7 +1,7 @@
-"""Opt-in tests against the deployed Modal app (`make smoke`).
+"""Opt-in real model operations through the isolated single GPU pool.
 
-Needs Modal auth and a prior `make deploy-modal`; CI runs them right after
-deploying. They cover the far side of the boundary that tests/test_e2e.py fakes.
+CPU orchestration, output caches and native mixing run in this test process;
+the deployed function receives only finite inference requests.
 """
 
 import json
@@ -13,17 +13,16 @@ import wave
 from io import BytesIO
 from pathlib import Path
 
-import modal
 import pytest
+from gpu_smoke import gpu_context
 
-from backend import config
 from separator.modal_app import TIMEOUT as MODAL_FUNCTION_TIMEOUT_S
-from separator.options import OPTIONS_SCHEMA_VERSION, MixSpec, SeparationOptions
-from separator.stems import SeparationResult
+from separator.options import MixSpec, SeparationOptions
+from separator.processing import run_processing
 
-# The suite-wide --timeout is sized for local tests; a cold run here waits on a
-# container boot, a model download and the GPU pass. Allow more than the Modal
-# function's own timeout so its error surfaces instead of a pytest timeout.
+# The suite-wide timeout is sized for CPU tests. Weights are prepared before
+# this suite; allow a cold GPU container and actual inference without hiding
+# the remote operation's own timeout.
 pytestmark = [
     pytest.mark.smoke,
     pytest.mark.timeout(MODAL_FUNCTION_TIMEOUT_S + 300),
@@ -122,17 +121,6 @@ def _decoded_audio_contract(
     }
 
 
-def test_deployed_container_can_import_separator_package() -> None:
-    # Regression for the deploy packaging bug: the deployed function crash-looped
-    # with `ModuleNotFoundError: No module named 'separator'` until the image
-    # included the package. If healthcheck returns, the container imported it.
-    # Opt-in (marker `smoke`); needs Modal auth + a prior `make deploy-modal`.
-    fn = modal.Function.from_name(
-        config.MODAL_APP_NAME, "healthcheck", environment_name=config.MODAL_ENVIRONMENT
-    )
-    assert fn.remote() == "ok"
-
-
 @pytest.mark.parametrize(
     ("options", "expected"),
     [
@@ -161,24 +149,18 @@ def test_deployed_container_can_import_separator_package() -> None:
     ids=["explicit-extraction", "mix-only-dry-vocals"],
 )
 def test_deployed_function_separates_audio(
-    options: SeparationOptions, expected: list[str], voiced_wav: bytes
+    options: SeparationOptions, expected: list[str], voiced_wav: bytes, tmp_path: Path
 ) -> None:
     """Check the deployed image, models, CUDA, and output contract directly.
 
     The browser suite additionally exercises the HTTP/queue/native boundaries.
     Version-matching artifacts are reusable; this test never bypasses the cache.
     """
-    fn = modal.Function.from_name(
-        config.MODAL_APP_NAME,
-        config.MODAL_FUNCTION_NAME,
-        environment_name=config.MODAL_ENVIRONMENT,
-    )
-    result: SeparationResult = fn.remote(
-        voiced_wav,
-        "smoke-voiced-music.wav",
-        options,
-        options_schema=OPTIONS_SCHEMA_VERSION,
-    )
+    source_path = tmp_path / "smoke-voiced-music.wav"
+    source_path.write_bytes(voiced_wav)
+    result = run_processing(
+        source_path, options, tmp_path, gpu_context(tmp_path / "computed")
+    ).audio
 
     assert list(result) == expected
     with wave.open(BytesIO(voiced_wav)) as source:

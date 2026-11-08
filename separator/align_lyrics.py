@@ -7,7 +7,7 @@ The scores are acoustic alignment evidence, not calibrated lyric correctness.
 import re
 from pathlib import Path
 
-import numpy as np  # ty: ignore[unresolved-import]
+import numpy as np
 import torch  # ty: ignore[unresolved-import]
 import torchaudio  # ty: ignore[unresolved-import]
 import uroman  # ty: ignore[unresolved-import]

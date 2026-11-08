@@ -10,39 +10,28 @@ visitor sees their live position.
 
 ## Architecture
 
-```
-                 ┌─────────────────────────── one container / one pod ───────────────────────────┐
-                 │                                                                                 │
- Browser  ──────►│  backend/ (FastAPI + uvicorn, :8000)                                            │
- (SolidJS UI,     │    ├─ serves frontend/dist/ as static files (same origin, same port)            │
-  built into      │    ├─ REST + SSE API under /api                                                 │
-  frontend/dist)  │    ├─ SQLite (single writer) — job queue + status, on a mounted volume           │
-                 │    └─ in-process asyncio worker pool ─────┐                                     │
-                 │                                            │                                     │
-                 └────────────────────────────────────────────┼─────────────────────────────────────┘
-                                                                │
-                                                                ▼
-                                                  separator/modal_app.py ("audio-separator-v2" Modal app)
-                                                                │
-                                                                ▼
-                                                   GPU container (separation + optional lyrics/pitch)
+```text
+Browser → FastAPI / SQLite / single audio worker on the VPS
+             ├─ downloads, key preview, source-clock DAG and cache lookup
+             ├─ reference HTTP, transcript/section/note assembly, mixes and exports
+             ├─ independent local song-discovery worker → OpenRouter / YouTube Music
+             └─ only a missing model stage → audio-inference-v3 / infer
+                                              one bounded GPU pool
 ```
 
-- **`separator/`** — pure domain logic (stem-model configs, the actual
-  separation pipeline, URL download, and CPU audio analysis/postprocessing)
-  plus `modal_app.py`, which defines Modal GPU functions for separation and
-  optional lyric/pitch analysis, and CPU song discovery. All four functions
-  (`healthcheck`, `separate`, `separate_with_lyrics`, `search_song`) live in
-  `ehpc` workspace / `ehpc-audio` environment / `audio-separator-v2` app.
-  It owns the CUDA images and GPU-only dependencies.
-- **`backend/`** — the always-on FastAPI app. It downloads/reads the source and
-  detects its key with libkeyfinder. Download-only jobs and whole-song pitch/tempo
-  changes run locally, without calling Modal.
-  Normal separation uses the existing `separate` Modal call; lyrics or vocal-pitch
-  jobs use the backward-compatible `separate_with_lyrics` analysis RPC alongside
-  any requested stems. Rubber Band R3 applies pitch/tempo changes locally to each
-  final audio output, after any mixing. A small SQLite-backed queue caps
-  concurrent jobs.
+- **`separator/`** contains the source-clock pipeline and CPU domain logic.
+  `modal_app.py` exposes one private `infer` RPC in the `ehpc-audio` environment.
+  Its five operations are one separator pass, Qwen recognition, MMS acoustic
+  alignment, CREPE frame prediction and full-context SongFormer prediction.
+  Native decoding, model-specific preprocessing and codecs stay with a model
+  when needed to preserve its exact producer context; standalone planning,
+  reference lookups and final assembly do not occupy the GPU.
+- **`backend/`** owns the DAG and checks persistent artifacts **before** allocating
+  GPU work. Downloads/key analysis, mixing, Rubber Band R3 pitch/tempo rendering,
+  tagging and exports run locally. Download-only and whole-song pitch/tempo jobs
+  need neither Modal credentials nor a model manifest. SQLite persists queue
+  ownership and active finite calls; the existing data volume holds computed
+  artifacts. There is no Redis, object-store service or additional web service.
 
 - **`frontend/`** — SolidJS + Vite + Tailwind + Solid UI. Built to static
   assets at image-build time and served by the backend from the same origin,
@@ -59,13 +48,13 @@ visitor sees their live position.
 ### Persistent artifact reuse
 
 Reusable work is never bypassed by a request flag (`no_cache` was removed in
-options schema 3). The production app name remains `audio-separator-v2`;
-its environment is `ehpc-audio`. Independent producer versions live in
-`separator/cache_versions.py`; changing UI, documentation, a mix name, pitch, or
-tempo does not invalidate recognition, alignment, source pitch, or raw stems.
-Relevant native executable/package revisions and model identities participate
-in each producer key. Model-file digests are memoized by file identity/mtime,
-not reread for every request. There is no TTL or global release/Git-SHA key.
+options schema 3). Independent producer versions live in
+`separator/cache_versions.py`; captured native/model identities live in
+`separator/model_manifest.json`. Changing UI, documentation, app name, GPU type,
+mix name, pitch or tempo does not invalidate recognition, alignment, source pitch
+or raw stems. Normal deployments reuse the manifest's immutable native image,
+not a fresh resolution of floating dependencies. There is no TTL or global
+release/Git-SHA cache key.
 
 The web data volume stores private `artifacts/sources`, `key-decode`, `keys`,
 and `transforms` files. YouTube aliases use the video ID (different video/version
@@ -75,49 +64,61 @@ original-byte copy; output title tags never mutate a shared source. Key preview
 and processing share decoded-audio analysis, including a valid unknown (`null`)
 result. Uploaded filenames and browser sessions do not enter content keys.
 
-The model volume stores versioned stems, mixes, `analysis-results` (lyrics,
-structure, source-clock pitch), and Qwen `results` (raw recognition and MMS
-recognition alignment). A hit is checked before spawning a neural subprocess;
-raw Qwen output survives reference/alignment changes. New pitch/tempo requests
-project source-clock data and cache their native transformed audio separately.
-Baseline MMS alignment keys include decoded PCM, sample rate, raw recognition,
-and aligner model/dependency identity. Changed decoded acoustics invalidate its
-timings even if recognized words stay identical; container metadata or Qwen-only
-dependency changes do not invalidate alignment when PCM and raw chunks agree.
-Custom mix IDs/names do not enter audio keys. Successful LRCLIB records retain
-their existing exact-version cache and are revalidated before use.
+The VPS data volume also stores versioned stems/mixes, source-clock transcripts,
+raw recognition/alignment, structure and pitch artifacts. A hit is checked before
+any model call. Raw Qwen output survives reference/alignment changes; new
+pitch/tempo requests reproject source-clock data and reuse native audio transforms.
+Baseline MMS keys include decoded PCM, sample rate, raw recognition and the
+aligner's model/dependency identity. Changed acoustics invalidate its timings
+even when words agree; Qwen-only changes do not invalidate alignment when PCM
+and raw chunks agree. Custom mix IDs/names do not enter audio keys. Successful
+LRCLIB records retain their exact-version cache and are revalidated before use.
 
-Files publish atomically only after successful producer validation. Per-key
-filesystem locks coalesce local processes; the backend serializes same-source
-remote work until its model-volume artifacts commit, and the next remote call
-reloads that volume. Cancellation while waiting for a source lock is nonblocking.
-Caches are internal, not new public routes, job-history sharing, or API telemetry.
-Existing job files remain readable. Old unversioned analysis/stem artifacts lack
-sufficient producer provenance and are not silently relabeled as current Qwen,
-alignment, or model output: their first current-version use recomputes once.
+Model weights remain on the existing **read-only** Modal volume. Shared verified
+weight receipts are separate from private computed-output namespaces: a cold
+quality test does not redownload or rehash gigabytes for each case. Preparation
+runs on CPU before dispatch; GPU stages have outbound networking disabled.
+Canonical in-root Hugging Face links bind the resolved weight bytes, not the
+symlink text. Image-bundled CREPE weights have their own actual captured digest.
 
-Cache regression proofs use owned synthetic audio and explicitly versioned CPU
-analysis fixtures, not claimed neural-quality substitutes. They observe real
-producer calls, forbid recomputation on hits, exercise independent stage-version
-changes and process restarts, and verify private HTTP results/history. The
-CPU-only Modal smoke uses a private ephemeral volume to check actual FUSE locks,
-atomic publication, commit/reload visibility, cancelled waiters, and preserved
-audio duration. Existing successful neural-quality proofs are not rerun merely
-to check cache hits. Genuine reference-text changes reuse raw recognition and
-baseline alignment but may require fresh reference-dependent acoustic alignment.
+Validated results publish atomically under local per-key filesystem locks.
+There is no distributed FUSE-lock assumption. SQLite globally claims a semantic
+stage before dispatch, including across different jobs. Recorded call IDs resume
+after restart, and returned artifacts must match the exact request fingerprint.
+If acceptance may have occurred but the call ID was not committed, equivalent
+jobs fail visibly with **“Model dispatch uncertain; not automatically repeated”**
+until an operator reconciles the intent; this is not an exactly-once claim.
+Completed cache artifacts win before any such claim or GPU lookup.
+
+Caches remain private implementation details, not public routes or shared
+history. Existing job files and opaque historical artifacts are preserved.
+Migration imports verified original bytes without relabeling unknown producers.
+Historical producer aliases require actual GPU-runtime evidence; a CPU image
+inspection alone is insufficient. Raw historical Qwen reuse additionally needs
+its exact decoded-source metadata when no matching complete transcript exists.
+Missing provenance is an explicit migration constraint, not permission to
+silently repeat recognition or invent old word alignment.
+
+Cache regressions use owned synthetic audio and explicitly versioned CPU
+producers, not neural-quality substitutes. They observe real work, forbid a
+second producer call on valid hits, exercise independent versions and process
+restarts, and verify private HTTP results/history. Abrupt-dispatch tests cover
+acceptance before call-ID commit and equivalent new jobs. Genuine reference-text
+changes reuse recognition and baseline alignment but can require new
+reference-dependent acoustic alignment. Neural-quality gates remain separate.
 
 ### Text-assisted YouTube Music discovery
 
 `POST /api/song-search` accepts `{"query":"artist, title, or lyric clue"}` and
 returns HTTP 202 `{"search_id":"opaque ID","status":"pending"}` after reusing
-cached successful matches or spawning remote work, not after provider inference.
+cached successful matches or queuing local work, not after provider inference.
 `GET /api/song-search/{search_id}` returns `{"status":"pending"}` or
 `{"status":"done","songs":[{"title":"…","artists":["…"],
 "url":"https://music.youtube.com/watch?v=…","duration_seconds":214,
 "thumbnail_url":null,"play_count":2700000000,"play_count_approximate":true}]}`.
 Successful results contain **one to three** songs; duration, artwork and plays
-may be `null`. Poll every two seconds; polls retrieve the existing call
-with zero inference wait and never spawn another model request. Browser voice
+may be `null`. Poll every two seconds; polls read durable search state
+and never spawn another model request. Browser voice
 input is browser dictation into this same text field, not server audio upload.
 
 Whitespace is normalized; the 500-character limit admits a spoken paragraph
@@ -126,13 +127,13 @@ audio jobs, download music, or change processing options. Selecting its grounded
 URL feeds the existing source/key-preview workflow; processing still requires
 the normal explicit submission.
 
-The additive, idempotent SQLite `song_searches` table stores opaque random IDs,
-session ownership, Modal call ID, creation time and terminal JSON results/errors.
-Its nullable `query_key` and `successful_at` columns and
-`idx_song_search_query_success` index reuse this same table for successful
-query-result caching; no raw query text is stored. Migration preserves existing
-rows and old column values, leaving both new columns NULL on legacy rows.
-Existing `jobs`, options, manifests and artifacts are unchanged.
+The SQLite `song_searches` table keeps opaque IDs, signed-session ownership,
+creation time and terminal results/errors. A single independent VPS worker claims
+pending queries transactionally. Pending normalized text is stored privately for
+restart recovery and cleared on completion/expiry; it is not retained as search
+history. Existing nullable historical call IDs and rows remain readable.
+Migration preserves custom indexes and triggers. Audio jobs and public options
+are unchanged.
 
 Successful matches are shared across requests for **24 hours (86,400 seconds)**
 from their **first validated successful persistence**, not from search start or
@@ -144,21 +145,21 @@ Modal, OpenRouter or YouTube Music. Cached copies do not extend freshness.
 At exactly 86,400 seconds, or after a query/producer identity change, a new search
 is required. Pending, failed and abandoned/unpolled searches are not successful
 query-cache entries; malformed cached matches fail explicitly rather than
-falling back to a song or remote retry. Concurrent cold misses retain the existing
-independent-search behavior.
+falling back to a song or retry. Concurrent cold misses remain independently
+owned searches, serialized by the local search worker.
 
 Separately, **all handles still expire after 15 minutes (900 seconds)** from
 creation and require the originating signed session cookie, including after
 process restart. This short lifetime and the pending-search guard are not
 extended by the one-day result cache. Foreign, unknown and expired handles return
-404 without contacting Modal. No match is 404; ambiguity is 422; malformed
+404 without contacting a provider. No match is 404; ambiguity is 422; malformed
 model/catalog output is 502; remote unavailability is 503.
 Errors use the usual `{"detail":"…"}` envelope. Completed polls read durable
-terminal state; closing the browser stops polling but does not cancel remote work.
+terminal state; closing the browser stops polling but does not cancel owned work.
 
-`search_song` runs on an **independent Python 3.13 CPU** Modal image, without
-changing separator or singing-ASR GPU dependencies. Both text extraction and
-catalog selection use [OpenRouter chat completions](https://openrouter.ai/docs/api/reference/overview)
+Song discovery runs in the **VPS CPU worker**, with no Modal allocation or local
+LLM. Both text extraction and catalog selection still use
+[OpenRouter chat completions](https://openrouter.ai/docs/api/reference/overview)
 with the explicit model `z-ai/glm-4.7-flash` (listed in the
 [public model catalog](https://openrouter.ai/api/v1/models/z-ai/glm-4.7-flash/endpoints)).
 Requests use JSON mode, temperature zero and at most 256 output tokens.
@@ -169,15 +170,12 @@ Only endpoints supporting those parameters are eligible; normal OpenRouter
 provider routing/account preferences remain in effect. There are no application
 retries, alternate-model fallbacks or local text-model loaders.
 
-Before deployment, create the dedicated **`audio-openrouter` Modal Secret** in
-the **`ehpc-audio` environment** of the existing `ehpc` workspace using the
-[Modal Dashboard](https://modal.com/secrets), containing **`OPENROUTER_API_KEY`**
-from the application's authorized OpenRouter account. The app, its volumes,
-and this secret resolve in the same `ehpc-audio` deployment environment.
-Never paste the key into chat, commit it, or reuse coding-assistant credentials.
-The secret is attached only to the search function; no web-container/provider
-key or frontend configuration is needed. Account credits and provider access
-must permit this model. Missing credentials or authentication/billing/rate-limit
+Configure the authorized application's **`OPENROUTER_API_KEY`** only in the
+backend's server-side secret environment. Do not put it in frontend settings,
+chat, source control or coding-assistant credentials. The VPS makes outbound
+HTTPS requests to OpenRouter and YouTube Music; the GPU pool receives no provider
+secret. Account credits and provider access must permit this model.
+Missing credentials or authentication/billing/rate-limit
 failures return a safe 503 error. HTTP requests have 5-second connect and
 30-second read timeouts; redirects are rejected and provider response bodies
 are not exposed in public errors. Search clues and candidate metadata are sent
@@ -215,8 +213,8 @@ visible. Artwork comes only from trusted HTTPS Google/YouTube image-provider
 URLs already supplied by the catalog; missing or unsafe URLs become `null`.
 The backend does not download images or audio for discovery.
 
-The existing `audio-song-discovery` Modal volume stores versioned, validated
-inference artifacts. Keys include the explicit model, OpenRouter endpoint,
+`DATA_DIR/song-search-cache` stores versioned, validated discovery inference
+artifacts on the VPS. Keys include the explicit model, OpenRouter endpoint,
 HTTP dependency revision, inference/prompt version and complete relevance inputs
 (candidate IDs, titles, artists and durations). Artwork URLs and popularity are
 not sent to the model. Cached selected IDs map to **current** catalog metadata
@@ -225,8 +223,8 @@ Catalog searches are fresh whenever the one-day query-result cache misses or
 expires; successful plural results, including their metadata snapshot, retain
 the same 24-hour lifetime. The discovery-only producer identity invalidates old
 single-match query/inference cache entries without deleting their rows or files.
-There is no database schema or infrastructure change for plural results.
-Discovery never invalidates audio caches.
+Discovery never invalidates audio caches. Preserve/import compatible existing
+discovery artifacts during the CPU-worker cutover instead of paying for them again.
 
 ## Choosing outputs
 
@@ -447,8 +445,8 @@ then scroll away before Results and History, leaving players and downloads
 accessible. Editable fields use 16px text; controls and mobile downloads have
 44px minimum touch targets. Safe-area insets are respected, and focusing a source
 or numeric input releases the sticky action for shorter keyboard viewports.
-Advanced contains the cache-bypass option. Download-only remains the default,
-and pitch/tempo never modify the original. After submission, the source selection
+Download-only remains the default, and pitch/tempo never modify the original.
+Reusable analysis has no cache-bypass control. After submission, the source selection
 and all form options remain in place so you can submit the same URL or selected
 file again without re-entering them.
 
@@ -638,8 +636,10 @@ toggle playback. It does not clear a browsing pause. Focused notes and word
 buttons retain their selection actions, and other controls retain their own
 keyboard behavior.
 
-With **Follow playback** enabled, manually panning by wheel, touch, scrollbar or
-keyboard pauses auto-follow while you browse. Only a manual horizontal return
+With **Follow playback** enabled, the timeline advances when the playhead passes
+about 75% of the visible note area, excluding the sticky note axis, leaving room
+to see upcoming notes. Manually panning by wheel, touch, scrollbar or keyboard
+pauses auto-follow while you browse. Only a manual horizontal return
 that brings the current playhead back into the visible note region resumes it,
 after the gesture finishes; the sticky note axis does not count as visible time.
 The clock moving into a stationary browsed view, seeking, skipping, source
@@ -685,20 +685,13 @@ availability; the owner-protected
 existing public full-vocal result.
 
 Older pitch-only jobs offer **Recover cached vocals** when their original is
-still stored. The owner-protected `POST` on the same reference endpoint reads
-the exact source/model/checkpoint/runtime-versioned full-vocal cache in a
-Modal function, then applies the existing local audio transform. Cache-only
-recovery allocates the same GPU runtime as the producer solely to preserve its
-native-library cache identity: CPU and GPU containers can resolve different
-FFmpeg dependencies even with the same image and package versions.
-It does **not** load or run the separation model. New jobs already retain their
-private vocal reference and do not need this legacy recovery call.
-It never redownloads the source, loads a neural model, reruns separation,
-ASR or pitch detection, or changes public outputs. A missing source or matching
-cache is reported explicitly; historical incompatible cache identities are not
-guessed. Corrupt/unreadable exact-cache artifacts report a lookup failure rather
-than a misleading cache miss. This recovery requires deploying the new
-`recover_pitch_vocals` Modal function alongside the web changes.
+still stored. The owner-protected endpoint reads exact private artifacts on the
+VPS using captured producer identity, then applies the existing local transform.
+It never allocates Modal compute, redownloads a source, loads a neural model,
+reruns separation/recognition/pitch, or adds public outputs. New jobs already
+retain their private vocal reference. Historical artifacts need verified producer
+provenance rather than a guessed CPU/GPU native-library fingerprint. Missing or
+corrupt exact artifacts remain explicit errors, not hidden inference retries.
 
 Note tooltips appear immediately on hover, focus or tap: the compact pitch label
 is the first row, with associated lyrics on a second row only when available.
@@ -735,10 +728,9 @@ references, and per-stem `tracks`. Each note has `start_s`, `end_s`, fractional
 `midi`, `frequency_hz`, `note`, residual `cents`, `confidence`, and `word_indices`
 into the shared timed `words` list. New lyric jobs identify `word_alignment` as
 `torchaudio/MMS_FA`, or `null` when word alignment is unavailable. Historical
-`whisper-approximate` data remains readable. New clients explicitly request
-analysis RPC schema 2; during GPU-first promotion pre-versioned web clients get
-readable text without unsupported new word/provenance fields or fake confidence.
-The ordinary audio-only `separate` dictionary RPC is unchanged.
+`whisper-approximate` data remains readable. The private finite-stage RPC does not
+replace the public transcript/pitch schemas or pretend that historical unknown
+recognizer identities are current. Old whole-job RPCs are not compatibility shims.
 
 ## Pitch, tempo, and musical key
 
@@ -795,8 +787,8 @@ The ordinary audio-only `separate` dictionary RPC is unchanged.
   `null` for silence). It runs download/key analysis off the request loop, uses
   temporary files, and creates no job/history entry or GPU call. Download and
   decode failures are visible errors. Replacing the source cancels/ignores stale
-  previews. URL preview downloads independently; submitting the final job
-  downloads/analyzes it again rather than retaining a preview cache.
+  previews. Preview and submission share persistent source/key artifacts,
+  including valid unknown keys; submission does not repeat completed analysis.
 
 Rubber Band is GPL-2.0-or-later (commercial licensing is available), and
 libkeyfinder is GPL-3.0-or-later; review these obligations before distributing
@@ -829,6 +821,13 @@ a proprietary application containing them.
   `MODAL_TOKEN_SECRET`). `modal` is a project dependency (installed via
   `make init`), not a global command, so it's always invoked through `uv run`.
 
+`uv sync --frozen` includes the development group: pytest, Ruff, ty and NumPy
+for independent numerical-oracle tests of the moved pitch postprocessing.
+NumPy is **dev-only**, not a new VPS inference dependency. The production CPU
+graph uses standard-library arrays and the native media tools above; do not
+install Torch, Qwen, MMS, CREPE or SongFormer on the VPS. Production installs
+continue to exclude the development group.
+
 ### Using Nix
 
 If you have [Nix](https://nixos.org/) with flakes enabled, `flake.nix`
@@ -856,18 +855,17 @@ reload remain enabled; no ABI compatibility override is needed.
 [Modal SDK 1.6.2](https://pypi.org/project/modal/1.6.2/) supports the 3.15
 client; the formerly locked 1.4.2 explicitly required Python below 3.15.
 
-The **remote Modal GPU image intentionally stays on Python 3.13** with its
-existing audio-separator/CUDA stack. As of the cutover, published
-[PyTorch](https://pypi.org/project/torch/2.14.1/),
-[torchaudio](https://pypi.org/project/torchaudio/2.11.0/), and
-[ONNX Runtime GPU](https://pypi.org/project/onnxruntime-gpu/1.31.0/) wheels do not
-include CPython 3.15; the configured PyTorch CUDA 12.4 index also has no cp315
-wheels. This is a separate dependency environment, not a backend Python pin.
-Shared `separator/` source therefore retains Python 3.13-compatible syntax
-(the Ruff target), while backend type checking targets 3.15.
-The 3.15 client was exercised against an ephemeral CPU-only Modal function on
-3.13, including a real `SeparationOptions` dataclass roundtrip; no GPU image or
-production deployment was changed.
+The retained **remote primary GPU interpreter stays on Python 3.13**, while
+its existing ASR and structure environments stay on **Python 3.12**. These are
+separate frozen native environments, not a backend Python pin or a reason to
+re-resolve model dependencies during source deployment. Shared `separator/`
+source therefore targets Python **3.12** syntax in Ruff; backend type checking
+targets 3.15. An unpaid local compatibility proof compiles every separator
+module and imports the reachable pure helpers under actual 3.12 and 3.13
+interpreters, without loading neural dependencies. It also exercises the
+finite request/result binding and verifies identical producer identity hashes
+across those interpreters; actual GPU-host native provenance is checked by the
+required real-model CI gate.
 
 ### First-time setup
 
@@ -917,13 +915,68 @@ scenarios require the tools above and are skipped when those executables are
 unavailable. These suites are not a substitute for exercising deployed GPU
 inference and real browser downloads.
 
+### Lower-cost isolated GPU tests
+
+CI selects **L4** with `MODAL_TEST_GPU=L4` only in its isolated deployment/test
+job. Production keeps **L40S** when that variable is absent; production promotion
+requires it to be unset. Both use one `infer` pool for five finite operations:
+a separator pass, raw Qwen recognition, MMS alignment, CREPE frame prediction,
+and full-context SongFormer prediction. Cache lookup, reference HTTP, final
+transcript/section/note assembly, mixes, exports, song discovery and recovery
+run on the VPS, without acquiring a GPU.
+
+The override accepts only `L4` and requires an explicit, nonblank
+`MODAL_APP_NAME` other than `audio-separator`, `audio-separator-v2` or
+`audio-inference-v3`, without surrounding whitespace.
+If `E2E_MODAL_APP_NAME` is set, it must match.
+An override also binds the source app's default name to that isolated target.
+Modal's CLI can still override this with `--name`: **keep `--name`,
+`MODAL_APP_NAME`, and `E2E_MODAL_APP_NAME` identical**. The guard does not
+reinterpret CLI arguments.
+Unset `MODAL_TEST_GPU` and clear isolated app-name variables before deploying
+production.
+
+[Modal's published GPU rates](https://modal.com/pricing) are $0.000222/second
+for L4 ($0.7992/hour) and $0.000542/second for L40S ($1.9512/hour).
+That is about **59% less per GPU-second**, not a promise of 59% less per test run:
+L4 must take less than approximately **2.44 times** the L40S total billable GPU
+allocation time, including startup and idle time, to reduce the GPU portion of
+the bill. CPU, memory, storage and external APIs are additional costs;
+whole-suite wall time is not the sum of billable GPU allocation time.
+
+[L4 has 24 GB GPU memory and BF16 support](https://www.nvidia.com/en-us/data-center/l4/),
+versus L40S's 48 GB. Model identities, precision, batching, source lengths,
+resource limits, timeouts and artifact versions do not change with the hardware
+override. An L4 allocation must pass the same real-model and live-browser gates
+before release; an
+out-of-memory or timeout failure stays visible, without a silent GPU fallback
+or reduced assertions. The local deployment-boundary tests require no Modal
+allocation. The full CI run is the hardware-fit/performance proof, rather than
+an additional duplicate neural smoke run.
+
+The pool has `min_containers=0`, `buffer_containers=0` and `max_containers=1`.
+`MODAL_GPU_IDLE_SECONDS` accepts a positive integer and defaults to **60 seconds**.
+This is an explicitly unoptimized initial baseline, not a measured savings
+claim. Change that deployment setting only after comparing actual allocation,
+startup and idle intervals; it is not part of an algorithm or artifact key.
+CI reads the nonsecret repository Actions variable `MODAL_GPU_IDLE_SECONDS`,
+falling back to 60 in both isolated and production deployment jobs. After
+reviewing measured data and obtaining release-owner approval, set that variable
+and redeploy the same source/image with only this infrastructure setting changed.
+Subsequent CI deployments preserve the chosen value; this neither changes GPU
+type nor enables automatic tuning.
+
+“Short” means one bounded native model operation, not a five-second deadline or
+arbitrary audio clipping. Full-song contexts, intrinsic decode/STFT/model
+preparation and required neural postprocessing remain intact.
+
 ### Real full-stack verification
 
 `make test-e2e` (equivalently `npm --prefix frontend run test:e2e`) builds the
 production frontend, serves it from a real uvicorn backend, and drives Chromium
 through the UI. It requires Modal credentials and an **explicit isolated**
-`E2E_MODAL_APP_NAME`; the harness rejects both production names,
-`audio-separator` and `audio-separator-v2`.
+`E2E_MODAL_APP_NAME`; the harness rejects all protected production names:
+`audio-separator`, `audio-separator-v2` and `audio-inference-v3`.
 It allocates loopback backend/source-server ports and a temporary `DATA_DIR`,
 serializes GPU jobs, and removes its servers and temporary state afterward.
 It never uses `dev-data/`. Existing processing/audio cases use real native and
@@ -939,9 +992,11 @@ npm --prefix frontend ci
 npx --prefix frontend playwright install --with-deps chromium
 export MODAL_ENVIRONMENT=ehpc-audio
 export E2E_MODAL_APP_NAME="audio-separator-e2e-$(date +%s)"
+export MODAL_APP_NAME="$E2E_MODAL_APP_NAME"
+export MODAL_TEST_GPU=L4
 trap 'uv run modal app stop --env "$MODAL_ENVIRONMENT" -y "$E2E_MODAL_APP_NAME" || true' EXIT
 uv run modal deploy --env "$MODAL_ENVIRONMENT" separator/modal_app.py --name "$E2E_MODAL_APP_NAME"
-MODAL_APP_NAME="$E2E_MODAL_APP_NAME" make smoke
+make smoke
 make test-e2e
 ```
 
@@ -957,14 +1012,16 @@ MIXER_EVIDENCE_DIR=/tmp/stem-mixer-proof \
   uv run pytest -m smoke tests/test_mixer_smoke.py -s
 ```
 
-This starts a uniquely named ephemeral Modal app and private ephemeral model
-volume, then a real local HTTP server and queue. It processes the licensed voiced
-fixture through all four requested pairs, a three-component mix, and all four
+This starts a uniquely named ephemeral Modal app using the shared, verified,
+read-only model weights and a private local computed-artifact cache, then a real
+local HTTP server and queue. It processes the licensed voiced fixture through
+all four requested pairs, a three-component mix, and all four
 vocal-variant/instrument mixes. Downloaded audio, Title tags, timing, stereo/48 kHz,
 peak levels, hidden prerequisites and unchanged original bytes are checked.
 The cleanup case additionally compares mixes against independently exported real
-cleaned/dry component audio. App, volume and local server are released on exit;
-MP3s and `proof.json` remain in the evidence directory. Deterministic local tests
+cleaned/dry component audio. The app and local server are released on exit;
+shared weights are never deleted. MP3s and `proof.json` remain in the evidence
+directory. Deterministic local tests
 separately measure per-component spectral amplitudes, non-normalized sums,
 multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
 interrupted-job recovery, retry and historical migrations.
@@ -979,11 +1036,15 @@ desktop/mobile widths. These disjoint lanes retain their existing behavior cases
 The separate native-listening, visual and manual YouTube suites are excluded
 from the live-queue matrix.
 
-The stored-analysis cases publish synthetic/captured pitch fixtures with the
-existing isolated CPU harness, never a competing real processing worker.
-`--visual` disables the queue; each publisher also requires the isolated data
-directory and an unclaimed queued job. Real-processing cases continue using
-the live queue unchanged. CI requires this lane before Modal deployment/GPU work:
+Historical stored-analysis cases publish their existing synthetic/captured pitch
+fixtures directly. Complete Karaoke fixtures instead execute the production
+CPU processing graph and persistent warm-cache reuse through an explicitly
+synthetic finite producer, with real temporary model/config hashes and native
+FFmpeg provenance. These cheap lanes run with empty Modal/OpenRouter credentials
+and a deliberately nonexistent production manifest. `--visual` disables the
+normal queue; each owned publisher requires isolated data and an unclaimed
+queued job. This proves CPU assembly, public artifacts and browser behavior,
+not neural quality. CI requires all six seeded cases before paid GPU work:
 
 ```sh
 node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
@@ -1187,13 +1248,16 @@ exercise arbitrary mix selections with decoded waveform/spectral assertions.
 These are deterministic local checks, not thousands of GPU runs or a proof over
 arbitrary numeric pitch/tempo values.
 
-CI runs native/backend/frontend checks, the isolated Firefox listening check,
-the stored-analysis browser cases, real GPU smoke tests, the live-queue
-browser matrix against a unique test app, and the visual suite below for every
-push/PR. Only a
-passing main run promotes `audio-separator-v2` and publishes the image. The old
-`audio-separator` app remains untouched for old web instances. Both promotion
-jobs retain the deterministic/native, listening, stored-analysis, full-stack and visual release gates.
+Pull requests run the cheap deterministic/native, frontend, isolated Firefox,
+seeded browser and visual checks. Paid GPU and live-queue gates run for main
+pushes and explicitly opted-in manual runs; their full assertions remain intact.
+Only a passing main run promotes **`audio-inference-v3`** and publishes the
+matching web image. Main is already a release branch: batching changes before a
+main push, rather than merely renaming a run “release,” avoids duplicate paid
+gates. Old `audio-separator-v2` remains operational until the matching web
+cutover and drain; unrelated legacy deployments and all model volumes remain
+untouched. Promotion requires the complete native, listening, seeded,
+full-stack, GPU and visual gates.
 The separate manual YouTube workflow is not a release dependency.
 
 The shared CI native-tool installer replaces only inherited Azure Ubuntu archive
@@ -1345,11 +1409,16 @@ recordings are included or fetched.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATA_DIR` | `/data` | Root for the sqlite DB, uploads, and results |
-| `QUEUE_CONCURRENCY` | `1` | Max separations running on Modal at once |
+| `DATA_DIR` | `/data` | Persistent SQLite, uploads, results and reusable source-clock artifacts |
+| `QUEUE_CONCURRENCY` | `1` | VPS audio DAG workers; `0` disables their admission during operator reconciliation |
 | `MODAL_ENVIRONMENT` | `ehpc-audio` | Explicit environment for every backend RPC lookup; a nonblank value overrides the default, while missing/blank/whitespace values use the default, never an ambient profile's `main` |
-| `MODAL_APP_NAME` | `audio-separator-v2` | Deployed Modal app name to look up |
-| `MODAL_FUNCTION_NAME` | `separate` | Deployed Modal function name to look up |
+| `MODAL_APP_NAME` | `audio-inference-v3` | Finite GPU pool exposing only `infer` |
+| `MODEL_VOLUME_NAME` | `audio-separator-models` | Existing verified model volume; mounted read-only in the GPU pool |
+| `PRODUCER_MANIFEST` | `separator/model_manifest.json` | Exact captured image, native producer identities and consumed model assets |
+| `PREPARED_MODELS_ROOT` | `$DATA_DIR/artifacts` | Private shared weight-verification receipts; independent of computed-output namespaces |
+| `MODAL_TEST_GPU` | *(unset)* | Strict isolated-test-only `L4` override; production remains `L40S` |
+| `MODAL_GPU_IDLE_SECONDS` | `60` | Positive GPU idle-window seconds, a deployment setting rather than an algorithm version |
+| `OPENROUTER_API_KEY` | *(unset)* | Server-only VPS discovery credential; never sent to Modal or browsers |
 | `COOKIE_SECRET` | *(insecure dev default)* | Signs the session cookie — **must** be set to a stable secret in prod; rotating it logs everyone out |
 | `COOKIE_SECURE` | `false` | Set `true` in prod (behind TLS) — a `Secure` cookie is silently dropped over plain HTTP, which is why local dev defaults to `false` |
 
@@ -1362,55 +1431,85 @@ recordings are included or fetched.
    docker push ghcr.io/ehpc/ehpc.io-audio:prod
    ```
 
-2. **Deploy the updated Modal app before releasing matching backend/UI
-   changes** from a machine with Modal credentials:
+2. **Prepare existing model assets and deploy the new GPU pool before web
+   cutover**, from a machine with Modal credentials:
 
    ```sh
+   export MODAL_ENVIRONMENT=ehpc-audio
+   export PREPARED_MODELS_ROOT=/private/audio-prepared-models
+   uv run python -m separator.prepare_models \
+     --manifest separator/model_manifest.json \
+     --volume audio-separator-models --environment "$MODAL_ENVIRONMENT" \
+     --prepared-models-root "$PREPARED_MODELS_ROOT" \
+     --receipt separator/model_assets_receipt.json
+   unset MODAL_TEST_GPU E2E_MODAL_APP_NAME MODAL_APP_NAME
    make deploy-modal
    ```
 
-   CI promotion and `make deploy-modal` deploy **`audio-separator-v2`** into
-   **`ehpc-audio`**. The backend passes its configured environment explicitly
-   on every named function lookup, independently of the active Modal profile.
-   `MODAL_ENVIRONMENT` also scopes CLI commands and isolated SDK smoke tests;
-   the browser harness inherits it without a second default. App resource
-   declarations resolve volumes and `audio-openrouter` in the deployment's
-   environment. An explicit environment override must contain the corresponding
-   app, volumes and secret; there is no fallback to `main`.
+   On the VPS, import the same receipt into the actual persistent
+   `PREPARED_MODELS_ROOT` (normally `/data/artifacts`) before enabling model
+   admission. A receipt written on a developer machine or CI runner does not
+   populate the web pod's PVC. This command reads existing volume metadata and
+   writes local verification receipts; it does not start compute or download
+   model weights. Credentials and the selected environment must resolve the
+   captured volume; there is no fallback to another environment.
 
-   For the namespace-only move from `main`, first preserve/copy both
-   `audio-separator-models` and `audio-song-discovery` into `ehpc-audio` and
-   verify the transferred files before promoting workers or web clients.
-   Also preserve/copy `lyrics-structure-noncommercial-models` before target CI:
-   this is a **test-only CI model cache**, not another production feature
-   deployment, and retaining it avoids downloading its roughly 12.7 GB again.
-   Retain the source volumes as well; the protected legacy app shares the
-   source model cache.
-   Keep volume names, mount paths, model/artifact bytes and producer keys
-   unchanged: an environment move is not an algorithm change and must not
-   silently replace validated caches with empty volumes. Verify target health
-   and cache reuse before switching the web image. Preserve its `/data`
-   database/uploads/results and stable session secret; no database migration,
-   job/options rewrite or cache-version bump is required for this move.
-   Keep **`main/audio-separator-v2`** operational until existing jobs drain
-   and migrated web clients are verified; only then retire that old instance.
-   The unrelated legacy **`main/audio-separator`** app is protected and is
-   never part of this migration. Options remain schema 3 and lyrics/pitch
-   transport remains independently schema 2.
+   CI and `make deploy-modal` target **`audio-inference-v3`** in **`ehpc-audio`**.
+   This is a breaking internal RPC cutover, not a compatibility alias: never
+   replace `audio-separator-v2` while old web instances still call its whole-job
+   functions. New web instances call only `infer`.
 
-   Redeploy the matching v2 worker after changes to `separator/stems.py`,
-   `separator/options.py`, or the Modal image. The GPU runtime uses Python 3.13,
-   CUDA 12.6.3/cuDNN on Ubuntu 24.04, FFmpeg 6+, `audio-separator[gpu]==0.44.1`
-   and `librosa==0.11.0`. New audio RPC calls supply `options_schema=3`;
-   incompatible versions fail explicitly. Use the ephemeral mixer smoke above
-   for verification without overwriting either production deployment.
+   The manifest selects the retained immutable producer image plus new local
+   source mounts. Ordinary deployment does not re-resolve floating pip/apt
+   dependencies. `separator/build_image.py` is the separate, intentional native
+   producer-update path; a new image requires fresh captured provenance.
+   The GPU pool has no provider secret or network access. Model weights remain
+   on the existing read-only Modal volume, including verified in-root HF
+   symlinks; the bundled CREPE weights retain their image provenance.
+   Share preparation receipts across isolated test output roots so a cold-output
+   proof does not stream gigabytes of already verified weights again.
+   Historical checksum attestations retain their snapshot date and current
+   metadata cross-check limits. A CPU inspection is not proof that GPU-injected
+   native libraries match: the required real GPU gate verifies that boundary.
+
+   Preserve/copy completed artifact bytes to the VPS before cutting over
+   existing cached work. The bounded CPU-only importer accepts a trusted private
+   inventory of exact paths, types, sizes and content SHA-256 values:
+
+   ```sh
+   uv run python -m separator.migrate_artifacts \
+     --volume audio-separator-models --environment "$MODAL_ENVIRONMENT" \
+     --destination-root /data/artifacts \
+     --source-inventory /private/completed-artifacts.json \
+     --path analysis-results/structure/EXACT_COMPLETED_KEY.bin
+   ```
+
+   Repeat `--path` for the selected completed artifacts. The importer verifies
+   bytes, atomically publishes validated files, rejects conflicts and never
+   removes old volume data. Publishing a legacy producer alias additionally
+   requires `--producer-manifest` and `--verified-gpu-receipt` from successful
+   real calls across the five operation families; CPU asset receipts alone
+   cannot authorize it. Raw Qwen-only caches also need proven decoded-PCM
+   metadata for their old alignment keys. Missing provenance is a cutover
+   prerequisite to resolve, not permission to silently repeat recognition.
+   Existing complete transcript caches are checked before that raw-stage path.
+
+   Preserve `/data`, original job files and the stable cookie secret. Drain
+   active audio/search work and block new upload admission before terminating
+   old web instances. Verify new web behavior and required legacy-cache hits,
+   then stop the old `audio-separator-v2` app without deleting its volumes.
+   The unrelated legacy `audio-separator` app remains protected. Public options
+   remain schema 3; this internal transport change does not rewrite job options
+   or infer unknown historical model provenance.
 
 3. **Provision cluster resources:**
-   - A `PersistentVolumeClaim` (ReadWriteOnce) mounted at `/data` — holds the
-     sqlite DB, uploads, and results.
+   - A single-writer `PersistentVolumeClaim` mounted at `/data` — holds SQLite,
+     uploads, results, source-clock artifacts and private preparation receipts.
    - A `Secret` with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
    - A `Secret` with `COOKIE_SECRET` — generate once, keep stable across
      redeploys.
+   - A server-only `OPENROUTER_API_KEY` secret for local song discovery.
+     Keep it out of the GPU app, image layers and browser environment.
 
 4. **Deployment**, `replicas: 1` (see [Architecture](#architecture)):
 
@@ -1419,6 +1518,7 @@ recordings are included or fetched.
      replicas: 1
      template:
        spec:
+         terminationGracePeriodSeconds: 300
          containers:
            - name: audio
              image: ghcr.io/ehpc/ehpc.io-audio:prod
@@ -1429,6 +1529,8 @@ recordings are included or fetched.
                  value: /data
                - name: QUEUE_CONCURRENCY
                  value: "1"
+               - name: MODAL_APP_NAME
+                 value: audio-inference-v3
                - name: COOKIE_SECURE
                  value: "true"
                - name: MODAL_TOKEN_ID
@@ -1437,6 +1539,8 @@ recordings are included or fetched.
                  valueFrom: { secretKeyRef: { name: audio-modal-token, key: token-secret } }
                - name: COOKIE_SECRET
                  valueFrom: { secretKeyRef: { name: audio-cookie-secret, key: secret } }
+               - name: OPENROUTER_API_KEY
+                 valueFrom: { secretKeyRef: { name: audio-openrouter, key: api-key } }
              volumeMounts:
                - { name: data, mountPath: /data }
              livenessProbe:
@@ -1447,6 +1551,56 @@ recordings are included or fetched.
            - name: data
              persistentVolumeClaim: { claimName: audio-data-pvc }
    ```
+
+The container starts Uvicorn with `--timeout-graceful-shutdown 5`, so an open
+SSE response cannot indefinitely postpone lifespan cleanup. Audio and discovery
+workers stop admission together; accepted model calls retain their durable IDs
+for resumption instead of being canceled and repeated. A 300-second Kubernetes
+termination grace is the normal drain budget, not a guaranteed upper bound on
+every remote transport. Old running pods do not retroactively gain this flag:
+drain their jobs/searches and block new uploads before terminating them.
+
+Keep the single CPU queue and existing 1 GiB limit initially. One isolated
+1-core, 1-GiB/no-swap, network-disabled capacity run processed a 356.8-second
+uncompressed float32 stereo source through five synthetic finite-model outputs,
+real CPU assembly/mixing, seven audio/text/document exports and SQLite. It
+peaked at **595.25 MiB**, completed in **98.84 seconds**, and recorded no OOM
+events. That proves this bounded scenario, not neural quality or a universal
+working-set bound for longer inputs/concurrent work. Measure actual working
+sets before buying a larger VPS.
+
+### Reconciling an uncertain model dispatch
+
+A persisted stage intent without a recorded Modal call ID blocks equivalent
+work across jobs, including after restart. The public error is honest:
+“Model dispatch uncertain; not automatically repeated.” A transport failure
+after acceptance cannot be treated as proof that no GPU work ran.
+
+First block new admission and drain/stop every audio worker; run the private
+operator command against the same persistent `DATA_DIR` with
+`QUEUE_CONCURRENCY=0`. `--admission-drained` is an operator attestation, not an
+automatic cluster-wide lock. If a known call completed successfully, attach it:
+
+```sh
+QUEUE_CONCURRENCY=0 uv run python -m backend.reconcile_inference \
+  --job-id OWNER_JOB_ID --admission-drained --call-id VERIFIED_COMPLETED_CALL_ID
+```
+
+The command reads that existing call and requires its result fingerprint to
+match the private recorded request before attaching it. Pending, failed or
+mismatched calls cannot be adopted. If control-plane evidence instead proves
+that no call was accepted, release only the unresolved intent:
+
+```sh
+QUEUE_CONCURRENCY=0 uv run python -m backend.reconcile_inference \
+  --job-id OWNER_JOB_ID --admission-drained --verified-not-dispatched
+```
+
+Never use release merely because the call ID is unknown. It refuses a recorded
+call and preserves historical job status/error/files. After reconciliation,
+restore normal admission: an equivalent request can consume the validated
+completed result or submit the proven-undispatched stage. There is no public
+reconciliation endpoint or automatic uncertain-dispatch retry.
 
 ### Gateway upload size
 
@@ -1589,15 +1743,14 @@ folders and cannot become an original download.
 
 The previous one-character spelling policy and global 90% gate are retired.
 Historical stored `compared`/`corrected` records and their individual original
-correction evidence remain readable without rewriting database rows. Wire
-compatibility is a single analysis-schema boundary, not an alternate lyric
-algorithm: schema 2 carries canonical nullable confidence/provenance; old callers
-during GPU-first promotion receive truthful readable text with unsupported word
-links omitted.
+correction evidence remain readable without rewriting database rows. Stored
+analysis retains canonical nullable confidence and provenance; the finite GPU
+protocol does not retain alternate whole-job RPCs for old callers. The new
+production app is deployed alongside the old one until web cutover is complete.
 
 Stored records without an explicit recognizer/alignment identity keep that
-identity unknown (`null`), including results persisted by an older web worker
-during GPU-first promotion. Neither historical probabilities nor word intervals
+identity unknown (`null`), including results persisted by an older web worker.
+Neither historical probabilities nor word intervals
 identify a speech model. Read-only decoding preserves those values and readable
 text without guessing Whisper; the browser labels unspecified provenance.
 
@@ -1631,12 +1784,11 @@ pin incidental Scots title orthography to one speech model's spelling.
 Unreferenced recognition remains fallible; no song-specific spelling replacement
 or homophone alias is applied.
 
-The owned noncommercial structure smoke mounts its checksum-validated complete
-public-domain recording at sandbox startup, runs both neural checks as the
-sandbox's main command, and reads the structured transcript, formatted text, and
-short-tail result from stdout after exit. It does not depend on a sleeping
-sandbox, runtime filesystem upload, a separate exec, or filesystem readback.
-The real GPU assertions, dedicated QA model cache, timeouts, evidence artifacts,
-and owned sandbox cleanup remain unchanged. A CPU-only fixture/hash/ffprobe
-check exercises this transport, not neural accuracy or the cause of an earlier
-Modal service failure; the full GPU smoke remains required.
+The noncommercial structure smoke uses the same finite inference pool and
+verified read-only model weights as the other real-model checks. Native CPU
+postprocessing and full-context neural predictions retain the complete
+public-domain recording and short-tail assertions; there is no separate
+sleeping sandbox, runtime upload/exec protocol, or warm-output substitute.
+Cheap synthetic fixtures exercise transport, CPU assembly, cache reuse and
+browser behavior, not neural accuracy. The complete real GPU gate remains
+required before release.

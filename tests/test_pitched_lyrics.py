@@ -1,12 +1,11 @@
 import asyncio
 import json
-from unittest.mock import MagicMock
 from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import db, modal_client, queue
+from backend import db, queue
 from separator.lyrics import (
     CanonicalWordPosition,
     Transcript,
@@ -334,13 +333,8 @@ def test_pitched_lyrics_lifecycle_canonical_bytes_history_retry_and_privacy(
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(queue, "reference_metadata", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        modal_client,
-        "spawn_with_lyrics",
-        lambda *args: MagicMock(object_id="fc-lyrics"),
-    )
-    monkeypatch.setattr(
-        modal_client,
-        "poll",
+        queue,
+        "process_source",
         lambda *args: ProcessingResult({}, transcript, pitch_to_json(analysis)),
     )
     job = db.get_job(job_id)

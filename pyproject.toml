@@ -10,13 +10,15 @@ dependencies = [
     "uvicorn[standard]",
     "itsdangerous",
     "python-multipart",
+    "requests==2.34.2",
+    "ytmusicapi==1.11.5",
     "yt-dlp[default]>=2026.8.19",
 ]
 
 [tool.ruff]
 line-length = 88
-# Shared separator source also runs in the separate Python 3.13 GPU image.
-target-version = "py313"
+# Shared separator source must also support the frozen Python 3.12 ASR/structure images.
+target-version = "py312"
 
 [tool.ruff.lint]
 select = [
@@ -57,6 +59,7 @@ markers = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "numpy>=2",
     "pytest>=8",
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.3",

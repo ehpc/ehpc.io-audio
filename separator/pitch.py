@@ -1,8 +1,13 @@
 """Dependency-free pitch/word timeline contract shared by worker and web."""
 
+import io
 import json
+import sys
+import zipfile
+from array import array
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
-from math import floor, isfinite, log2
+from math import floor, isfinite, log2, sqrt
 from statistics import median
 from typing import Literal
 
@@ -196,6 +201,59 @@ def segment_frames(
             )
         )
     return notes
+
+
+def _pitch_rms(
+    audio: Sequence[float], frame_count: int, sample_rate: int
+) -> list[float]:
+    """Original centered 64 ms RMS, with sequential float64 prefix sums."""
+    # This is np.pad(audio.astype(float64) ** 2, (512, 512)), followed
+    # by concatenate([0], cumsum(...)), without a NumPy web dependency.
+    cumulative = array("d", [0.0]) * (len(audio) + 1025)
+    total = 0.0
+    for index, sample in enumerate(audio, 513):
+        total += sample * sample
+        cumulative[index] = total
+    for index in range(len(audio) + 513, len(cumulative)):
+        cumulative[index] = total
+    hop_length = int(sample_rate * FRAME_SECONDS)
+    return [
+        sqrt(
+            (
+                cumulative[min(frame * hop_length + 1024, len(audio) + 1024)]
+                - cumulative[frame * hop_length]
+            )
+            / 1024
+        )
+        for frame in range(frame_count)
+    ]
+
+
+def assemble_pitch_prediction(payload: bytes, label: str = "vocals") -> PitchAnalysis:
+    """Assemble raw CREPE/PCM wire output on the VPS's original source clock."""
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        metadata = json.loads(archive.read("metadata.json"))
+        arrays = []
+        for name in ("audio.f32", "pitch.f32", "periodicity.f32"):
+            values = array("f")
+            values.frombytes(archive.read(name))
+            if sys.byteorder != "little":
+                values.byteswap()
+            if not values or any(not isfinite(value) for value in values):
+                raise ValueError("Pitch prediction requires finite, nonempty arrays")
+            arrays.append(values)
+    audio, frequencies, periodicities = arrays
+    sample_rate = metadata["sample_rate"]
+    duration_s = metadata["duration_s"]
+    if sample_rate != 16000 or duration_s != len(audio) / sample_rate:
+        raise ValueError("Pitch PCM metadata does not match the canonical decoder")
+    if len(frequencies) != len(periodicities):
+        raise ValueError("Pitch frame arrays must have equal lengths")
+    levels = _pitch_rms(audio, len(frequencies), sample_rate)
+    notes = segment_frames(
+        frequencies.tolist(), periodicities.tolist(), levels, duration_s
+    )
+    return PitchAnalysis(duration_s, duration_s, [PitchTrack(label, notes)])
 
 
 def transform_analysis(

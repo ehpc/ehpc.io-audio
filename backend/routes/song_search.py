@@ -9,31 +9,22 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
-    ValidationInfo,
     field_validator,
 )
 
-from backend import db, modal_client
+from backend import db
+from backend.models import SearchDone
 from backend.session import get_session_id
 from separator.song_search import (
-    MAX_PLAY_COUNT,
     QUERY_MAX_LENGTH,
-    RESULT_LIMIT,
+    SEARCH_HTTP_ERRORS,
     SEARCH_RESULT_TTL,
     SEARCH_TTL,
     normalize_query,
     query_cache_key,
-    trusted_thumbnail_url,
 )
 
 router = APIRouter(tags=["song-search"])
-_ERRORS = {
-    "no_match": 404,
-    "ambiguous": 422,
-    "invalid_model": 502,
-    "catalog_unavailable": 502,
-    "unavailable": 503,
-}
 
 
 class SongSearchRequest(BaseModel):
@@ -46,33 +37,6 @@ class SongSearchRequest(BaseModel):
         return normalize_query(value)
 
 
-class SongMatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1)
-    artists: list[str]
-    url: str = Field(
-        pattern=r"^https://music\.youtube\.com/watch\?v=[A-Za-z0-9_-]{11}$"
-    )
-    duration_seconds: float | None = Field(ge=0, allow_inf_nan=False)
-    thumbnail_url: str | None = Field(strict=True)
-    play_count: int | None = Field(strict=True, ge=0, le=MAX_PLAY_COUNT)
-    play_count_approximate: bool = Field(strict=True)
-
-    @field_validator("thumbnail_url")
-    @classmethod
-    def trusted_artwork(cls, value: str | None) -> str | None:
-        if value is not None and trusted_thumbnail_url(value) is None:
-            raise ValueError("Artwork must use a trusted HTTPS image provider.")
-        return value
-
-    @field_validator("play_count_approximate")
-    @classmethod
-    def known_approximation(cls, value: bool, info: ValidationInfo) -> bool:
-        if value and info.data.get("play_count") is None:
-            raise ValueError("Unavailable plays cannot be approximate.")
-        return value
-
-
 class SearchStarted(BaseModel):
     search_id: str
     status: Literal["pending"] = "pending"
@@ -80,19 +44,6 @@ class SearchStarted(BaseModel):
 
 class SearchPending(BaseModel):
     status: Literal["pending"] = "pending"
-
-
-class SearchDone(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    status: Literal["done"] = "done"
-    songs: list[SongMatch] = Field(min_length=1, max_length=RESULT_LIMIT)
-
-    @field_validator("songs")
-    @classmethod
-    def unique_versions(cls, songs: list[SongMatch]) -> list[SongMatch]:
-        if len({song.url for song in songs}) != len(songs):
-            raise ValueError("Song versions must have distinct catalog IDs.")
-        return songs
 
 
 @router.post("/song-search", status_code=202)
@@ -114,22 +65,17 @@ async def start_search(
             db.create_song_search,
             search_id,
             session_id,
-            cached["modal_call_id"],
             query_key,
             result=result.model_dump(),
             successful_at=cached["successful_at"],
         )
         return SearchStarted(search_id=search_id)
-    try:
-        call_id = await asyncio.wait_for(
-            modal_client.spawn_song_search(body.query), timeout=15
-        )
-    except Exception as exc:
-        raise HTTPException(
-            503, "Song finder is unavailable. Try again later."
-        ) from exc
     await asyncio.to_thread(
-        db.create_song_search, search_id, session_id, call_id, query_key
+        db.create_song_search,
+        search_id,
+        session_id,
+        query_key,
+        pending_query=body.query,
     )
     return SearchStarted(search_id=search_id)
 
@@ -144,26 +90,7 @@ async def get_search(
         raise HTTPException(404, "Song search not found or expired.")
     if row["result_json"] is not None:
         return _search_response(json.loads(row["result_json"]))
-    try:
-        result = await asyncio.wait_for(
-            modal_client.poll_song_search(row["modal_call_id"]), timeout=5
-        )
-    except Exception:
-        result = {
-            "status": "failed",
-            "code": "unavailable",
-            "detail": "Song finder is unavailable. Try again later.",
-        }
-    if result is None:
-        return SearchPending()
-    try:
-        response = _search_response(result)
-    except HTTPException as exc:
-        result = {"http_error": exc.status_code, "detail": exc.detail}
-        await asyncio.to_thread(db.finish_song_search, search_id, result)
-        raise
-    await asyncio.to_thread(db.finish_song_search, search_id, result)
-    return response
+    return SearchPending()
 
 
 def _search_response(result: dict) -> SearchDone:
@@ -173,8 +100,12 @@ def _search_response(result: dict) -> SearchDone:
         if result.get("status") == "failed":
             code = result.get("code")
             detail = result.get("detail")
-            if isinstance(code, str) and code in _ERRORS and isinstance(detail, str):
-                raise HTTPException(_ERRORS[code], detail)
+            if (
+                isinstance(code, str)
+                and code in SEARCH_HTTP_ERRORS
+                and isinstance(detail, str)
+            ):
+                raise HTTPException(SEARCH_HTTP_ERRORS[code], detail)
     try:
         return SearchDone.model_validate(result)
     except ValidationError as exc:

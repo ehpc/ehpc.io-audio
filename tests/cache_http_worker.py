@@ -1,23 +1,31 @@
-"""Owned HTTP proof: real native audio; synthetic stereo channel separation, no NN."""
+"""Owned HTTP proof: native audio and finite synthetic CPU inference, never NN."""
 
 import json
 import os
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
 import uvicorn
 from fastapi.responses import FileResponse
+from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
-from backend import config, modal_client
+from backend import config, inference, modal_client
 from backend.main import app
 from separator import audio, cache_versions, stems
-from separator.stems import StemResult
+from separator.artifact_cache import atomic_write
+from separator.inference import InferenceRequest, InferenceResult
 
 ROOT = Path(os.environ["DATA_DIR"])
 TRACE = ROOT / "producer-trace.jsonl"
+PRODUCER = ROOT / "cpu-producer"
+RESPONSES = ROOT / "cpu-responses"
+RESPONSES.mkdir(parents=True, exist_ok=True)
+fixture_manifest(
+    PRODUCER,
+    signals={"vocals": StemSignal(440, 1), "instruments": StemSignal(660, 1)},
+)
+config.PRODUCER_MANIFEST = PRODUCER / "fixture-manifest.json"
 
 
 def observed(name, producer):
@@ -32,37 +40,6 @@ def observed(name, producer):
     return call
 
 
-# This private producer is genuinely a CPU algorithm: each known synthetic
-# stereo channel is an independent component. Its explicit version/model bytes
-# prevent these test artifacts ever masquerading as neural separator output.
-def channel_separation(source, stem, out_dir, model_cache):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    result = {}
-    for output in stem.outputs:
-        path = out_dir / f"{output.label}.mp3"
-        channel = 0 if output.label == "vocals" else 1
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                str(source),
-                "-af",
-                f"pan=mono|c0=c{channel}",
-                "-q:a",
-                "0",
-                str(path),
-            ],
-            check=True,
-        )
-        result[output.label] = StemResult(path.read_bytes(), 0.1), path
-    return result
-
-
-patch.object(cache_versions, "STEM", "owned-synthetic-channel-separation-v1").start()
 if os.environ.get("CACHE_KEY_VERSION"):
     patch.object(cache_versions, "KEY", os.environ["CACHE_KEY_VERSION"]).start()
 for symbol, name in (
@@ -71,7 +48,6 @@ for symbol, name in (
     ("_transform_audio", "transform"),
 ):
     setattr(audio, symbol, observed(name, getattr(audio, symbol)))
-stems._run_separator = observed("stem", channel_separation)
 stems.mix_audio = observed("mix", stems.mix_audio)
 # Both import sites must retain the same real yt-dlp observer.
 from backend import queue  # noqa: E402
@@ -83,29 +59,44 @@ key_analysis.download_mp3 = queue.download_mp3
 
 @dataclass
 class Call:
-    result: dict
-    object_id: str = "owned-native-cache-proof"
+    result: InferenceResult
+    object_id: str
 
 
-def spawn(data, filename, options):
-    models = ROOT / "models"
-    models.mkdir(exist_ok=True)
-    for stem in (stems.VOCALS_STEM, stems.INSTRUMENTS_STEM):
-        model = models / stem.model
-        if not model.exists():
-            model.write_bytes(b"owned deterministic stereo-channel decomposition")
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        source = root / "source.mp3"
-        source.write_bytes(data)
-        return Call(
-            stems.run_separation(
-                source, options, root, str(models), str(ROOT / "stems")
-            )
-        )
+def prepare(manifest, request, artifact_root, volume_name, environment):
+    # Verify this actual CPU producer's assets instead of a neural model volume.
+    manifest.verify_assets(PRODUCER)
+    model = (
+        request.parameters.get("model") if request.operation == "separation" else None
+    )
+    assert request.producer_digest == manifest.digest_for(request.operation, model)
 
 
+def spawn(request: InferenceRequest) -> Call:
+    if request.operation != "separation":
+        raise AssertionError("This HTTP cache proof requests only separation")
+    payload = produce(request)
+    fingerprint = request.fingerprint()
+    # Keep accepted responses outside the artifact cache so an interrupted VPS
+    # can resume its recorded finite call after this process is restarted.
+    atomic_write(RESPONSES / f"{fingerprint}.bin", payload)
+    return Call(InferenceResult(fingerprint, payload), fingerprint)
+
+
+def resume(call_id: str) -> Call:
+    if len(call_id) != 64 or any(char not in "0123456789abcdef" for char in call_id):
+        raise ValueError("Invalid owned CPU call identity")
+    return Call(
+        InferenceResult(call_id, (RESPONSES / f"{call_id}.bin").read_bytes()), call_id
+    )
+
+
+produce = observed(
+    "stem", lambda request: cpu_inference(request, request.fingerprint(), root=PRODUCER)
+)
+patch.object(inference, "ensure_prepared", prepare).start()
 patch.object(modal_client, "spawn", spawn).start()
+patch.object(modal_client, "resume", resume).start()
 patch.object(modal_client, "poll", lambda call, timeout: call.result).start()
 config.QUEUE_POLL_INTERVAL_S = 0.02
 

@@ -1,18 +1,19 @@
 import asyncio
 import json
-import pickle
 import sqlite3
 import subprocess
+from array import array
 from dataclasses import asdict, replace
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-from audio_samples import tone_wav
+from analysis_cpu import WORDS, frequencies, load, signal
+from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
+from inference_fixture import cpu_inference, fixture_manifest
 from mutagen.id3 import ID3, TALB, TIT2, TPE1
 
-from backend import config, db, modal_client, queue
+from backend import config, db, queue
 from backend.source_metadata import reference_metadata
 from separator import processing
 from separator.lyrics import (
@@ -24,6 +25,7 @@ from separator.lyrics import (
     transcript_from_json,
 )
 from separator.lyrics_reference import (
+    AcousticEvidence,
     HistoricalReferenceCorrection,
     ReferenceLine,
     ReferenceLookup,
@@ -37,10 +39,8 @@ from separator.pitch import (
     PitchNote,
     PitchTrack,
     pitch_from_json,
-    pitch_to_json,
 )
-from separator.processing import ProcessingResult
-from separator.stems import StemResult
+from separator.processing import ProcessingContext, ProcessingResult
 
 
 def test_only_actual_tags_or_structured_music_fields_identify_a_reference(
@@ -96,126 +96,236 @@ def test_only_actual_tags_or_structured_music_fields_identify_a_reference(
     assert reference_metadata(b"invalid") is None
 
 
+def measured_reference_inference(request):
+    """Measure tone intervals and score lyrics against independently decoded tones."""
+    decoded = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+            "pipe:1",
+        ],
+        input=request.audio_bytes,
+        capture_output=True,
+        check=True,
+    ).stdout
+    samples = array("h", decoded)
+    intervals = frequencies(samples)
+    decoded_words = [
+        WORDS[min(range(4), key=lambda index: abs(hz - (220, 330, 440, 660)[index]))]
+        for _, _, hz in intervals
+    ]
+    assert decoded_words == list(WORDS)
+    phrase = request.parameters["phrases"][0]
+    assert phrase["line_indices"] == [0]
+    text = request.parameters["review"]["lines"][0]["text"]
+    alternative = phrase["recognized_lines"][0]
+
+    def score(candidate):
+        return -0.01 - sum(
+            actual != proposed
+            for actual, proposed in zip(decoded_words, candidate.split(), strict=True)
+        )
+
+    words = [
+        TranscriptWord(start, end, word, alignment_score=0.95)
+        for (start, end, _), word in zip(intervals, text.split(), strict=True)
+    ]
+    evidence = AcousticEvidence(
+        score(text),
+        score(alternative),
+        alternative,
+        len(samples),
+        alternative,
+        phrase["start_s"],
+        phrase["end_s"],
+    )
+    return json.dumps(
+        {
+            "aligned_lines": {"0": [asdict(word) for word in words]},
+            "acoustic_evidence": {"0": asdict(evidence)},
+        }
+    ).encode()
+
+
 def test_processing_uses_reference_aligned_words_for_pitch_and_preserves_asr_clock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    original_word = TranscriptWord(2, 3, "morninx", 0.3)
-    corrected_word = replace(original_word, text="morning")
-    original = Transcript(
-        [TranscriptSegment(2, 3, "morninx")], language="en", words=[original_word]
+    source = tmp_path / "source.wav"
+    signal(source)
+    samples, rate = load(source)
+    intervals = frequencies(samples, rate)
+    original_words = [
+        TranscriptWord(start, end, text, alignment_score=0.99)
+        for (start, end, _), text in zip(
+            intervals, ("hello", "bright", "blue", "word"), strict=True
+        )
+    ]
+    source_pitch = PitchAnalysis(
+        1.5,
+        1.5,
+        [PitchTrack("vocals", [PitchNote(0.1, 0.35, 57, 220, 0.99)])],
+    )
+    producer = tmp_path / "producer"
+    manifest = fixture_manifest(
+        producer, transcript=Transcript(words=original_words), pitch=source_pitch
     )
     review = ReferenceReview(
-        "aligned",
-        "Reference-aligned, not verified.",
+        "matched",
+        "Measured synthetic reference",
         source_url="https://lrclib.net/api/get/1",
-        lines=[ReferenceLine("morning", "aligned", 1, 2, 3)],
-        original_segments=original.segments,
-        original_words=original.words,
+        lines=[ReferenceLine("hello bright blue world")],
     )
     monkeypatch.setattr(
-        processing,
-        "run_separation",
-        lambda *args: {"vocals": StemResult(b"original-vocal", 1)},
+        processing, "lookup_reference", lambda *args: ReferenceLookup(None, review)
     )
-    canonical = replace(
-        original,
-        segments=[replace(original.segments[0], text="morning")],
-        words=[corrected_word],
-        reference=review,
-        word_alignment="torchaudio/MMS_FA",
-    )
-    monkeypatch.setattr(
-        processing,
-        "lookup_reference",
-        lambda *args: ReferenceLookup(None, review),
-    )
+    calls = []
+    pitch_input_durations = []
 
-    def child(command, **kwargs):
-        module = command[2]
-        if module == "separator.transcribe":
-            assert (
-                json.loads(Path(command[6]).read_text())["source_url"]
-                == review.source_url
-            )
-            Path(command[5]).write_text(json.dumps(asdict(canonical)))
-        elif module == "separator.structure":
-            Path(command[5]).write_text(
-                json.dumps({"sections": [], "structure_model": "test"})
-            )
-        elif module == "separator.detect_pitch":
-            sources = json.loads(Path(command[3]).read_text())
-            assert list(sources) == ["vocals"]
-            assert Path(sources["vocals"]).read_bytes() == b"original-vocal"
-            Path(command[4]).write_text(
-                pitch_to_json(
-                    PitchAnalysis(
-                        5,
-                        5,
-                        [PitchTrack("vocals", [PitchNote(2, 3, 60, 261.6256, 0.9)])],
-                    )
-                )
-            )
-        else:
-            raise AssertionError(module)
-        return subprocess.CompletedProcess(command, 0)
+    def infer(request, key):
+        calls.append((request.operation, request.parameters.get("mode")))
+        if request.operation == "pitch":
+            pitch_input_durations.append(mp3_measurements(request.audio_bytes)[0])
+        if (
+            request.operation == "alignment"
+            and request.parameters["mode"] == "reference"
+        ):
+            return measured_reference_inference(request)
+        return cpu_inference(request, key, root=producer)
 
-    monkeypatch.setattr(processing.subprocess, "run", child)
-    (tmp_path / "source.mp3").write_bytes(b"original-source")
-    result = processing.run_processing(
-        tmp_path / "source.mp3",
-        SeparationOptions(
-            extract_lyrics=True,
-            detect_pitch=True,
-            pitch_semitones=1.25,
-            tempo_percent=125,
-        ),
-        tmp_path,
-        str(tmp_path / "models"),
-        str(tmp_path / "cache"),
-        60,
+    context = ProcessingContext(tmp_path / "cache", manifest, infer)
+    options = SeparationOptions(
+        extract_lyrics=True, detect_pitch=True, pitch_semitones=1.25, tempo_percent=125
     )
+    result = processing.run_processing(source, options, tmp_path, context)
     assert result.audio == {}
-    assert result.transcript is not None
-    assert result.transcript.words == [corrected_word]
-    assert result.transcript.reference == review
+    assert result.transcript is not None and result.transcript.reference is not None
+    assert [word.text for word in result.transcript.words] == list(WORDS)
+    assert result.transcript.reference.original_words == original_words
+    assert result.transcript.reference.lines[0].status == "aligned"
+    assert result.transcript.reference.lines[0].acoustic_log_odds is not None
+    assert result.transcript.reference.lines[0].acoustic_log_odds > 0
+    assert result.transcript.reference.source_url == review.source_url
     assert result.transcript.timestamp_reference == "original"
+    assert result.transcript.words[0].start_s == pytest.approx(0.1, abs=0.01)
     assert result.pitch_json is not None
     pitch = pitch_from_json(result.pitch_json)
-    assert pitch.words[0].text == "morning"
-    assert pitch.words[0].start_s == 1.6
+    assert pitch.words[-1].text == "world"
+    assert pitch.words[0].start_s == pytest.approx(
+        result.transcript.words[0].start_s / 1.25
+    )
     assert pitch.tracks[0].notes[0].word_indices == [0]
-    assert pitch.tracks[0].notes[0].note == "C#4"
-    encoded = pickle.dumps(result.transcript)
-    assert b"ReferenceReview" not in encoded
-    assert b"TranscriptWord" not in encoded
+    assert pitch.tracks[0].notes[0].note == "A#3"
     assert (
         transcript_from_json(json.dumps(asdict(result.transcript))) == result.transcript
     )
+    assert calls == [
+        ("separation", None),
+        ("recognition", None),
+        ("alignment", "recognition"),
+        ("alignment", "reference"),
+        ("structure", None),
+        ("pitch", None),
+    ]
 
-    def no_child(*args, **kwargs):
-        raise AssertionError("source-clock cache hit spawned an analysis process")
+    def forbidden(*args):
+        raise AssertionError("source-clock cache hit invoked inference")
 
-    monkeypatch.setattr(processing.subprocess, "run", no_child)
+    context.infer = forbidden
     repeated = processing.run_processing(
-        tmp_path / "source.mp3",
-        SeparationOptions(
-            extract_lyrics=True,
-            detect_pitch=True,
-            pitch_semitones=12,
-            tempo_percent=200,
-        ),
+        source,
+        replace(options, pitch_semitones=12, tempo_percent=200),
         tmp_path,
-        str(tmp_path / "models"),
-        str(tmp_path / "cache"),
-        60,
+        context,
     )
     assert repeated.transcript == result.transcript
     assert repeated.pitch_json is not None
     shifted = pitch_from_json(repeated.pitch_json)
-    assert shifted.tracks[0].notes[0].note == "C5"
-    assert shifted.tracks[0].notes[0].start_s == 1
-    assert shifted.words[0].start_s == 1
-    assert shifted.source_duration_s == 5
+    assert shifted.tracks[0].notes[0].note == "A4"
+    assert shifted.tracks[0].notes[0].start_s == pytest.approx(
+        pitch.tracks[0].notes[0].start_s * 1.25 / 2
+    )
+    assert shifted.words[0].start_s == pytest.approx(
+        result.transcript.words[0].start_s / 2
+    )
+    assert pitch.source_duration_s == pytest.approx(
+        pitch_input_durations[0], abs=1 / 16000
+    )
+    assert shifted.source_duration_s == pitch.source_duration_s
+    assert shifted.duration_s == pytest.approx(pitch.source_duration_s / 2)
+
+
+def test_changed_reference_reuses_raw_recognition_and_baseline_alignment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.wav"
+    signal(source)
+    samples, rate = load(source)
+    words = [
+        TranscriptWord(start, end, text, alignment_score=0.99)
+        for (start, end, _), text in zip(
+            frequencies(samples, rate), ("hello", "bright", "blue", "word"), strict=True
+        )
+    ]
+    producer = tmp_path / "producer"
+    manifest = fixture_manifest(producer, transcript=Transcript(words=words))
+    review = ReferenceReview(
+        "matched",
+        "Synthetic reference",
+        lines=[ReferenceLine("hello bright blue word")],
+    )
+    monkeypatch.setattr(
+        processing, "lookup_reference", lambda *args: ReferenceLookup(None, review)
+    )
+    calls = []
+
+    def infer(request, key):
+        calls.append((request.operation, request.parameters.get("mode")))
+        if (
+            request.operation == "alignment"
+            and request.parameters["mode"] == "reference"
+        ):
+            return measured_reference_inference(request)
+        return cpu_inference(request, key, root=producer)
+
+    context = ProcessingContext(tmp_path / "cache", manifest, infer)
+    first = processing.transcribe_source(source.read_bytes(), context, None)
+    assert first.words[-1].text == "word"
+    assert calls == [
+        ("recognition", None),
+        ("alignment", "recognition"),
+        ("alignment", "reference"),
+    ]
+    review = replace(review, lines=[ReferenceLine("hello bright blue world")])
+
+    def reference_only(request, key):
+        assert request.operation == "alignment"
+        assert request.parameters["mode"] == "reference"
+        return infer(request, key)
+
+    context.infer = reference_only
+    corrected = processing.transcribe_source(source.read_bytes(), context, None)
+    assert corrected.words[-1].text == "world"
+    assert corrected.reference is not None and first.reference is not None
+    assert corrected.reference.original_words == first.reference.original_words == words
+    assert corrected.reference.lines[0].status == "aligned"
+    assert len(calls) == 4
+
+    def forbidden(*args):
+        raise AssertionError("reference cache hit invoked inference")
+
+    context.infer = forbidden
+    review = replace(review, cached=True, reason="retrieved from cache")
+    assert processing.transcribe_source(source.read_bytes(), context, None) == corrected
 
 
 def test_review_provenance_json_download_and_history_preserve_original_asr(
@@ -256,12 +366,7 @@ def test_review_provenance_json_download_and_history_preserve_original_asr(
     ).json()["id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client,
-        "spawn_with_lyrics",
-        lambda *args: MagicMock(object_id="fc-review"),
-    )
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, transcript)
+        queue, "process_source", lambda *args: ProcessingResult({}, transcript)
     )
     job = db.get_job(job_id)
     assert job is not None
@@ -435,12 +540,7 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
     ).json()["id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
-        modal_client,
-        "spawn_with_lyrics",
-        lambda *args: MagicMock(object_id="fc-canonical"),
-    )
-    monkeypatch.setattr(
-        modal_client, "poll", lambda *args: ProcessingResult({}, result)
+        queue, "process_source", lambda *args: ProcessingResult({}, result)
     )
     job = db.get_job(job_id)
     assert job is not None
@@ -474,7 +574,7 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
     )
 
 
-def test_gpu_first_old_persistence_cannot_invent_model_identity_in_new_history(
+def test_historical_persistence_cannot_invent_model_identity_in_new_history(
     client: TestClient,
 ) -> None:
     source = Transcript(
@@ -483,11 +583,7 @@ def test_gpu_first_old_persistence_cannot_invent_model_identity_in_new_history(
         asr_model="Qwen/Qwen3-ASR-1.7B",
         word_alignment="torchaudio/MMS_FA",
     )
-    transported = processing.analysis_transport(
-        processing.ProcessingResult({}, source), 1
-    ).transcript
-    assert transported is not None
-    # Exact pre-schema field set retained by the frozen 8e479ec reader/asdict.
+    # Historical rows retain their original field set, without a transport shim.
     # New model fields are not persisted by that old consumer.
     old_fields = (
         "segments",
@@ -499,7 +595,7 @@ def test_gpu_first_old_persistence_cannot_invent_model_identity_in_new_history(
         "reference",
         "status",
     )
-    full = asdict(transported)
+    full = asdict(source)
     stored = json.dumps({key: full[key] for key in old_fields})
     job_id = client.post(
         "/api/jobs",

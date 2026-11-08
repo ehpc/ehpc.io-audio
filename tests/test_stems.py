@@ -30,8 +30,6 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         input_path: Path,
         stem: Stem,
         out_dir: Path,
-        model_cache: str,
-        stem_cache: str,
     ) -> dict[str, tuple[StemResult, Path]]:
         calls.append(SeparatorCall(input_path, stem))
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -49,7 +47,6 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         mixes.append(MixCall(inputs, output))
         output.write_bytes(b"rendered mix")
 
-    monkeypatch.setattr(stems, "run_separator", separate)
     monkeypatch.setattr(stems, "mix_audio", mix)
 
     def run(options: SeparationOptions) -> dict[str, StemResult]:
@@ -57,8 +54,8 @@ def graph(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             tmp_path / "original.mp3",
             options,
             tmp_path,
-            str(tmp_path / "models"),
-            str(tmp_path / "cache"),
+            tmp_path / "cache",
+            separate,
         )
 
     return run, calls, mixes

@@ -5,19 +5,20 @@ import io
 import json
 import subprocess
 import sys
-import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from audio_samples import mp3_measurements, tone_wav
+from inference_fixture import cpu_inference, fixture_manifest
 
 from backend import config
 from backend.source_cache import cached_download, source_identity
 from separator import audio, cache_versions
-from separator.artifact_cache import async_locked, cached_bytes
+from separator.artifact_cache import async_locked, cached_bytes, digest
 from separator.options import SeparationOptions
-from separator.processing import _analysis_output
+from separator.processing import ProcessingContext
+from separator.structure import MusicalStructure, assemble_structure
 
 
 def forbidden(*args, **kwargs):
@@ -190,47 +191,34 @@ def test_download_aliases_metadata_and_own_copies(tmp_path, monkeypatch):
     assert calls == [1, 1]
 
 
-def test_analysis_cache_precedes_process_spawn_and_rejects_partial(
-    tmp_path, monkeypatch
-):
-    output = tmp_path / "structure.json"
-    trace = tmp_path / "trace"
-    script = """
-from pathlib import Path
-import sys,json
-value = {'sections': [{'start_s':0,'end_s':1,'label':'verse'}],
-         'structure_model':'owned-cpu-fixture'}
-Path(sys.argv[1]).write_text(json.dumps(value))
-Path(sys.argv[2]).write_text('produced')
-"""
-    command = [sys.executable, "-c", script, str(output), str(trace)]
-    root = tmp_path / "structure"
-    first = _analysis_output(
-        command,
-        output,
-        root,
-        "version1",
-        time.monotonic() + 10,
-        "Musical structure analysis",
+def test_inference_cache_returns_validated_typed_result_without_producer(tmp_path):
+    producer = tmp_path / "producer"
+    manifest = fixture_manifest(producer)
+    calls = []
+
+    def infer(request, key):
+        calls.append(request.operation)
+        return cpu_inference(request, key, root=producer)
+
+    context = ProcessingContext(tmp_path / "cache", manifest, infer)
+    source = tone_wav((440,), 1)
+
+    def validate(data):
+        return assemble_structure(**json.loads(data))
+
+    first = context.stage(
+        "structure", source, "source.wav", {}, digest(source), validate
     )
-    assert trace.read_text() == "produced"
-    assert json.loads(first)["sections"][0] == {
-        "start_s": 0,
-        "end_s": 1,
-        "label": "verse",
-    }
-    monkeypatch.setattr(subprocess, "run", forbidden)
+    assert isinstance(first, MusicalStructure)
+    assert first.sections[0].start_s == 0
+    assert first.sections[0].end_s == pytest.approx(1)
+    assert first.sections[0].label == "verse"
+    assert calls == ["structure"]
+    context.infer = forbidden
     assert (
-        _analysis_output(
-            command, output, root, "version1", 0, "Musical structure analysis"
-        )
+        context.stage("structure", source, "renamed.wav", {}, digest(source), validate)
         == first
     )
-    with pytest.raises(TimeoutError):
-        _analysis_output(
-            command, output, root, "version2", 0, "Musical structure analysis"
-        )
-    assert not (root / "version2.bin").exists()
 
 
 def test_concurrent_processes_share_one_native_producer(tmp_path):
@@ -260,17 +248,27 @@ assert len(result) > 100
     ] == pytest.approx(0.32, abs=0.07)
 
 
-def test_invalid_analysis_success_cannot_publish(tmp_path):
-    output = tmp_path / "pitch.json"
-    root = tmp_path / "pitch"
-    command = [
-        sys.executable,
-        "-c",
-        "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('{}')",
-        str(output),
-    ]
-    with pytest.raises((KeyError, ValueError, TypeError)):
-        _analysis_output(
-            command, output, root, "bad", time.monotonic() + 10, "Vocal pitch detection"
-        )
-    assert not (root / "bad.bin").exists()
+def test_invalid_inference_success_cannot_publish_and_retry_can_recover(tmp_path):
+    producer = tmp_path / "producer"
+    manifest = fixture_manifest(producer)
+    source = tone_wav((440,), 1)
+    context = ProcessingContext(tmp_path / "cache", manifest, lambda *args: b"{}")
+    identity = digest(source)
+    artifact = context.root / "inference" / f"{context.key('structure', identity)}.bin"
+
+    def validate(data):
+        return assemble_structure(**json.loads(data))
+
+    with pytest.raises(TypeError):
+        context.stage("structure", source, "source.wav", {}, identity, validate)
+    assert not artifact.exists()
+    assert not list(artifact.parent.glob(".pending-*"))
+    context.infer = lambda request, key: cpu_inference(request, key, root=producer)
+    result = context.stage("structure", source, "source.wav", {}, identity, validate)
+    assert result.sections[0].label == "verse"
+    assert artifact.is_file()
+    context.infer = forbidden
+    assert (
+        context.stage("structure", source, "source.wav", {}, identity, validate)
+        == result
+    )

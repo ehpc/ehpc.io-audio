@@ -4,8 +4,6 @@ import json
 import pickle
 from dataclasses import asdict
 
-import pytest
-
 from separator.lyrics import (
     RecognitionChunk,
     TranscriptWord,
@@ -21,11 +19,7 @@ from separator.pitch import (
     pitch_to_json,
     transform_analysis,
 )
-from separator.processing import (
-    ANALYSIS_SCHEMA_VERSION,
-    ProcessingResult,
-    analysis_transport,
-)
+from separator.processing import ProcessingResult
 
 
 def chunk(text: str, language: str = "English") -> RecognitionChunk:
@@ -102,7 +96,7 @@ def test_canonical_null_confidence_and_ctc_evidence_survive_transformed_pitch_li
     assert pitch_from_json(pitch_to_json(result)) == result
 
 
-def test_single_schema_boundary_never_fabricates_legacy_confidence_or_word_links():
+def test_typed_processing_result_preserves_confidence_and_canonical_word_links():
     word = TranscriptWord(30, 31, "amber", alignment_score=0.8)
     transcript = recognition_transcript(
         [chunk("amber")], [[word]], "Qwen/Qwen3-ASR-1.7B", "torchaudio/MMS_FA", 0.03
@@ -115,15 +109,14 @@ def test_single_schema_boundary_never_fabricates_legacy_confidence_or_word_links
         word_alignment="torchaudio/MMS_FA",
     )
     original = ProcessingResult({}, transcript, pitch_to_json(pitch))
-    assert analysis_transport(original, ANALYSIS_SCHEMA_VERSION) is original
-    old = analysis_transport(original, 1)
-    assert old.transcript is not None
-    assert old.transcript.segments == transcript.segments
-    assert old.transcript.words == [] and old.transcript.reference is None
-    assert old.pitch_json is not None
-    legacy_pitch = pitch_from_json(old.pitch_json)
-    assert legacy_pitch.words == []
-    assert legacy_pitch.word_alignment is None
-    assert legacy_pitch.tracks[0].notes[0].word_indices == []
-    with pytest.raises(ValueError, match="schema"):
-        analysis_transport(original, 999)
+    assert original.transcript is transcript
+    assert original.transcript.words[0].probability is None
+    assert original.transcript.words[0].alignment_score == 0.8
+    restored = transcript_from_json(json.dumps(asdict(original.transcript)))
+    assert restored == transcript
+    assert original.pitch_json is not None
+    restored_pitch = pitch_from_json(original.pitch_json)
+    assert restored_pitch == pitch
+    assert restored_pitch.words == restored.words
+    assert restored_pitch.tracks[0].notes[0].word_indices == [0]
+    assert restored_pitch.word_alignment == restored.word_alignment

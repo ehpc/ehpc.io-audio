@@ -1,213 +1,554 @@
-"""GPU audio graph with optional lyrics/reference review and vocal pitch."""
+"""Source-clock orchestration and persistent artifact lookup on the VPS."""
 
+import io
 import json
-import subprocess
-import sys
+import math
 import time
+import zipfile
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from separator import cache_versions
 from separator.artifact_cache import cache_key, cached_bytes, digest
-from separator.lyrics import Transcript, TranscriptSection, transcript_from_json
-from separator.lyrics_reference import ReferenceMetadata, lookup_reference
+from separator.inference import InferenceRequest, JSONValue, Operation
+from separator.lyrics import (
+    RecognitionChunk,
+    Transcript,
+    TranscriptSection,
+    TranscriptWord,
+    recognition_transcript,
+    transcript_from_json,
+)
+from separator.lyrics_reference import (
+    AcousticEvidence,
+    ReferenceMetadata,
+    apply_reference,
+    lookup_reference,
+    plan_reference,
+)
 from separator.options import SeparationOptions
 from separator.pitch import (
     PitchAnalysis,
     PitchTrack,
+    assemble_pitch_prediction,
     pitch_from_json,
     pitch_to_json,
     transform_analysis,
 )
-from separator.stems import SeparationResult, run_separation
+from separator.producer_manifest import ProducerManifest, load_manifest
+from separator.stems import (
+    VOCALS_STEM,
+    SeparationResult,
+    Stem,
+    StemResult,
+    run_separation,
+)
+from separator.structure import assemble_structure
 
 
 @dataclass
 class ProcessingResult:
     audio: SeparationResult
     transcript: Transcript | None = None
-    # Primitives-only transport: old web workers can unpickle ProcessingResult
-    # during GPU-first promotion without importing new nested analysis classes.
     pitch_json: str | None = None
-    # Private timeline reference, never an additional public download output.
     pitch_vocals: bytes | None = None
 
 
-ANALYSIS_SCHEMA_VERSION = 2
+InferenceProducer = Callable[[InferenceRequest, str], bytes]
 
 
-def analysis_transport(
-    result: ProcessingResult, schema_version: int
-) -> ProcessingResult:
-    """One rollout boundary: old web decoders cannot read nullable word scores.
+def _json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
 
-    New clients explicitly request the canonical schema. During GPU-first
-    promotion, pre-versioned callers get truthful readable text, without new
-    provenance/status enums or unsupported word links. No lyric algorithm differs.
-    """
-    if schema_version == ANALYSIS_SCHEMA_VERSION:
-        return result
-    if schema_version != 1:
-        raise ValueError("Unsupported analysis RPC schema version")
-    transcript = (
-        replace(
-            result.transcript, words=[], reference=None, canonical_word_positions=[]
+
+def _parameters(value: object) -> dict[str, JSONValue]:
+    return cast(dict[str, JSONValue], json.loads(_json(value)))
+
+
+def _stem_archive(data: bytes, stem: Stem) -> dict[str, bytes]:
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        expected = {output.label for output in stem.outputs}
+        if set(archive.namelist()) != expected:
+            raise ValueError("Inference returned unexpected stem outputs")
+        result = {label: archive.read(label) for label in expected}
+    if not all(result.values()):
+        raise ValueError("Inference returned an empty stem")
+    return result
+
+
+def legacy_stem_key(manifest: ProducerManifest, source: bytes, stem: Stem) -> str:
+    runtime = manifest.separator
+    manifest.operation_identity("separation", stem.model)
+    return cache_key(
+        manifest.versions["STEM"],
+        runtime.packages["audio-separator"],
+        {
+            name: runtime.packages[name]
+            for name in ("torch", "onnxruntime-gpu", "librosa")
+        },
+        runtime.ffmpeg,
+        stem.model,
+        stem.outputs,
+        digest(source),
+        manifest.models[stem.model],
+    )
+
+
+def _legacy_path(
+    root: Path,
+    manifest: ProducerManifest,
+    operation: Operation,
+    path: Path,
+    model: str | None = None,
+) -> Path | None:
+    if not path.is_file():
+        return None
+    provenance = root / "legacy-producer-manifest.json"
+    if not provenance.is_file():
+        raise RuntimeError("Legacy artifacts require their verified producer manifest")
+    previous = load_manifest(provenance)
+    if previous.operation_identity(operation, model) != manifest.operation_identity(
+        operation, model
+    ):
+        return None
+    return path
+
+
+@dataclass
+class ProcessingContext:
+    root: Path
+    manifest: ProducerManifest
+    infer: InferenceProducer
+
+    def key(
+        self, operation: Operation, identity: object, model: str | None = None
+    ) -> str:
+        return cache_key(
+            operation, self.manifest.operation_identity(operation, model), identity
         )
-        if result.transcript is not None
+
+    def stage[T](
+        self,
+        operation: Operation,
+        source: bytes,
+        filename: str,
+        parameters: dict[str, JSONValue],
+        identity: object,
+        validate: Callable[[bytes], T],
+        *,
+        model: str | None = None,
+        legacy: Path | None = None,
+    ) -> T:
+        key = self.key(operation, identity, model)
+        request = InferenceRequest(
+            operation,
+            source,
+            filename,
+            self.manifest.digest_for(operation, model),
+            parameters,
+        )
+
+        value: T | None = None
+        produced = False
+
+        def produce() -> bytes:
+            nonlocal value, produced
+            candidate = (
+                _legacy_path(self.root, self.manifest, operation, legacy, model)
+                if legacy is not None
+                else None
+            )
+            data = (
+                candidate.read_bytes()
+                if candidate is not None
+                else self.infer(request, key)
+            )
+            value = validate(data)
+            produced = True
+            return data
+
+        data = cached_bytes(self.root / "inference", key, produce)
+        return cast(T, value) if produced else validate(data)
+
+    def separate(
+        self, source: Path, stem: Stem, directory: Path
+    ) -> dict[str, tuple[StemResult, Path]]:
+        data = source.read_bytes()
+        parameters = _parameters(
+            {
+                "model": stem.model,
+                "outputs": [asdict_output(output) for output in stem.outputs],
+            }
+        )
+        started = time.monotonic()
+        archive = self.stage(
+            "separation",
+            data,
+            source.name,
+            parameters,
+            [digest(data), parameters],
+            lambda value: _stem_archive(value, stem),
+            model=stem.model,
+            legacy=self.root
+            / "stems"
+            / "versioned"
+            / "outputs"
+            / f"{legacy_stem_key(self.manifest, data, stem)}.bin",
+        )
+        elapsed = time.monotonic() - started
+        directory.mkdir(parents=True, exist_ok=True)
+        result = {}
+        for label, audio in archive.items():
+            path = directory / f"{label}.mp3"
+            path.write_bytes(audio)
+            result[label] = StemResult(audio, elapsed), path
+        return result
+
+
+def asdict_output(output) -> dict[str, str]:
+    return {"label": output.label, "keep_pattern": output.keep_pattern}
+
+
+def cached_pitch_vocals(
+    source: bytes, root: Path, manifest: ProducerManifest
+) -> bytes | None:
+    """Read exact private artifacts only: never allocate a GPU or run a model."""
+    parameters = {
+        "model": VOCALS_STEM.model,
+        "outputs": [asdict_output(output) for output in VOCALS_STEM.outputs],
+    }
+    key = cache_key(
+        "separation",
+        manifest.operation_identity("separation", VOCALS_STEM.model),
+        [digest(source), parameters],
+    )
+    current = root / "inference" / f"{key}.bin"
+    if current.is_file():
+        return _stem_archive(current.read_bytes(), VOCALS_STEM)["vocals"]
+    legacy = _legacy_path(
+        root,
+        manifest,
+        "separation",
+        root
+        / "stems"
+        / "versioned"
+        / "outputs"
+        / f"{legacy_stem_key(manifest, source, VOCALS_STEM)}.bin",
+        VOCALS_STEM.model,
+    )
+    return (
+        _stem_archive(legacy.read_bytes(), VOCALS_STEM)["vocals"]
+        if legacy is not None
         else None
     )
-    pitch_json = result.pitch_json
-    if pitch_json is not None:
-        pitch = pitch_from_json(pitch_json)
-        pitch_json = pitch_to_json(
-            replace(
-                pitch,
-                words=[],
-                word_alignment=None,
-                tracks=[
-                    replace(
-                        track,
-                        notes=[replace(note, word_indices=[]) for note in track.notes],
-                    )
-                    for track in pitch.tracks
-                ],
+
+
+def _recognition_result(data: bytes) -> dict:
+    value = json.loads(data)
+    chunks = value["chunks"]
+    pcm = value["pcm_identity"]
+    duration = value["duration_s"]
+    if not isinstance(chunks, list) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Invalid recognition result")
+    if (
+        not isinstance(pcm, list)
+        or len(pcm) != 4
+        or pcm[0] != cache_versions.ASR_SAMPLE_RATE
+        or pcm[1] != "f"
+        or not isinstance(pcm[2], list)
+        or len(pcm[2]) != 1
+        or type(pcm[2][0]) is not int
+        or pcm[2][0] <= 0
+        or not isinstance(pcm[3], str)
+        or len(pcm[3]) != 64
+        or any(character not in "0123456789abcdef" for character in pcm[3])
+        or not math.isclose(pcm[2][0] / pcm[0], duration, rel_tol=0, abs_tol=1 / pcm[0])
+    ):
+        raise ValueError("Invalid decoded source provenance")
+    for item in chunks:
+        chunk = RecognitionChunk(**item)
+        times = (
+            chunk.input_start_s,
+            chunk.input_end_s,
+            chunk.ownership_start_s,
+            chunk.ownership_end_s,
+        )
+        if (
+            not all(math.isfinite(time) for time in times)
+            or not 0 <= chunk.input_start_s < chunk.input_end_s <= duration
+            or not chunk.input_start_s
+            <= chunk.ownership_start_s
+            < chunk.ownership_end_s
+            <= chunk.input_end_s
+            or not isinstance(chunk.text, str)
+            or not isinstance(chunk.language, str)
+        ):
+            raise ValueError("Invalid recognition window")
+    return value
+
+
+def _baseline_result(data: bytes, pcm: list, chunk_count: int) -> dict:
+    value = json.loads(data)
+    if "transcript" in value:
+        transcript_from_json(json.dumps(value["transcript"]))
+        for word in value["evidence"]:
+            TranscriptWord(**word)
+        return value
+    if value["pcm_identity"] != pcm or len(value["alignments"]) != chunk_count:
+        raise ValueError("Alignment does not match the decoded recognition context")
+    for alignment in value["alignments"]:
+        for word in alignment:
+            TranscriptWord(**word)
+    return value
+
+
+def _reference_result(data: bytes) -> dict:
+    value = json.loads(data)
+    for words in value["aligned_lines"].values():
+        for word in words:
+            TranscriptWord(**word)
+    for evidence in value["acoustic_evidence"].values():
+        AcousticEvidence(**evidence)
+    return value
+
+
+def _structure_result(data: bytes) -> dict:
+    value = json.loads(data)
+    if "predictions" in value:
+        return asdict(assemble_structure(**value))
+    if not value["sections"] or not isinstance(value["structure_model"], str):
+        raise ValueError("Invalid musical structure result")
+    for section in value["sections"]:
+        TranscriptSection(**section)
+    return value
+
+
+def _pitch_result(data: bytes) -> PitchAnalysis:
+    value = (
+        assemble_pitch_prediction(data)
+        if data.startswith(b"PK")
+        else pitch_from_json(data.decode())
+    )
+    if len(value.tracks) != 1:
+        raise ValueError("Pitch producer must return one source track")
+    return value
+
+
+def transcribe_source(
+    source: bytes,
+    context: ProcessingContext,
+    reference_metadata: ReferenceMetadata | None,
+) -> Transcript:
+    review = lookup_reference(
+        reference_metadata, context.root / "lyrics-references"
+    ).review
+    reference_identity = asdict(review)
+    for field in ("fetched_at", "cached", "reason"):
+        reference_identity.pop(field, None)
+    key = cache_key(
+        context.manifest.operation_identity("recognition"),
+        context.manifest.operation_identity("alignment"),
+        digest(source),
+        reference_identity,
+    )
+    data = cached_bytes(
+        context.root / "transcripts",
+        key,
+        lambda: _json(
+            asdict(_transcribe_source(source, context, review, reference_identity))
+        ),
+    )
+    return transcript_from_json(data.decode())
+
+
+def _transcribe_source(
+    source: bytes, context: ProcessingContext, review, reference_identity: dict
+) -> Transcript:
+    manifest = context.manifest
+    legacy_key = cache_key(
+        manifest.versions["ASR"],
+        manifest.versions["QWEN_REVISION"],
+        manifest.asr.ffmpeg,
+        dict(manifest.asr.packages),
+        dict(manifest.asr.alignment_packages),
+        manifest.versions["ALIGNMENT"],
+        digest(source),
+        reference_identity,
+    )
+    legacy = context.root / "analysis-results" / "lyrics" / f"{legacy_key}.bin"
+    if (
+        _legacy_path(context.root, manifest, "recognition", legacy) is not None
+        and _legacy_path(context.root, manifest, "alignment", legacy) is not None
+    ):
+        return transcript_from_json(legacy.read_text())
+    raw_key = cache_key(
+        manifest.versions["ASR"],
+        manifest.versions["QWEN_REVISION"],
+        digest(source),
+        manifest.asr.ffmpeg,
+        dict(manifest.asr.packages),
+    )
+    old_raw = context.root / "qwen-asr" / "results" / "recognition" / f"{raw_key}.bin"
+    if _legacy_path(context.root, manifest, "recognition", old_raw) is not None:
+        # Legacy raw recognition lacks decoded PCM provenance. A migration must
+        # supply it from the exact decoder; never rerun recognition to discover it.
+        info = context.root / "recognition-info" / f"{raw_key}.json"
+        if not info.is_file():
+            raise RuntimeError(
+                "Legacy recognition requires verified decoded-source metadata "
+                "before migration"
+            )
+        recognition = _recognition_result(
+            _json(
+                {
+                    **json.loads(info.read_text()),
+                    "chunks": json.loads(old_raw.read_bytes()),
+                }
             )
         )
-    return replace(result, transcript=transcript, pitch_json=pitch_json)
-
-
-def _analysis_output(
-    command: list[str],
-    output: Path,
-    root: Path,
-    key: str,
-    deadline: float,
-    label: str,
-) -> bytes:
-    def produce() -> bytes:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(f"{label} exceeded the processing time limit")
-        output.unlink(missing_ok=True)
-        try:
-            subprocess.run(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=remaining,
-                cwd=Path(__file__).resolve().parent.parent,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(f"{label} failed: {exc.stderr.strip()[-400:]}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(f"{label} exceeded the processing time limit") from exc
-        data = output.read_bytes()
-        # Validate the complete schema before publication, not merely JSON syntax.
-        if label == "Lyrics transcription":
-            transcript_from_json(data.decode())
-        elif label == "Vocal pitch detection":
-            if len(pitch_from_json(data.decode()).tracks) != 1:
-                raise ValueError("Pitch producer must return one source track")
-        else:
-            value = json.loads(data)
-            for section in value["sections"]:
-                TranscriptSection(**section)
-            if not isinstance(value["structure_model"], str):
-                raise ValueError("Invalid structure provenance")
-        return data
-
-    return cached_bytes(root, key, produce)
+    else:
+        recognition = context.stage(
+            "recognition", source, "vocals.mp3", {}, digest(source), _recognition_result
+        )
+    chunks = recognition["chunks"]
+    raw = json.dumps(chunks).encode()
+    pcm = recognition["pcm_identity"]
+    baseline_key = cache_key(
+        manifest.versions["ALIGNMENT"],
+        manifest.versions["ALIGNMENT_MODEL"],
+        pcm,
+        digest(raw),
+        dict(manifest.asr.alignment_packages),
+    )
+    baseline = context.stage(
+        "alignment",
+        source,
+        "vocals.mp3",
+        _parameters({"mode": "recognition", "chunks": chunks}),
+        ["recognition", pcm, digest(raw)],
+        lambda data: _baseline_result(data, pcm, len(chunks)),
+        legacy=context.root
+        / "qwen-asr"
+        / "results"
+        / "recognition-alignment"
+        / f"{baseline_key}.bin",
+    )
+    if "transcript" in baseline:
+        transcript = transcript_from_json(json.dumps(baseline["transcript"]))
+        evidence = [TranscriptWord(**word) for word in baseline["evidence"]]
+    else:
+        recognized = [RecognitionChunk(**chunk) for chunk in chunks]
+        alignments = [
+            [TranscriptWord(**word) for word in alignment]
+            for alignment in baseline["alignments"]
+        ]
+        transcript = recognition_transcript(
+            recognized,
+            alignments,
+            str(manifest.versions["QWEN_MODEL"]),
+            str(manifest.versions["ALIGNMENT_MODEL"]),
+            0.03,
+        )
+        evidence = [
+            word
+            for chunk, alignment in zip(recognized, alignments, strict=True)
+            for word in alignment
+            if chunk.ownership_start_s
+            <= (word.start_s + word.end_s) / 2
+            < chunk.ownership_end_s
+        ]
+    review = replace(
+        review,
+        original_segments=transcript.segments,
+        original_words=transcript.words,
+        original_untimed=transcript.untimed,
+    )
+    if not review.lines:
+        return replace(transcript, reference=review)
+    review, phrases = plan_reference(
+        transcript, review, recognition["duration_s"], evidence
+    )
+    request_review = asdict(
+        replace(
+            review,
+            reason="",
+            fetched_at=None,
+            cached=False,
+            original_segments=[],
+            original_words=[],
+            original_untimed=[],
+        )
+    )
+    parameters = _parameters(
+        {
+            "mode": "reference",
+            "review": request_review,
+            "phrases": [asdict(phrase) for phrase in phrases],
+        }
+    )
+    if not phrases:
+        return apply_reference(transcript, review, {}, {})
+    aligned = context.stage(
+        "alignment",
+        source,
+        "vocals.mp3",
+        parameters,
+        [pcm, parameters],
+        _reference_result,
+    )
+    return apply_reference(
+        transcript,
+        review,
+        {
+            int(index): [TranscriptWord(**word) for word in words]
+            for index, words in aligned["aligned_lines"].items()
+        },
+        {
+            int(index): AcousticEvidence(**value)
+            for index, value in aligned["acoustic_evidence"].items()
+        },
+    )
 
 
 def run_processing(
     input_path: Path,
     options: SeparationOptions,
     tmp: Path,
-    model_cache: str,
-    stem_cache: str,
-    timeout_s: float,
-    asr_python: str = sys.executable,
-    structure_python: str = sys.executable,
+    context: ProcessingContext,
     reference_metadata: ReferenceMetadata | None = None,
 ) -> ProcessingResult:
-    deadline = time.monotonic() + timeout_s
-    stems = run_separation(input_path, options, tmp, model_cache, stem_cache)
-    root = Path(model_cache) / "analysis-results"
-    decoder = cache_versions.binary_revision("ffmpeg")
+    stems = run_separation(
+        input_path, options, tmp, context.root / "stems", context.separate
+    )
+    manifest = context.manifest
     transcript = None
     if options.needs_lyrics:
-        source = tmp / "lyrics-vocals.mp3"
-        source.write_bytes(stems["vocals"].data)
-        reference = lookup_reference(
-            reference_metadata, Path(model_cache) / "lyrics-references"
+        transcript = transcribe_source(
+            stems["vocals"].data, context, reference_metadata
         )
-        reference_path = tmp / "lyrics-reference.json"
-        reference_path.write_text(
-            json.dumps(asdict(reference.review), ensure_ascii=False), "utf-8"
+        source = input_path.read_bytes()
+        structure_key = cache_key(
+            manifest.versions["STRUCTURE"],
+            manifest.versions["STRUCTURE_MODEL"],
+            manifest.versions["STRUCTURE_REVISION"],
+            manifest.versions["STRUCTURE_SHA256"],
+            manifest.structure.ffmpeg,
+            dict(manifest.structure.packages),
+            digest(source),
         )
-        # Fetch time/cache bookkeeping cannot change reference alignment.
-        reference_identity = asdict(reference.review)
-        for field in ("fetched_at", "cached", "reason"):
-            reference_identity.pop(field, None)
-        output = tmp / "transcript.json"
-        data = _analysis_output(
-            [
-                asr_python,
-                "-m",
-                "separator.transcribe",
-                str(source),
-                str(Path(model_cache) / "qwen-asr"),
-                str(output),
-                str(reference_path),
-            ],
-            output,
-            root / "lyrics",
-            cache_key(
-                cache_versions.ASR,
-                cache_versions.QWEN_REVISION,
-                decoder,
-                cache_versions.environment_revisions(
-                    asr_python, cache_versions.ASR_PACKAGES
-                ),
-                cache_versions.environment_revisions(
-                    asr_python, cache_versions.ALIGNMENT_PACKAGES
-                ),
-                cache_versions.ALIGNMENT,
-                digest(stems["vocals"].data),
-                reference_identity,
-            ),
-            deadline,
-            "Lyrics transcription",
-        )
-        transcript = transcript_from_json(data.decode())
-        structure_output = tmp / "structure.json"
-        structure = json.loads(
-            _analysis_output(
-                [
-                    structure_python,
-                    "-m",
-                    "separator.structure",
-                    str(input_path),
-                    str(Path(model_cache) / "songformer"),
-                    str(structure_output),
-                ],
-                structure_output,
-                root / "structure",
-                cache_key(
-                    cache_versions.STRUCTURE,
-                    cache_versions.STRUCTURE_MODEL,
-                    cache_versions.STRUCTURE_REVISION,
-                    cache_versions.STRUCTURE_SHA256,
-                    decoder,
-                    cache_versions.environment_revisions(
-                        structure_python, cache_versions.STRUCTURE_PACKAGES
-                    ),
-                    digest(input_path.read_bytes()),
-                ),
-                deadline,
-                "Musical structure analysis",
-            )
+        structure = context.stage(
+            "structure",
+            source,
+            input_path.name,
+            {},
+            digest(source),
+            _structure_result,
+            legacy=context.root
+            / "analysis-results"
+            / "structure"
+            / f"{structure_key}.bin",
         )
         transcript = replace(
             transcript,
@@ -221,33 +562,21 @@ def run_processing(
         tracks = []
         duration = 0.0
         for label in options.pitch_labels:
-            path = tmp / f"pitch-{label}.mp3"
-            path.write_bytes(stems[label].data)
-            manifest = tmp / "pitch-sources.json"
-            manifest.write_text(json.dumps({label: str(path)}), "utf-8")
-            output = tmp / "pitch.json"
-            analysis = pitch_from_json(
-                _analysis_output(
-                    [
-                        structure_python,
-                        "-m",
-                        "separator.detect_pitch",
-                        str(manifest),
-                        str(output),
-                    ],
-                    output,
-                    root / "pitch",
-                    cache_key(
-                        cache_versions.PITCH,
-                        decoder,
-                        cache_versions.environment_revisions(
-                            structure_python, cache_versions.PITCH_PACKAGES
-                        ),
-                        digest(stems[label].data),
-                    ),
-                    deadline,
-                    "Vocal pitch detection",
-                ).decode()
+            source = stems[label].data
+            pitch_key = cache_key(
+                manifest.versions["PITCH"],
+                manifest.structure.ffmpeg,
+                dict(manifest.structure.pitch_packages),
+                digest(source),
+            )
+            analysis = context.stage(
+                "pitch",
+                source,
+                "vocals.mp3",
+                {},
+                digest(source),
+                _pitch_result,
+                legacy=context.root / "analysis-results" / "pitch" / f"{pitch_key}.bin",
             )
             tracks.append(PitchTrack(label, analysis.tracks[0].notes))
             duration = max(duration, analysis.source_duration_s)
@@ -264,9 +593,7 @@ def run_processing(
         audio={label: stems[label] for label in options.output_labels},
         transcript=transcript,
         pitch_json=pitch_json,
-        pitch_vocals=(
-            stems["vocals"].data
-            if options.detect_pitch and "vocals" not in options.output_labels
-            else None
-        ),
+        pitch_vocals=stems["vocals"].data
+        if options.detect_pitch and "vocals" not in options.output_labels
+        else None,
     )

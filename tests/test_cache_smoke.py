@@ -1,51 +1,50 @@
-"""New FUSE cache behavior only: private ephemeral volume, CPU, no models."""
+"""Real native cache reuse across fresh VPS-like CPU worker processes."""
 
 import json
 import os
-import uuid
+import subprocess
+import sys
 from pathlib import Path
 
-import modal
-import pytest
 from audio_samples import tone_wav
-from cache_rpc import isolated_cache
-
-from backend import config
-
-pytestmark = pytest.mark.smoke
 
 
-def test_private_volume_commit_reload_and_cancelled_waiter(tmp_path):
-    app = modal.App(f"artifact-cache-proof-{uuid.uuid4().hex[:12]}")
-    image = (
-        modal.Image.debian_slim(python_version="3.13")
-        .apt_install("ffmpeg")
-        .add_local_python_source("separator", "cache_rpc")
-    )
-    with modal.Volume.ephemeral(environment_name=config.MODAL_ENVIRONMENT) as volume:
-        functions = [
-            app.function(
-                image=image,
-                name=f"cache-{phase}",
-                timeout=120,
-                volumes={"/private-cache": volume},
-            )(isolated_cache)
-            for phase in ("fresh", "restart", "version", "repeat")
-        ]
-        with modal.enable_output(), app.run(environment_name=config.MODAL_ENVIRONMENT):
-            evidence = [
-                json.loads(
-                    function.remote(volume, tone_wav((440,), 0.5), version, prohibit)
-                )
-                for function, version, prohibit in zip(
-                    functions,
-                    ("v1", "v1", "v2", "v2"),
-                    (False, True, False, True),
-                    strict=True,
-                )
-            ]
+def test_local_cache_restart_and_cancelled_waiter(tmp_path: Path) -> None:
+    source = tmp_path / "source.wav"
+    source.write_bytes(tone_wav((440,), 0.5))
+    helper = Path(__file__).with_name("cache_process.py")
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            (str(helper.resolve().parents[1]), os.environ.get("PYTHONPATH", ""))
+        ),
+    }
+    evidence = [
+        json.loads(
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(helper),
+                    str(tmp_path),
+                    str(source),
+                    version,
+                    str(prohibit).lower(),
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            ).stdout
+        )
+        for version, prohibit in zip(
+            ("v1", "v1", "v2", "v2"),
+            (False, True, False, True),
+            strict=True,
+        )
+    ]
     assert [item["producer_count"] for item in evidence] == [1, 1, 2, 2]
-    assert len({item["container"] for item in evidence}) == 4
+    assert len({item["process_id"] for item in evidence}) == 4
     assert all(item["sha256"] == evidence[0]["sha256"] for item in evidence)
     assert all(
         item["duration_error_samples"] <= 1 and item["cancelled_waiter_released"]
@@ -53,5 +52,5 @@ def test_private_volume_commit_reload_and_cancelled_waiter(tmp_path):
     )
     directory = Path(os.environ.get("CACHE_PROOF_DIR", str(tmp_path)))
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "modal-volume.json").write_text(json.dumps(evidence, indent=2))
-    print("CACHE_VOLUME_PROOF " + json.dumps(evidence))
+    (directory / "native-process-cache.json").write_text(json.dumps(evidence, indent=2))
+    print("CACHE_PROCESS_PROOF " + json.dumps(evidence))
