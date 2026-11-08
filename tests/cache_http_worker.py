@@ -9,18 +9,18 @@ from unittest.mock import patch
 import uvicorn
 from fastapi.responses import FileResponse
 from inference_fixture import StemSignal, cpu_inference, fixture_manifest
+from transport_fixture import LocalVolume, produce_result
 
 from backend import config, inference, modal_client
 from backend.main import app
 from separator import audio, cache_versions, stems
-from separator.artifact_cache import atomic_write
-from separator.inference import InferenceRequest, InferenceResult
+from separator.inference import InferenceRequest
+from separator.inference_transport import validate_output_id
 
 ROOT = Path(os.environ["DATA_DIR"])
 TRACE = ROOT / "producer-trace.jsonl"
 PRODUCER = ROOT / "cpu-producer"
-RESPONSES = ROOT / "cpu-responses"
-RESPONSES.mkdir(parents=True, exist_ok=True)
+VOLUME = LocalVolume(ROOT / "private-transport")
 fixture_manifest(
     PRODUCER,
     signals={"vocals": StemSignal(440, 1), "instruments": StemSignal(660, 1)},
@@ -59,7 +59,7 @@ key_analysis.download_mp3 = queue.download_mp3
 
 @dataclass
 class Call:
-    result: InferenceResult
+    output_id: str
     object_id: str
 
 
@@ -72,32 +72,29 @@ def prepare(manifest, request, artifact_root, volume_name, environment):
     assert request.producer_digest == manifest.digest_for(request.operation, model)
 
 
-def spawn(request: InferenceRequest) -> Call:
-    if request.operation != "separation":
-        raise AssertionError("This HTTP cache proof requests only separation")
-    payload = produce(request)
-    fingerprint = request.fingerprint()
-    # Keep accepted responses outside the artifact cache so an interrupted VPS
-    # can resume its recorded finite call after this process is restarted.
-    atomic_write(RESPONSES / f"{fingerprint}.bin", payload)
-    return Call(InferenceResult(fingerprint, payload), fingerprint)
+def spawn(output_id: str, *, operation=None, producer_digest=None) -> Call:
+    # The actual staged input, not the RPC arguments, drives finite inference.
+    produce_result(VOLUME, output_id, produce)
+    return Call(output_id, output_id)
 
 
 def resume(call_id: str) -> Call:
-    if len(call_id) != 64 or any(char not in "0123456789abcdef" for char in call_id):
-        raise ValueError("Invalid owned CPU call identity")
-    return Call(
-        InferenceResult(call_id, (RESPONSES / f"{call_id}.bin").read_bytes()), call_id
-    )
+    validate_output_id(call_id)
+    return Call(call_id, call_id)
 
 
-produce = observed(
-    "stem", lambda request: cpu_inference(request, request.fingerprint(), root=PRODUCER)
-)
+def produce(request: InferenceRequest) -> bytes:
+    if request.operation != "separation":
+        raise AssertionError("This HTTP cache proof requests only separation")
+    return cpu_inference(request, request.fingerprint(), root=PRODUCER)
+
+
+produce = observed("stem", produce)
 patch.object(inference, "ensure_prepared", prepare).start()
+patch.object(modal_client, "_get_transport_volume", lambda: VOLUME).start()
 patch.object(modal_client, "spawn", spawn).start()
 patch.object(modal_client, "resume", resume).start()
-patch.object(modal_client, "poll", lambda call, timeout: call.result).start()
+patch.object(modal_client, "poll", lambda call, timeout: call.output_id).start()
 config.QUEUE_POLL_INTERVAL_S = 0.02
 
 

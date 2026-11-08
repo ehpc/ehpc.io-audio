@@ -202,7 +202,7 @@ jobs:
       - name: Deploy isolated Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: GPU smoke test (spawns deployed function)
-        run: uv run pytest -m smoke --log-cli-level=INFO
+        run: uv run pytest -m smoke --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke"
       - name: Run full-stack browser E2E
         run: npm --prefix frontend run test:e2e
       - name: Upload E2E failure artifacts
@@ -213,6 +213,8 @@ jobs:
           path: |
             frontend/test-results/
             frontend/playwright-report/
+            ${{ runner.temp }}/audio-gpu-smoke/**/diagnostics/**
+            ${{ runner.temp }}/audio-gpu-smoke/**/inference-diagnostics/**
           if-no-files-found: ignore
           retention-days: 7
       - name: Stop isolated Modal app
@@ -220,6 +222,51 @@ jobs:
         # original failure, and the unique app is never the production app.
         if: always()
         run: uv run modal app stop -y "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT" || true
+      - name: Remove stopped isolated transport volume
+        # Failed runs retain private diagnostics for operator retrieval and
+        # explicit cleanup after the owned app is verified stopped.
+        if: success()
+        timeout-minutes: 2
+        run: |
+          uv run python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import time
+
+          from separator.inference_transport import transport_volume_name
+
+          app = os.environ["MODAL_APP_NAME"]
+          environment = os.environ["MODAL_ENVIRONMENT"]
+          expected = f"audio-separator-ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          if app != expected or environment != "ehpc-audio":
+              raise RuntimeError("Refusing cleanup outside this isolated CI app")
+          deadline = time.monotonic() + 60
+          while True:
+              rows = json.loads(subprocess.check_output(
+                  ["modal", "app", "list", "--json", "--env", environment],
+                  text=True, timeout=15,
+              ))
+              matches = [row for row in rows if row["description"] == app]
+              if len(matches) != 1:
+                  raise RuntimeError("Owned app lifecycle is unavailable or ambiguous")
+              owned = matches[0]
+              if owned["state"] == "stopped" and int(owned["tasks"]) == 0:
+                  break
+              if time.monotonic() >= deadline:
+                  raise RuntimeError("Owned app has not stopped and drained")
+              time.sleep(2)
+          volume = transport_volume_name(app, environment)
+          subprocess.run(
+              ["modal", "volume", "delete", volume, "-y", "--env", environment],
+              check=True, timeout=30,
+          )
+          print(json.dumps({
+              "app_id": owned["app_id"], "state": owned["state"],
+              "tasks": int(owned["tasks"]), "transport_volume": volume,
+              "deleted": True,
+          }))
+          PY
 
   deploy-production:
     name: Promote tested Modal app to production

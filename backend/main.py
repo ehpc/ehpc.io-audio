@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from backend.queue import lifespan
@@ -26,14 +26,20 @@ def create_app() -> FastAPI:
     fastapi_app.include_router(song_search.router, prefix="/api")
 
     if FRONTEND_DIST.is_dir():
-        index = FRONTEND_DIST / "index.html"
+        root = FRONTEND_DIST.resolve()
+        index = (root / "index.html").resolve()
 
         # Serve built static files, falling back to index.html so client-side
         # routes (e.g. /status) resolve on direct navigation. Registered last, so
         # the /api and /health routes above take precedence.
         @fastapi_app.get("/{full_path:path}")
         async def spa(full_path: str) -> FileResponse:
-            candidate = FRONTEND_DIST / full_path
+            try:
+                candidate = (root / full_path).resolve()
+            except (OSError, ValueError):
+                raise HTTPException(404, "not found") from None
+            if not candidate.is_relative_to(root) or not index.is_relative_to(root):
+                raise HTTPException(404, "not found")
             if full_path and candidate.is_file():
                 return FileResponse(candidate)
             return FileResponse(index)

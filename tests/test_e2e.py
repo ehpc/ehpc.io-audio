@@ -24,12 +24,18 @@ import pytest
 from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
 from inference_fixture import StemSignal, cpu_inference, fixture_manifest
+from transport_fixture import LocalVolume, produce_result
 
 from backend import config, db, events, inference, modal_client, queue
 from backend.models import JobStatus
 from backend.routes import jobs as jobs_route
 from separator import audio, stems
-from separator.inference import InferenceRequest, InferenceResult
+from separator.inference import InferenceRequest
+from separator.inference_transport import (
+    InferenceTransferError,
+    load_request,
+    publish_file,
+)
 from separator.options import SeparationOptions
 
 _TERMINAL = (JobStatus.DONE, JobStatus.FAILED)
@@ -59,7 +65,7 @@ def _key_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
 @dataclass
 class _CpuCall:
     object_id: str
-    result: InferenceResult
+    output_id: str
     polls: int = 0
 
 
@@ -84,6 +90,7 @@ def _cpu_modal(
     )
     monkeypatch.setattr(config, "PRODUCER_MANIFEST", root / "fixture-manifest.json")
     spawned: list[InferenceRequest] = []
+    volume = LocalVolume(tmp_path / "private-transport")
 
     def prepare(manifest, request, artifact_root, volume_name, environment):
         # This provider consumes local fixture assets, not a remote model volume.
@@ -95,21 +102,23 @@ def _cpu_modal(
         )
         assert request.producer_digest == manifest.digest_for(request.operation, model)
 
-    def spawn(request: InferenceRequest) -> _CpuCall:
+    def produce(request: InferenceRequest) -> bytes:
         spawned.append(request)
+        return cpu_inference(request, request.fingerprint(), root=root)
+
+    def spawn(output_id: str, *, operation=None, producer_digest=None) -> _CpuCall:
+        produce_result(volume, output_id, produce)
         return _CpuCall(
             object_id=f"fc-cpu-{len(spawned)}",
-            result=InferenceResult(
-                request.fingerprint(),
-                cpu_inference(request, request.fingerprint(), root=root),
-            ),
+            output_id=output_id,
         )
 
-    def poll(call: _CpuCall, timeout: float) -> InferenceResult | None:
+    def poll(call: _CpuCall, timeout: float) -> str | None:
         call.polls += 1
-        return call.result if call.polls > 1 else None
+        return call.output_id if call.polls > 1 else None
 
     monkeypatch.setattr(inference, "ensure_prepared", prepare)
+    monkeypatch.setattr(modal_client, "_get_transport_volume", lambda: volume)
     monkeypatch.setattr(modal_client, "spawn", spawn)
     monkeypatch.setattr(modal_client, "poll", poll)
     return spawned
@@ -243,6 +252,112 @@ def test_url_job_downloads_titles_and_separates(
         quote("My Song - vocals - source-key-C-major.mp3")
         in stem.headers["content-disposition"]
     )
+
+
+def test_terminal_native_failure_is_retained_privately_then_remote_bytes_removed(
+    worker_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _cpu_modal(monkeypatch, tmp_path)
+    volume = modal_client._get_transport_volume()
+    assert isinstance(volume, LocalVolume)
+    unrelated = volume.root / "unrelated-private-transfer" / "input.bin"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"another private transfer")
+    failures: list[bytes] = []
+    cleaned = threading.Event()
+    original_cleanup = modal_client.cleanup
+
+    def fail_native(local: LocalVolume, output_id: str, _producer: object) -> str:
+        request = load_request(local.root, output_id)
+        completed = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                "pipe:0",
+                "-af",
+                "owned_private_missing_filter",
+                "-f",
+                "null",
+                "-",
+            ],
+            input=request.audio_bytes,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode != 0
+        assert b"owned_private_missing_filter" in completed.stderr
+        failures.append(completed.stderr)
+        diagnostic = tmp_path / "native-failure.log"
+        diagnostic.write_bytes(completed.stderr)
+        publish_file(local.root, output_id, request, diagnostic, failed=True)
+        return output_id
+
+    def terminal_poll(call: _CpuCall, _timeout: float) -> str:
+        raise InferenceTransferError(call.output_id, "execution")
+
+    def cleanup_after_terminal(output_id: str) -> None:
+        journals = config.DATA_DIR / "artifacts" / "inference-requests"
+        receipt = next(
+            item
+            for path in journals.glob("*.json")
+            if (item := json.loads(path.read_bytes()))["output_id"] == output_id
+        )
+        failed_job = db.get_job(receipt["failure_job_id"])
+        assert failed_job is not None and failed_job.status == JobStatus.FAILED
+        diagnostics = (
+            config.DATA_DIR / "artifacts" / "inference-diagnostics" / f"{output_id}.log"
+        )
+        assert diagnostics.read_bytes() == failures[0]
+        assert diagnostics.stat().st_mode & 0o777 == 0o600
+        assert diagnostics.parent.stat().st_mode & 0o777 == 0o700
+        assert receipt["cleanup_pending"] is True
+        original_cleanup(output_id)
+        cleaned.set()
+
+    monkeypatch.setitem(globals(), "produce_result", fail_native)
+    monkeypatch.setattr(modal_client, "poll", terminal_poll)
+    monkeypatch.setattr(modal_client, "cleanup", cleanup_after_terminal)
+    job_id = _submit_upload(worker_client, extract_vocals=True)
+    job = _wait_for_terminal(worker_client, job_id)
+    assert job["status"] == JobStatus.FAILED
+    assert cleaned.wait(5)
+    assert len(failures) == 1
+    assert "owned_private_missing_filter" not in json.dumps(job)
+    assert job["manifest"] is None
+    assert worker_client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
+    assert worker_client.get(f"/api/jobs/{job_id}/original").content == _UPLOAD_BYTES
+    assert volume.snapshot() == {
+        "unrelated-private-transfer/input.bin": b"another private transfer"
+    }
+    diagnostics = list(
+        (config.DATA_DIR / "artifacts" / "inference-diagnostics").glob("*.log")
+    )
+    assert len(diagnostics) == 1
+    assert (
+        worker_client.get(
+            f"/api/jobs/{job_id}/results/{diagnostics[0].name}"
+        ).status_code
+        == 404
+    )
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        pytest.fail("A known terminal model failure was dispatched again")
+
+    monkeypatch.setattr(inference, "ensure_prepared", forbidden)
+    monkeypatch.setattr(modal_client, "spawn", forbidden)
+    monkeypatch.setattr(modal_client, "poll", forbidden)
+    monkeypatch.setattr(modal_client, "read_result", forbidden)
+    repeated = _submit_upload(worker_client, extract_vocals=True)
+    again = _wait_for_terminal(worker_client, repeated)
+    assert again["status"] == JobStatus.FAILED
+    assert again["error_message"] == job["error_message"]
+    assert len(failures) == 1
+    assert diagnostics[0].read_bytes() == failures[0]
+    assert unrelated.read_bytes() == b"another private transfer"
 
 
 def test_failed_separation_surfaces_the_error_and_serves_no_stems(

@@ -56,18 +56,3 @@ class InferenceRequest:
                 allow_nan=False,
             ).encode()
         ).hexdigest()
-
-
-@dataclass(frozen=True)
-class InferenceResult:
-    request_fingerprint: str
-    data: bytes
-
-    def for_request(self, request: InferenceRequest) -> bytes:
-        if self.request_fingerprint != request.fingerprint():
-            raise ValueError(
-                "Inference result does not match the requested model stage"
-            )
-        if not isinstance(self.data, bytes) or not self.data:
-            raise ValueError("Inference produced no artifact")
-        return self.data

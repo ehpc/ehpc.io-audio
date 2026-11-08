@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import cast
 
 from separator import cache_versions
-from separator.artifact_cache import cache_key, cached_bytes, digest
+from separator.artifact_cache import cache_key, cached_bytes, digest, sync_file
 from separator.inference import InferenceRequest, JSONValue, Operation
 from separator.lyrics import (
     RecognitionChunk,
@@ -121,6 +121,7 @@ class ProcessingContext:
     root: Path
     manifest: ProducerManifest
     infer: InferenceProducer
+    on_committed: Callable[[str, Path], None] | None = None
 
     def key(
         self, operation: Operation, identity: object, model: str | None = None
@@ -170,7 +171,12 @@ class ProcessingContext:
             return data
 
         data = cached_bytes(self.root / "inference", key, produce)
-        return cast(T, value) if produced else validate(data)
+        result = cast(T, value) if produced else validate(data)
+        if self.on_committed is not None:
+            artifact = self.root / "inference" / f"{key}.bin"
+            sync_file(artifact)
+            self.on_committed(key, artifact)
+        return result
 
     def separate(
         self, source: Path, stem: Stem, directory: Path

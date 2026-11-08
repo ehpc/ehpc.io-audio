@@ -2,18 +2,77 @@ import json
 import shutil
 import sqlite3
 import subprocess
+from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from audio_samples import tone_wav
 from fastapi.testclient import TestClient
 
-from backend import config, db
+from backend import config, db, main
 
 
 def test_health(client: TestClient) -> None:
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json() == {"status": "ok"}
+
+
+def test_static_fallback_contains_http_paths_and_preserves_public_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    shell = b"<html>owned public application</html>"
+    script = b"export const publicAsset = true;"
+    (dist / "index.html").write_bytes(shell)
+    (assets / "app.js").write_bytes(script)
+    private = tmp_path / "private" / "diagnostic.log"
+    private.parent.mkdir(mode=0o700)
+    private.write_bytes(b"owned synthetic private diagnostic")
+    private.chmod(0o600)
+    (dist / "exposed.log").symlink_to(private)
+    (dist / "linked").symlink_to(private.parent, target_is_directory=True)
+    (dist / "alias.js").symlink_to(assets / "app.js")
+    monkeypatch.setattr(main, "FRONTEND_DIST", dist)
+    http = TestClient(main.create_app())  # No lifespan, workers or model calls.
+
+    assert http.get("/assets/app.js").content == script
+    assert http.get("/alias.js").content == script
+    assert http.get("/").content == shell
+    assert http.get("/status").content == shell
+    assert http.get("/health").json() == {"status": "ok"}
+    # The HTTP client normalizes literal dot segments; encoded ones reach ASGI.
+    assert http.get("/../private/diagnostic.log").content == shell
+    for path in (
+        "/%2e%2e/private/diagnostic.log",
+        "/..%2fprivate/diagnostic.log",
+        "/%2e%2e%2fprivate%2fdiagnostic.log",
+        "/" + quote(str(private), safe=""),
+        "/exposed.log",
+        "/linked/diagnostic.log",
+    ):
+        response = http.get(path)
+        assert response.status_code == 404
+        assert private.read_bytes() not in response.content
+    assert private.read_bytes() == b"owned synthetic private diagnostic"
+
+
+def test_static_fallback_cannot_serve_an_outside_index_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    private = tmp_path / "private.log"
+    private.write_bytes(b"owned private index target")
+    (dist / "index.html").symlink_to(private)
+    monkeypatch.setattr(main, "FRONTEND_DIST", dist)
+    http = TestClient(main.create_app())
+    assert http.get("/").status_code == 404
+    assert http.get("/client/route").status_code == 404
+    assert http.get("/health").json() == {"status": "ok"}
+    assert private.read_bytes() == b"owned private index target"
 
 
 def test_submit_url_queues_job(client: TestClient) -> None:

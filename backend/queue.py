@@ -9,8 +9,9 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from backend import config, db, events, song_search_worker
-from backend.inference import process_source
+from backend.inference import cleanup_completed_transfers, process_source
 from backend.metadata import ensure_download_title
+from backend.modal_client import InferenceStageFailure
 from backend.models import (
     JobRecord,
     JobStatus,
@@ -195,6 +196,15 @@ async def _run_job(job: JobRecord) -> None:
         log.exception("job %s failed", job.id)
         message = str(exc).strip() or "Separation failed. Please try again."
         await asyncio.to_thread(db.mark_failed, job.id, message[:500])
+        if isinstance(exc, InferenceStageFailure):
+            try:
+                await asyncio.to_thread(cleanup_completed_transfers)
+            except Exception as cleanup_error:
+                log.warning(
+                    "job %s terminal transfer cleanup remains pending (%s)",
+                    job.id,
+                    type(cleanup_error).__name__,
+                )
     finally:
         await _publish_status(job.id)
 

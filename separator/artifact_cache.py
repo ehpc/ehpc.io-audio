@@ -53,6 +53,17 @@ def atomic_write(path: Path, data: bytes) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def sync_file(path: Path) -> None:
+    """Durable local publication, including the rename's parent directory."""
+    with path.open("rb") as handle:
+        os.fsync(handle.fileno())
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 @asynccontextmanager
 async def async_locked(path: Path) -> AsyncIterator[None]:
     """Wait without blocking the event loop or leaking work on cancellation."""

@@ -4,7 +4,7 @@ import argparse
 import json
 
 from backend import config, db, modal_client
-from separator.inference import InferenceResult
+from separator.inference_transport import validate_output_id
 
 
 def reconcile(
@@ -43,13 +43,10 @@ def reconcile(
         raise RuntimeError(
             "Call is not complete; request binding cannot yet be verified"
         )
-    if (
-        not isinstance(result, InferenceResult)
-        or result.request_fingerprint != receipt["request_fingerprint"]
-        or not isinstance(result.data, bytes)
-        or not result.data
-    ):
+    output_id = validate_output_id(receipt.get("output_id"))
+    if result != output_id:
         raise ValueError("Completed call does not match the recorded model request")
+    modal_client.read_result(output_id, receipt["request_fingerprint"])
     db.set_active_stage(job_id, key, call_id)
     return "attached-verified-completed-call"
 

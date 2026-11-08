@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -117,6 +117,15 @@ const cleanup = async () => {
   if (backend.exitCode === null && !backendError) backend.kill('SIGTERM');
   await backendClosed;
   await new Promise(resolve => source.close(resolve));
+  try {
+    await cp(
+      resolve(temporary, 'data', 'artifacts', 'inference-diagnostics'),
+      resolve(frontend, 'test-results', ...(visual ? ['visual'] : youtube ? ['youtube'] : []), 'inference-diagnostics'),
+      { recursive: true, force: false, errorOnExist: true },
+    );
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   await rm(temporary, { recursive: true, force: true });
 };
 let exit = 1;

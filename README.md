@@ -1463,9 +1463,26 @@ recordings are included or fetched.
    source mounts. Ordinary deployment does not re-resolve floating pip/apt
    dependencies. `separator/build_image.py` is the separate, intentional native
    producer-update path; a new image requires fresh captured provenance.
-   The GPU pool has no provider secret or network access. Model weights remain
-   on the existing read-only Modal volume, including verified in-root HF
+   The GPU pool has no provider secret or workload network access. Model weights
+   remain on the existing read-only Modal volume, including verified in-root HF
    symlinks; the bundled CREPE weights retain their image provenance.
+   A separate private read/write Volume carries staged requests and completed
+   results. Its name is derived by
+   `separator.inference_transport.transport_volume_name(app, environment)`:
+   `audio-transport-` followed by 32 hexadecimal characters. Deployment and the
+   VPS must use the same explicit app/environment; every isolated CI app gets
+   its own transport volume, never the production or model-weight volume.
+
+   All audio **and** potentially large alignment/reference parameters are
+   uploaded by the VPS before model dispatch. The Function RPC carries only a
+   persisted opaque transfer token, not large pickled inputs or results that
+   would make the SDK access blob-storage URLs inside the network-blocked
+   container. The GPU verifies the staged request fingerprint, publishes the
+   complete output and checksum receipt, commits the Volume, and returns a small
+   token. The VPS streams and verifies that private result before publishing the
+   validated local artifact. Model failures retain full private diagnostics;
+   only a bounded typed failure crosses RPC. No provider Internet access,
+   workload S3 credentials, model changes or cache-version bump is needed.
    Share preparation receipts across isolated test output roots so a cold-output
    proof does not stream gigabytes of already verified weights again.
    Historical checksum attestations retain their snapshot date and current
@@ -1582,6 +1599,47 @@ work across jobs, including after restart. The public error is honest:
 “Model dispatch uncertain; not automatically repeated.” A transport failure
 after acceptance cannot be treated as proof that no GPU work ran.
 
+The private request journal also persists its opaque transfer ID before dispatch.
+Successful transfers are deleted remotely only **after** local validation,
+file/directory fsync and a durable cleanup-pending acknowledgment. A local write
+failure retains the accepted call and remote result; a cleanup failure retains
+the pending acknowledgment, not permission to repeat inference. Restarted jobs
+can consume the same recorded call, and cache hits retry pending cleanup.
+This ordering is recoverable, not a transaction spanning SQLite and Modal.
+There is no age-based deletion of unresolved accepted work. For a known terminal
+model failure, the VPS first verifies and fsyncs the complete private diagnostic,
+persists its size/SHA and cleanup acknowledgment, and records the job as failed.
+Only then may remote input/diagnostic files be deleted. A crash or deletion
+failure leaves retryable cleanup debt; repeated requests replay the recorded
+failure locally rather than submitting the model again.
+
+Diagnostics remain under `$DATA_DIR/artifacts/inference-diagnostics` with
+directory mode `0700` and file mode `0600`; they are not job downloads and no
+public diagnostic endpoint exists. The static frontend fallback also resolves
+and confines requested files to its own build directory, rejecting encoded
+traversal, absolute paths and outward symlinks. Filesystem permissions alone
+would not protect diagnostics from an unconstrained web-server file response.
+Local failure evidence is retained for operators alongside job history; remote
+cleanup never deletes those local diagnostics or unresolved accepted work.
+
+Completed-transfer cleanup also runs before a new audio job and can be invoked
+without starting a GPU:
+
+```sh
+uv run python -c 'from backend.inference import cleanup_completed_transfers; print(cleanup_completed_transfers())'
+```
+
+It checks the recorded size/SHA of the local artifact or terminal-failure
+diagnostic before deleting only that acknowledged transfer. It does not delete
+unresolved intents, weights, old job
+files or other applications' data. CI may remove its exact owned transport
+volume only after stopping its isolated app and confirming no tasks remain.
+Failed CI runs retain that private volume for operator diagnostics; cleanup
+requires capturing the failure evidence and verifying the app is stopped and
+drained. Never apply a TTL or blanket deletion to unresolved production work.
+Storage/cleanup and intrinsic GPU filesystem I/O still have costs; this design
+does not claim free transport or an unmeasured reduction in billed allocation.
+
 First block new admission and drain/stop every audio worker; run the private
 operator command against the same persistent `DATA_DIR` with
 `QUEUE_CONCURRENCY=0`. `--admission-drained` is an operator attestation, not an
@@ -1592,9 +1650,9 @@ QUEUE_CONCURRENCY=0 uv run python -m backend.reconcile_inference \
   --job-id OWNER_JOB_ID --admission-drained --call-id VERIFIED_COMPLETED_CALL_ID
 ```
 
-The command reads that existing call and requires its result fingerprint to
-match the private recorded request before attaching it. Pending, failed or
-mismatched calls cannot be adopted. If control-plane evidence instead proves
+The command reads that existing call, matches its transfer token, and verifies
+the committed result's request fingerprint, size and SHA before attaching it.
+Pending, failed or mismatched calls cannot be adopted. If control-plane evidence instead proves
 that no call was accepted, release only the unresolved intent:
 
 ```sh

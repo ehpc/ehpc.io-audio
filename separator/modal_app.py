@@ -5,12 +5,21 @@ import os
 import subprocess
 import sys
 import tempfile
+import traceback
 from functools import cache
 from pathlib import Path
 
 import modal
 
-from separator.inference import InferenceRequest, InferenceResult
+from separator.inference import InferenceRequest
+from separator.inference_transport import (
+    TRANSFER_MOUNT,
+    InferenceTransferError,
+    load_request,
+    publish_file,
+    transport_volume_name,
+    validate_output_id,
+)
 from separator.producer_manifest import load_manifest, verify_runtime
 
 
@@ -67,6 +76,13 @@ _manifest_path = Path(
 _manifest = load_manifest(_manifest_path)
 app = modal.App(_app_name)
 model_volume = modal.Volume.from_name(MODEL_VOLUME_NAME)
+_environment = os.environ.get("MODAL_ENVIRONMENT", "").strip() or "ehpc-audio"
+transport_volume = modal.Volume.from_name(
+    transport_volume_name(_app_name, _environment),
+    environment_name=_environment,
+    create_if_missing=True,
+    version=2,
+)
 # Source deployments never re-resolve native dependencies or rebuild model images.
 # Intentional producer builds live in separator.build_image and require new capture.
 image = (
@@ -89,28 +105,7 @@ def _verify_producer(operation: str, model: str | None) -> None:
     )
 
 
-@app.function(
-    image=image,
-    gpu=GPU,
-    volumes={MODEL_CACHE: model_volume.with_mount_options(read_only=True)},
-    timeout=TIMEOUT,
-    min_containers=0,
-    buffer_containers=0,
-    max_containers=1,
-    scaledown_window=IDLE_SECONDS,
-    block_network=True,
-)
-def infer(request: InferenceRequest) -> InferenceResult:
-    """Execute one prepared native model operation, without graph/cache/network work."""
-    # Pickle does not call dataclass validation. Reject malformed inputs before I/O.
-    request = InferenceRequest(
-        operation=request.operation,
-        audio_bytes=request.audio_bytes,
-        filename=request.filename,
-        producer_digest=request.producer_digest,
-        parameters=request.parameters,
-    )
-    fingerprint = request.fingerprint()
+def _run_model(request: InferenceRequest, source: Path, temporary: Path) -> Path:
     model = (
         request.parameters.get("model") if request.operation == "separation" else None
     )
@@ -131,23 +126,20 @@ def infer(request: InferenceRequest) -> InferenceResult:
         model_cache /= "qwen-asr"
     elif request.operation == "structure":
         model_cache /= "songformer"
-    with tempfile.TemporaryDirectory(prefix="model-stage-") as directory:
-        temporary = Path(directory)
-        source = temporary / "input"
-        source.write_bytes(request.audio_bytes)
-        metadata = temporary / "request.json"
-        metadata.write_text(
-            json.dumps(
-                {
-                    "operation": request.operation,
-                    "filename": request.filename,
-                    "producer_digest": request.producer_digest,
-                    "parameters": request.parameters,
-                },
-                allow_nan=False,
-            )
+    metadata = temporary / "request.json"
+    metadata.write_text(
+        json.dumps(
+            {
+                "operation": request.operation,
+                "filename": request.filename,
+                "producer_digest": request.producer_digest,
+                "parameters": request.parameters,
+            },
+            allow_nan=False,
         )
-        output = temporary / "result"
+    )
+    output = temporary / "result"
+    with (temporary / "diagnostics.log").open("a") as diagnostics:
         subprocess.run(
             [
                 python,
@@ -160,7 +152,55 @@ def infer(request: InferenceRequest) -> InferenceResult:
             ],
             check=True,
             timeout=TIMEOUT,
+            stdout=diagnostics,
+            stderr=subprocess.STDOUT,
         )
-        result = InferenceResult(fingerprint, output.read_bytes())
-        result.for_request(request)
-        return result
+    return output
+
+
+@app.function(
+    image=image,
+    gpu=GPU,
+    volumes={
+        MODEL_CACHE: model_volume.with_mount_options(read_only=True),
+        TRANSFER_MOUNT: transport_volume,
+    },
+    timeout=TIMEOUT,
+    min_containers=0,
+    buffer_containers=0,
+    max_containers=1,
+    scaledown_window=IDLE_SECONDS,
+    block_network=True,
+)
+def infer(output_id: str) -> str:
+    """Only a bounded token uses RPC; bulk I/O uses the private mounted Volume."""
+    validate_output_id(output_id)
+    root = Path(TRANSFER_MOUNT)
+    try:
+        transport_volume.reload()
+        request = load_request(root, output_id)
+    except Exception:
+        # Do not serialize arbitrary SDK/native exception payloads through RPC.
+        raise InferenceTransferError(output_id, "load") from None
+    with tempfile.TemporaryDirectory(prefix="model-stage-") as directory:
+        temporary = Path(directory)
+        try:
+            output = _run_model(request, root / output_id / "input.bin", temporary)
+            publish_file(root, output_id, request, output)
+        except Exception:
+            diagnostics = temporary / "diagnostics.log"
+            with diagnostics.open("a") as output_log:
+                traceback.print_exc(file=output_log)
+            try:
+                publish_file(root, output_id, request, diagnostics, failed=True)
+                transport_volume.commit()
+            except Exception:
+                raise InferenceTransferError(output_id, "diagnostic-commit") from None
+            raise InferenceTransferError(output_id, "execution") from None
+    try:
+        transport_volume.commit()
+    except Exception:
+        # Retain the completed files: a lost commit response is not permission
+        # to run this model again. The VPS keeps the recorded call and intent.
+        raise InferenceTransferError(output_id, "result-commit") from None
+    return output_id
