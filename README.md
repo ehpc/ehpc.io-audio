@@ -1469,8 +1469,14 @@ recordings are included or fetched.
    Share preparation receipts across isolated test output roots so a cold-output
    proof does not stream gigabytes of already verified weights again.
    Historical checksum attestations retain their snapshot date and current
-   metadata cross-check limits. A CPU inspection is not proof that GPU-injected
-   native libraries match: the required real GPU gate verifies that boundary.
+   metadata cross-check limits. CPU asset inspection verifies weight bytes; it
+   does not establish the GPU runtime's FFmpeg executable/library fingerprint,
+   even for the same immutable image. The manifest uses the actual GPU-observed
+   fingerprint, corroborated against retained historical artifact keys, rather
+   than substituting the inspection runtime's identity. Strict native admission
+   checks remain enabled. A rejected pre-model call can reveal a fingerprint
+   mismatch but is not successful inference, quality or hardware-fit evidence;
+   the complete real GPU gate is still required.
 
    Preserve/copy completed artifact bytes to the VPS before cutting over
    existing cached work. The bounded CPU-only importer accepts a trusted private

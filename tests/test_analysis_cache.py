@@ -5,13 +5,87 @@ from dataclasses import replace
 
 import pytest
 from audio_samples import mp3_measurements, tone_wav
-from inference_fixture import cpu_inference, fixture_manifest
+from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
 from separator import processing
+from separator.artifact_cache import cache_key, digest
+from separator.inference import InferenceRequest
 from separator.lyrics import Transcript, TranscriptWord
 from separator.options import MixSpec, SeparationOptions
 from separator.pitch import pitch_from_json
 from separator.producer_manifest import save_manifest
+from separator.stems import INSTRUMENTS_STEM, VOCALS_STEM
+
+
+def test_legacy_audio_requires_its_actual_native_producer_identity(tmp_path):
+    """An inspection on another runtime must not replace artifact provenance."""
+    source = tmp_path / "source.wav"
+    source_bytes = tone_wav((220,), 2.4)
+    source.write_bytes(source_bytes)
+    producer = tmp_path / "producer"
+    runtime = fixture_manifest(producer, signals={"vocals": StemSignal(330, 2.4)})
+    request = InferenceRequest(
+        "separation",
+        source_bytes,
+        source.name,
+        runtime.digest_for("separation", VOCALS_STEM.model),
+        {
+            "model": VOCALS_STEM.model,
+            "outputs": [
+                {"label": output.label, "keep_pattern": output.keep_pattern}
+                for output in VOCALS_STEM.outputs
+            ],
+        },
+    )
+    # Execute the real CPU fixture producer once. Its configuration, provider
+    # source and native FFmpeg fingerprint are recorded, not invented GPU output.
+    archive = cpu_inference(request, request.fingerprint(), root=producer)
+    native = runtime.separator
+    old_key = cache_key(
+        runtime.versions["STEM"],
+        native.packages["audio-separator"],
+        {
+            name: native.packages[name]
+            for name in ("torch", "onnxruntime-gpu", "librosa")
+        },
+        native.ffmpeg,
+        VOCALS_STEM.model,
+        VOCALS_STEM.outputs,
+        digest(source_bytes),
+        runtime.models[VOCALS_STEM.model],
+    )
+    root = tmp_path / "cache"
+    old_path = root / "stems" / "versioned" / "outputs" / f"{old_key}.bin"
+    old_path.parent.mkdir(parents=True)
+    old_path.write_bytes(archive)
+    save_manifest(root / "legacy-producer-manifest.json", runtime)
+    inspection = replace(
+        runtime,
+        separator=replace(
+            native, ffmpeg=digest(b"owned differing inspection-runtime dependency")
+        ),
+    )
+    assert processing.cached_pitch_vocals(source_bytes, root, inspection) is None
+
+    def forbidden(*args):
+        raise AssertionError("completed native producer was invoked again")
+
+    context = processing.ProcessingContext(root, runtime, forbidden)
+    audio, output = context.separate(source, VOCALS_STEM, tmp_path / "job-one")[
+        "vocals"
+    ]
+    duration, frequency = mp3_measurements(audio.data)
+    assert duration == pytest.approx(2.4, abs=0.1)
+    assert frequency == pytest.approx(330, abs=1)
+    assert output.read_bytes() == audio.data
+    assert processing.cached_pitch_vocals(source_bytes, root, runtime) == audio.data
+    # A populated new cache must not turn the other runtime into a blanket alias.
+    assert processing.cached_pitch_vocals(source_bytes, root, inspection) is None
+    assert processing.cached_pitch_vocals(tone_wav((440,), 2.4), root, runtime) is None
+    with pytest.raises(AssertionError):
+        context.separate(source, INSTRUMENTS_STEM, tmp_path / "other-model")
+    assert old_path.read_bytes() == archive
+    assert source.read_bytes() == source_bytes
 
 
 def test_processing_reuses_source_clock_analysis_across_export_changes(tmp_path):

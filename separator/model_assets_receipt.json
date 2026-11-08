@@ -331,6 +331,17 @@
   ],
   "complete": true,
   "fingerprint_source_sha256": "ea5f44da2f35295f66af6a1865c105a54382ce31d82dcd4d93427d84a52f8436",
+  "gpu_runtime_observation": {
+    "ci_run_url": "https://github.com/ehpc/ehpc.io-audio/actions/runs/42436126512",
+    "source_sha": "de21deee1d7d88c89e98390c26b128da0c6de512",
+    "gpu": "L4",
+    "captured_cpu_ffmpeg": "e544279b98498cc8113015e871120de6c9976bfbf7889556ec879bdde86b8d78",
+    "observed_gpu_ffmpeg": "5bdb2c2cf332af3a0cb15972fca2dd304e4cb0c426bb2a2c4ac4f5f2308c98a4",
+    "operations_checked_before_rejection": ["separation", "recognition", "pitch"],
+    "model_execution": false,
+    "log_sha256": "f2a978cbcd8e6144ed38b6ed5f09e7dfee27c77b96e3332f4622df7563fc8f06",
+    "historical_canonical_cache_keys_matched": 3
+  },
   "image_assets": [
     {
       "path": "lib/python3.12/site-packages/torchcrepe/assets/full.pth",
@@ -340,7 +351,7 @@
     }
   ],
   "image_id": "im-tEk6TkOniS4zbFSdqBQsLv",
-  "native_gpu_equivalence": "unverified; actual inference runtime must compare before model execution",
+  "native_gpu_equivalence": "CPU and GPU FFmpeg fingerprints differ. The producer manifest uses the observed GPU fingerprint, which reproduces retained historical cache keys; strict runtime checks remain required. This receipt attests model assets, not successful inference.",
   "recognition_info": {},
   "schema": 1,
   "volume_id": "vo-Tfz4tfDSWdzGOWpGHEh7hy"
