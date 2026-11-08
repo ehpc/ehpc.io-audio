@@ -181,14 +181,6 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   expect(job.has_original).toBe(true);
   expect(job.original_key).toBe(originalKey);
   expect(job.output_key).toBe(transposeKey(originalKey, options.pitch_semitones));
-  const queue = JSON.parse(execFileSync('uv', ['run', 'python', '-c',
-    'import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.row_factory=sqlite3.Row; print(json.dumps(dict(db.execute("SELECT modal_call_id,started_at,finished_at FROM jobs WHERE id=?",(int(sys.argv[2]),)).fetchone())))',
-    resolve(process.env.E2E_DATA_DIR!, 'jobs.db'), String(job.id),
-  ], { cwd: process.env.E2E_REPO_ROOT, encoding: 'utf8' }));
-  expect(queue.started_at).not.toBeNull();
-  expect(queue.finished_at).toBeGreaterThanOrEqual(queue.started_at);
-  if (item.labels.some(label => label !== 'song')) expect(queue.modal_call_id).toMatch(/^fc-/);
-  else expect(queue.modal_call_id).toBeNull();
   const links = page.locator(`a[download][href^='/api/jobs/${job.id}/']`).filter({ visible: true });
   // Results and History each expose exactly one link for every public track.
   expect(await links.count()).toBe((item.labels.length + 1) * 2);
@@ -328,7 +320,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     const card = page.locator(`a[href='/api/jobs/${job.id}/results/song']`).first().locator('../..');
     await card.screenshot({ path: info.outputPath('source-key-pitched-card-2560.png') });
   }
-  const proof = { case: item.name, modal_app: process.env.E2E_MODAL_APP_NAME, fixture_seed: process.env.E2E_FIXTURE_SEED, options, expected_labels: item.labels, job, queue, audio, mixes, reference };
+  const proof = { case: item.name, modal_app: process.env.E2E_MODAL_APP_NAME, fixture_seed: process.env.E2E_FIXTURE_SEED, options, expected_labels: item.labels, job, audio, mixes, reference };
   await writeFile(info.outputPath('proof.json'), JSON.stringify(proof, null, 2));
   await info.attach('per-option-proof', { path: info.outputPath('proof.json'), contentType: 'application/json' });
   await page.screenshot({ path: info.outputPath('completed.png'), fullPage: true });

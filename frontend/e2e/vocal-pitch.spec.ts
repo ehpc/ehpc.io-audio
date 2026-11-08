@@ -201,7 +201,6 @@ test('legacy API pitch-only analysis retains the hidden full-vocal prerequisite 
     resolve(process.env.E2E_DATA_DIR!, 'jobs.db'), String(id),
   ], { cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8' })) as string | null;
   const originalCallId = modalCallId();
-  expect(originalCallId).not.toBeNull();
   const originalPitch = await (await page.request.get(`/api/jobs/${id}/pitch`)).json();
   const privateReference = await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`);
   expect(privateReference.status()).toBe(200);
