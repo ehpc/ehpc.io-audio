@@ -1100,6 +1100,10 @@ exports at desktop/mobile widths. These disjoint lanes retain their behavior
 cases. The separate native-listening, visual and manual YouTube suites are
 excluded from the live-queue matrix.
 
+The browser harness bootstraps an account once through a real invitation and
+email OTP; fresh browser contexts share that account and its persistent history,
+so result assertions are scoped by job ID rather than global totals or an empty history.
+
 Historical stored-analysis cases publish their existing synthetic/captured pitch
 fixtures directly. Complete Karaoke fixtures instead execute the production
 CPU processing graph and persistent warm-cache reuse through an explicitly

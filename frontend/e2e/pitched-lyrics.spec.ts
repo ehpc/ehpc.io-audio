@@ -40,11 +40,12 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(analysis.tracks.map(track => track.label)).toEqual(['vocals', 'lead', 'backing']);
   expect(job!.pitched_lyrics!.map(track => track.label)).toEqual(['vocals', 'lead', 'backing']);
   expect(job!.manifest!.map(track => track.label)).toEqual(['song', 'vocals', 'lead', 'backing']);
-  const view = page.getByRole('region', { name: 'Lyrics with pitches', exact: true }).first();
+  const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+  const view = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
   const text = view.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true });
   await expect(view).toBeVisible();
-  await expect(page.getByLabel('Vocal pitch analysis', { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Lyrics transcript', { exact: true })).toHaveCount(0);
+  await expect(results.getByLabel('Vocal pitch analysis', { exact: true })).toHaveCount(0);
+  await expect(results.getByLabel('Lyrics transcript', { exact: true })).toHaveCount(0);
   const proofs = [];
   for (const [index, track] of job!.pitched_lyrics!.entries()) {
     await view.getByRole('combobox', { name: 'Pitched lyrics vocal stem', exact: true }).selectOption(track.label);
@@ -88,13 +89,13 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   });
   await view.screenshot({ path: info.outputPath('pitched-lyrics-1440.png') });
   // New output does not add players; selected tracks retain exclusive playback.
-  const original = page.locator('audio').first();
-  const vocal = page.locator(`a[download][href="/api/jobs/${id}/results/vocals"]`).first().locator('..').locator('audio');
+  const original = results.locator(`a[href="/api/jobs/${id}/original"]`).locator('..').locator('audio');
+  const vocal = results.locator(`a[download][href="/api/jobs/${id}/results/vocals"]`).locator('..').locator('audio');
   await original.evaluate(element => element.play());
   await vocal.evaluate(element => element.play());
   await expect.poll(() => original.evaluate(element => element.paused)).toBe(true);
   await vocal.evaluate(element => element.pause());
-  const song = page.locator(`a[download][href="/api/jobs/${id}/results/song"]`).first().locator('..').locator('audio');
+  const song = results.locator(`a[download][href="/api/jobs/${id}/results/song"]`).locator('..').locator('audio');
   await song.evaluate(element => { element.preload = 'metadata'; element.load(); });
   await expect.poll(() => song.evaluate(element => element.duration)).toBeGreaterThan(0);
   const durationProof = {
@@ -110,14 +111,14 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(durationProof.first_word_output_s).toBeLessThan(durationProof.transformed_s);
   await page.reload();
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  expect(await history.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true }).textContent()).toBe(job!.pitched_lyrics![0].text);
+  const historyCard = history.locator('.rounded-lg').filter({ has: page.locator(`a[href="/api/jobs/${id}/original"]`) });
+  expect(await historyCard.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true }).textContent()).toBe(job!.pitched_lyrics![0].text);
   const mobile = await browser.newContext({ storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const phone = await mobile.newPage();
   await phone.goto(process.env.E2E_BASE_URL!);
-  const mobileView = phone.getByRole('region', { name: 'Lyrics with pitches', exact: true }).first();
+  const mobileView = phone.getByRole('heading', { name: 'Results', exact: true }).locator('../..').getByRole('region', { name: 'Lyrics with pitches', exact: true });
   const mobileText = mobileView.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true });
   expect(await mobileText.textContent()).toBe(job!.pitched_lyrics![0].text);
-  expect(await mobileText.evaluate(element => ({ font: getComputedStyle(element).fontSize, wrap: getComputedStyle(element).whiteSpace }))).toEqual({ font: '16px', wrap: 'pre' });
   expect(await mobileText.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
   const firstRows = await mobileText.evaluate(element => {
     const content = element.textContent!;

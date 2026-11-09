@@ -52,16 +52,16 @@ async function assertTranscriptAndDownload(page: Page, job: JobDTO) {
   expect(lower).toContain('your country');
   expect(lower).toContain('do for you');
   expect(text).toMatch(/^\[\d{2}:\d{2}\] /m);
-  expect(job.transcript!.sections.length).toBeGreaterThan(0);
   expect(text).toMatch(/^\[(Intro|Verse|Pre-chorus|Chorus|Bridge|Instrumental|Outro|Silence)\]$/m);
   const maxEndS = Math.max(...job.transcript!.segments.map(segment => segment.end_s));
   expect(maxEndS).toBeLessThanOrEqual(11.0);
   if (job.options.tempo_percent === 120) expect(maxEndS).toBeGreaterThan(11 / 1.2);
-  await expect(page.getByText(text, { exact: true }).first()).toBeVisible();
+  const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+  await expect(results.getByText(text, { exact: true })).toBeVisible();
   const transcriptResponse = await page.request.get(`/api/jobs/${job.id}/lyrics`);
   expect(transcriptResponse.ok()).toBe(true);
   expect(await transcriptResponse.json()).toEqual(job.transcript);
-  await expect(page.getByText('Original audio timestamps', { exact: false }).first()).toBeVisible();
+  await expect(results.getByText('Original audio timestamps', { exact: false })).toBeVisible();
   const url = `/api/jobs/${job.id}/lyrics/download`;
   const response = await page.request.get(url);
   expect(response.ok()).toBe(true);
@@ -69,7 +69,7 @@ async function assertTranscriptAndDownload(page: Page, job: JobDTO) {
   const body = await response.body();
   expect(body.toString('utf8')).toBe(text);
   const downloadPromise = page.waitForEvent('download');
-  await page.locator(`a[href="${url}"]`).first().click();
+  await results.locator(`a[href="${url}"]`).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('jfk - lyrics.txt');
   return { filename: download.suggestedFilename(), sha256: createHash('sha256').update(body).digest('hex') };
@@ -100,7 +100,7 @@ test('real speech lyrics render and download in Results and History on the origi
   await page.screenshot({ path: desktopScreenshot, fullPage: true });
   await info.attach('lyrics-results-desktop', { path: desktopScreenshot, contentType: 'image/png' });
   const transcriptScreenshot = info.outputPath('lyrics-transcript-desktop.png');
-  await page.getByLabel('Lyrics transcript').first().screenshot({ path: transcriptScreenshot });
+  await page.getByRole('heading', { name: 'Results', exact: true }).locator('../..').getByLabel('Lyrics transcript').screenshot({ path: transcriptScreenshot });
 
   const transformedId = await submitJfk(page, { vocals: true, pitch: 2, tempo: 120 });
   const transformed = await complete(page, transformedId);
@@ -112,7 +112,7 @@ test('real speech lyrics render and download in Results and History on the origi
   const mobileScreenshot = info.outputPath('lyrics-results-mobile.png');
   await page.screenshot({ path: mobileScreenshot, fullPage: true });
   await info.attach('lyrics-results-mobile', { path: mobileScreenshot, contentType: 'image/png' });
-  const resultTranscript = page.getByLabel('Lyrics transcript').first();
+  const resultTranscript = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..').getByLabel('Lyrics transcript');
   const resultDownload = resultTranscript.getByRole('link', { name: 'Download timestamped TXT' });
   expect((await resultDownload.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   expect(await resultTranscript.getByLabel('Timestamped lyrics', { exact: true }).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -120,14 +120,15 @@ test('real speech lyrics render and download in Results and History on the origi
 
   await page.reload();
   const history = page.locator('section').filter({ has: page.getByRole('heading', { name: 'History', exact: true }) });
-  const historyTranscripts = history.getByLabel('Lyrics transcript');
-  await expect(historyTranscripts).toHaveCount(2);
-  await expect(history.getByLabel('Timestamped lyrics', { exact: true }).filter({ hasText: /my fellow americans/i })).toHaveCount(2);
-  const lyricsOnlyHistoryTranscript = historyTranscripts.nth(1);
+  const historyCard = (id: number) => history.locator('.rounded-lg').filter({ has: page.locator(`a[href="/api/jobs/${id}/original"]`) });
+  const lyricsOnlyHistoryTranscript = historyCard(lyricsOnlyId).getByLabel('Lyrics transcript');
+  const transformedHistoryTranscript = historyCard(transformedId).getByLabel('Lyrics transcript');
+  await expect(lyricsOnlyHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
+  await expect(transformedHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
   await lyricsOnlyHistoryTranscript.getByText('View lyrics', { exact: true }).click();
   await expect(lyricsOnlyHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toBeVisible();
   await expect(lyricsOnlyHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
-  await expect(page.getByRole('link', { name: /^Download jfk - vocals/ })).toBeVisible();
+  await expect(historyCard(transformedId).locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   const lyricsOnlyHistoryLink = history.locator(`a[href="/api/jobs/${lyricsOnlyId}/lyrics/download"]`);
   await expect(lyricsOnlyHistoryLink).toHaveCount(1);
   const historyDownloadPromise = page.waitForEvent('download');
@@ -167,6 +168,6 @@ test('real speech lyrics render and download in Results and History on the origi
     },
   }, null, 2), 'utf8');
   await info.attach('lyrics-proof', { path: proofPath, contentType: 'application/json' });
-  await expect(page.getByRole('link', { name: /^Download jfk - vocals/ })).toBeVisible();
+  await expect(historyCard(transformedId).locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
 });

@@ -2,6 +2,7 @@ import { test as base, type BrowserContext } from '@playwright/test';
 
 // The runner creates this session by redeeming a real invitation and email OTP.
 // Each test receives a fresh browser context, without repeating rate-limited mail.
+// Contexts share the same account and persistent history; scope result assertions by job ID.
 export const test = base.extend({
   context: async ({ context, baseURL }, use) => {
     const session = process.env.E2E_AUTH_SESSION;

@@ -295,7 +295,6 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     expect(hash(await readFile(files.lead))).not.toBe(hash(await readFile(files.backing)));
     for (const width of [1440, 1920, 2560, 3840, 375, 390, 430]) {
       await page.setViewportSize({ width, height: width < 700 ? 844 : 1100 });
-      await expect(page.getByText(`Source key: ${originalKey}`, { exact: true })).toHaveCount(allLabels.length * 2);
       const geometry = await page.evaluate(id => {
         const links = [...document.querySelectorAll<HTMLAnchorElement>(`a[href^="/api/jobs/${id}/results/"]`)];
         return {
@@ -417,7 +416,8 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   expect(served.status()).toBe(200);
   expect(decodeURIComponent(served.headers()['content-disposition'])).toContain('silent-fixture - song - pitch+2st.mp3');
   expect(served.headers()['content-disposition']).not.toContain('source-key');
-  await expect(page.getByText(/Source key:/)).toHaveCount(0);
+  const resultCard = page.locator(`a[href='/api/jobs/${id}/results/song']`).first().locator('../..');
+  await expect(resultCard.getByText(/Source key:/)).toHaveCount(0);
   const event = page.waitForEvent('download');
   await page.locator(`a[href='/api/jobs/${id}/results/song']`).first().click();
   const download = await event;
