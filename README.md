@@ -404,9 +404,10 @@ this is not a promise that the additional outputs are cost-free.
 
 **Lyrics with pitches** remains a separate text-output mode: it does not select
 karaoke or expose its internal vocal/lyric-analysis prerequisites as downloads.
-The API retains the `detect_pitch` field, and older stored pitch-only jobs and
-independent API callers keep their existing behavior. All options remain off
-by default.
+For API requests, `detect_pitch=true` also exports the canonical
+`drums-vocals` mix; isolated vocals and drums remain internal unless requested,
+and private vocal playback can be recovered from cache. Older stored jobs keep
+their existing manifests. All options remain off by default.
 
 The source selector offers **From URL**, **Upload audio**, and **Find song**.
 In Find song, enter a title, artist, or description (up to 500 characters), then
@@ -1317,7 +1318,7 @@ screenshots, video, and Playwright traces. The HTML report is in
 emits GitHub annotations for failed assertions and stops on the first failure.
 The full-stack gate must complete without skipped cases.
 
-The private `backend-exit.json` artifact records the spawned `uv` wrapper's
+The `backend-exit.json` artifact records the spawned `uv` wrapper's
 exit code, signal and `shutdownRequested` state, plus available cgroup-v2
 memory-event counters before and after the run (or `null` when unavailable).
 The wrapper status is not necessarily the direct Uvicorn status, and counters
