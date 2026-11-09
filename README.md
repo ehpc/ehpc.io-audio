@@ -12,9 +12,11 @@ visitor sees their live position.
 
 Invite-only email-OTP access and its operator configuration are implemented and
 tested locally but **are not deployed**. The existing send-only mail service is
-active; one approved delivery passed SPF, DKIM and DMARC, which does not establish ongoing
-deliverability. See [ACCESS_PLAN.md](ACCESS_PLAN.md) for bootstrap, invitation
-accounting, credential provisioning, legacy ownership and rollout prerequisites.
+active; one approved delivery passed SPF, DKIM and DMARC, which does not
+establish ongoing deliverability. An isolated gateway-only ingress test passed;
+the real audio policy and authenticated cutover remain unverified. See
+[ACCESS_PLAN.md](ACCESS_PLAN.md) for bootstrap, invitation accounting,
+credential provisioning, legacy ownership and rollout prerequisites.
 
 ## Architecture
 

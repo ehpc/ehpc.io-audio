@@ -41,8 +41,10 @@ Two independent stable secrets of at least 32 bytes each are required:
 `audio-auth-otp-secret` and `audio-auth-invite-secret` in the encrypted top
 level of `~/ehpc.io-configs/secrets.yaml`. The prepared SOPS templates create
 `default/audio-auth` with keys `AUTH_OTP_SECRET` and `AUTH_INVITE_SECRET`.
-Use distinct cryptographically random values, retain them across restarts and
-backups, and never put them in chat, logs, source control as plaintext, or the
+Use a cryptographically secure pseudorandom number generator (CSPRNG) to create
+two distinct, stable secrets of at least 32 bytes each (at least 64 hexadecimal
+characters per key); retain them across restarts and backups. Never put them in
+chat, logs, source control as plaintext, or the
 world-readable Nix store. The existing root-only SOPS age identity is not
 accessible to the normal account; the authorized root operator must add both
 keys with the existing encrypted-file workflow, for example:
@@ -82,9 +84,12 @@ node's observed pod subnet, not an unconditional trust grant: it is safe only
 with the gateway-only ingress NetworkPolicy enforced, no broader policy, and
 restricted permission to create gateway-labelled pods. The gateway overwrites
 `X-Real-IP`, while the app ignores incoming `X-Forwarded-For`; Uvicorn must
-preserve the raw peer. Recheck the current subnet and test Canal enforcement,
-gateway traffic and node health probes before rollout. Until then **per-client
-IP protection is unverified and production rollout is blocked**.
+preserve the raw peer. An isolated equivalent Canal policy probe allowed the
+gateway, denied a nonmatching pod, and kept kubelet readiness healthy; it did
+not apply the policy to the real audio pod. The default service account could
+not create or patch pods. Recheck the current subnet, permissions and effective
+policy, gateway traffic and node health probes at rollout. Until the actual
+audio ingress boundary is verified, **production rollout remains blocked**.
 
 The active IPv4-only mail system submits through the restricted Unix socket as
 `no-reply@auth.ehpc.io` with envelope sender `bounce@auth.ehpc.io`. It is not a
