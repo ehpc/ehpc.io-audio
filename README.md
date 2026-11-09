@@ -1317,6 +1317,16 @@ screenshots, video, and Playwright traces. The HTML report is in
 emits GitHub annotations for failed assertions and stops on the first failure.
 The full-stack gate must complete without skipped cases.
 
+The private `backend-exit.json` artifact records the spawned `uv` wrapper's
+exit code, signal and `shutdownRequested` state, plus available cgroup-v2
+memory-event counters before and after the run (or `null` when unavailable).
+The wrapper status is not necessarily the direct Uvicorn status, and counters
+alone do not automatically attribute a failure to OOM.
+The long-interval Playwright job-status polls for vocal pitch and pitched lyrics
+request `Connection: close`; they still fail on HTTP errors, but do not exercise
+pooled connections on those polling paths. This is a test-client choice, not a
+claim about the cause of a previous reset.
+
 Local domain tests exhaust independent audio-output boolean combinations and
 exercise arbitrary mix selections with decoded waveform/spectral assertions.
 These are deterministic local checks, not thousands of GPU runs or a proof over

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
 import { transform } from 'esbuild';
 import { startMediaRelay } from './media-relay.mjs';
+import { memoryEvents, observeBackend } from './backend-evidence.mjs';
 import { startAuthSmtp } from './auth-smtp.mjs';
 
 // Use the already-provisioned environment rather than resolving dependencies
@@ -103,16 +104,19 @@ const environment = {
   E2E_REPO_ROOT: root,
   E2E_FIXTURE_SEED: String(fixtureSeed),
 };
+const memoryBefore = await memoryEvents();
 const backend = spawn('uv', ['run', 'uvicorn', 'backend.main:app', '--no-proxy-headers', '--host', '127.0.0.1', '--port', String(port)], {
   cwd: root, env: environment, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let backendLog = '';
 let backendError;
+const backendEvidence = observeBackend(backend);
 const backendClosed = new Promise(resolve => backend.once('close', resolve));
 backend.once('error', error => { backendError = error; });
 let child;
 let interrupted = false;
 const interrupt = () => {
+  backendEvidence.requestShutdown();
   interrupted = true;
   child?.kill('SIGTERM');
   void mediaRelay?.stop();
@@ -122,6 +126,7 @@ process.once('SIGINT', interrupt);
 process.once('SIGTERM', interrupt);
 for (const stream of [backend.stdout, backend.stderr]) stream.on('data', chunk => { backendLog += chunk; process.stdout.write(chunk); });
 const cleanup = async () => {
+  backendEvidence.requestShutdown();
   await mediaRelay?.stop();
   if (backend.exitCode === null && !backendError) backend.kill('SIGTERM');
   await backendClosed;
@@ -199,7 +204,10 @@ try {
       }, null, 2));
     }
   } finally {
+    const results = resolve(frontend, 'test-results', ...(visual ? ['visual'] : youtube ? ['youtube'] : []));
+    const memoryAfter = await memoryEvents();
     await cleanup();
+    await backendEvidence.write(resolve(results, 'backend-exit.json'), memoryBefore, memoryAfter);
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', interrupt);
   }

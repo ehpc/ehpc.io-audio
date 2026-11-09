@@ -27,7 +27,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   const id = (await (await submitted).json()).id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {
-    job = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
+    job = await (await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } })).json() as JobDTO;
     if (job.status === 'failed') throw new Error(job.error_message ?? 'Pitched lyrics failed');
     return job.status;
   }, { timeout: 25 * 60 * 1000, intervals: [500, 2000, 5000] }).toBe('done');
@@ -174,7 +174,7 @@ test('pitched lyrics alone analyze hidden vocals without adding audio exports', 
   const id = (await response.json()).id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {
-    job = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
+    job = await (await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } })).json() as JobDTO;
     if (job.status === 'failed') throw new Error(job.error_message ?? 'Pitched lyrics failed');
     return job.status;
   }, { timeout: 20 * 60 * 1000, intervals: [1000, 5000] }).toBe('done');

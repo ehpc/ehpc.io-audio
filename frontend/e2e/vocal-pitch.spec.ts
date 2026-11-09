@@ -31,7 +31,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const id = (await (await submitted).json()).id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {
-    const response = await page.request.get(`/api/jobs/${id}`);
+    const response = await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } });
     expect(response.ok()).toBe(true);
     job = await response.json() as JobDTO;
     if (job.status === 'failed') throw new Error(job.error_message ?? 'Pitch job failed');
@@ -182,7 +182,7 @@ test('legacy API pitch-only analysis retains the hidden full-vocal prerequisite 
   }, [...source]);
   let job: JobDTO | undefined;
   await expect.poll(async () => {
-    job = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
+    job = await (await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } })).json() as JobDTO;
     if (job.status === 'failed') throw new Error(job.error_message ?? 'Pitch job failed');
     return job.status;
   }, { timeout: 20 * 60 * 1000, intervals: [500, 2000, 5000] }).toBe('done');
