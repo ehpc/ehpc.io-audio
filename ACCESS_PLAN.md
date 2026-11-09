@@ -45,36 +45,42 @@ Use a cryptographically secure pseudorandom number generator (CSPRNG) to create
 two distinct, stable secrets of at least 32 bytes each (at least 64 hexadecimal
 characters per key); retain them across restarts and backups. Never put them in
 chat, logs, source control as plaintext, or the
-world-readable Nix store. The existing root-only SOPS age identity is not
-accessible to the normal account; the authorized root operator must add both
-keys with the existing encrypted-file workflow, for example:
+world-readable Nix store. If either key is missing, an authorized root operator
+must add it privately with the existing encrypted-file workflow, for example:
 
 ```sh
 sudo env SOPS_AGE_KEY_FILE=/etc/age/keys.txt sops /home/ehpc/ehpc.io-configs/secrets.yaml
 ```
 
-The complete not-yet-installed configuration is
-[`vps-auth-config.patch`](vps-auth-config.patch), based on the existing
-`ehpc.io-configs` checkout and preserving its image pin and unrelated edits.
-After the root operator has added **both** encrypted values, make a protected
-backup of the configuration checkout and existing data, copy the patch to the
-host, and review its context against any intervening changes. For example, with
-the patch copied to `/tmp/vps-auth-config.patch` on the host:
+The prepared configuration resides in the VPS
+`~/ehpc.io-configs` checkout. Its canonical Deployment and ingress policy are
+`nixos/audio-deployment.yaml` and `nixos/audio-network-policy.yaml`; the apply
+service captures them in the Nix closure and derives the mail group at runtime.
+The remaining common manifests stay in `k8s/120-audio`. Installing source
+files alone does not activate the configuration.
 
-```sh
-patch --dry-run -p1 -d /home/ehpc/ehpc.io-configs -i /tmp/vps-auth-config.patch
-patch -p1 -d /home/ehpc/ehpc.io-configs -i /tmp/vps-auth-config.patch
-```
+Before the approved cutover, preserve a consistent database backup, review all
+current user changes, and verify that the local build source, common manifests,
+and approved image pin match. Build the NixOS closure on a workstation or CI,
+not on the VPS; copy the verified closure and have an authorized root operator
+activate it. Explicitly start the new `apply-k8s-manifests.service` after SOPS
+templates are ready: an inactive oneshot may not rerun on switch. Verify the
+unit result, Secrets, network policy, pod image and health. Never use an old
+database restore to discard work accepted after cutover.
 
-Do not apply the patch blindly if context differs. Applying source files alone
-does not activate them. Before a separately approved NixOS activation, verify
-the policy and gateway boundary described below; then deploy the reviewed app
-image only after matching release checks. Never use an old database restore to
-discard work accepted after cutover.
+Save the original live Deployment specification and immutable image pin as
+well as the consistent database backup. A pre-auth Nix generation's old apply
+unit does not restore the Deployment after its legacy manifest was moved, and
+`kubectl apply` without prune retains existing Secrets and NetworkPolicies.
+Recovery therefore needs a separately reviewed Kubernetes rollback or forward
+fix; do not assume a Nix generation switch reverses the application. If an old
+anonymous image is ever restored, keep public access closed rather than
+silently removing authentication. Later Nix generations contain the Deployment
+in their closures; explicitly rerun the apply unit after an approved rollback.
 
-In the protected editor, add the two values without exposing them. Do not run a
-rebuild or apply while either is missing; configuration preflight refuses
-unreadable, short, or equal keys. The application also receives
+Retain existing keys without rotation. Do not activate or apply while either
+is missing; configuration preflight refuses unreadable, short, or equal keys.
+The application also receives
 `AUTH_ORIGIN=https://audio.ehpc.io`, `AUTH_ADMIN_EMAIL=ehpc@ehpc.io`, and
 `AUTH_SMTP_SOCKET=/run/audio-mail/submit.sock`. The socket directory, not the
 socket inode, is mounted read-only; a runtime-derived supplemental group grants
