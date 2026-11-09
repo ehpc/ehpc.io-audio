@@ -207,7 +207,7 @@ def test_processing_uses_reference_aligned_words_for_pitch_and_preserves_asr_clo
         extract_lyrics=True, detect_pitch=True, pitch_semitones=1.25, tempo_percent=125
     )
     result = processing.run_processing(source, options, tmp_path, context)
-    assert result.audio == {}
+    assert list(result.audio) == ["drums-vocals"]
     assert result.transcript is not None and result.transcript.reference is not None
     assert [word.text for word in result.transcript.words] == list(WORDS)
     assert result.transcript.reference.original_words == original_words
@@ -229,6 +229,8 @@ def test_processing_uses_reference_aligned_words_for_pitch_and_preserves_asr_clo
         transcript_from_json(json.dumps(asdict(result.transcript))) == result.transcript
     )
     assert calls == [
+        ("separation", None),
+        ("separation", None),
         ("separation", None),
         ("recognition", None),
         ("alignment", "recognition"),

@@ -6,8 +6,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from backend import config, db, events
+from backend import auth_store, config, db, events
 from backend.models import JobDTO, JobRecord, JobStatus, job_to_dto
+from backend.routes.auth import cookie_name
 from backend.session import get_session_id
 from separator.options import SeparationOptions, parse_mixes
 
@@ -89,9 +90,12 @@ async def submit_job(
         source_type, source_value = "url", url.strip()
         upload_bytes = None
 
-    job_id = await asyncio.to_thread(
-        db.insert_job, session_id, source_type, source_value, options
-    )
+    try:
+        job_id = await asyncio.to_thread(
+            db.insert_job, session_id, source_type, source_value, options
+        )
+    except ValueError as exc:
+        raise HTTPException(429, str(exc)) from None
 
     if upload_bytes is not None:
         await _save_upload(job_id, source_value, upload_bytes)
@@ -108,9 +112,12 @@ async def retry_job(
     if job is None or job.session_id != session_id:
         raise HTTPException(404, "job not found")
 
-    new_job_id = await asyncio.to_thread(
-        db.insert_job, session_id, job.source_type, job.source_value, job.options
-    )
+    try:
+        new_job_id = await asyncio.to_thread(
+            db.insert_job, session_id, job.source_type, job.source_value, job.options
+        )
+    except ValueError as exc:
+        raise HTTPException(429, str(exc)) from None
 
     if job.source_type == "upload":
         src = config.UPLOADS_DIR / str(job.id) / job.source_value
@@ -150,7 +157,7 @@ _SSE_HEARTBEAT_INTERVAL = 15
 
 @router.get("/jobs/{job_id}/events")
 async def job_events(
-    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+    job_id: int, request: Request, session_id: Annotated[str, Depends(get_session_id)]
 ) -> StreamingResponse:
     job = await asyncio.to_thread(db.get_job, job_id)
     if job is None or job.session_id != session_id:
@@ -168,6 +175,9 @@ async def job_events(
                 return
 
             while True:
+                token = request.cookies.get(cookie_name(), "")
+                if await asyncio.to_thread(auth_store.authenticate, token) is None:
+                    return
                 try:
                     payload = await asyncio.wait_for(
                         queue.get(), timeout=_SSE_HEARTBEAT_INTERVAL
@@ -175,6 +185,8 @@ async def job_events(
                 except TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
+                if await asyncio.to_thread(auth_store.authenticate, token) is None:
+                    return
                 yield f"data: {json.dumps(payload)}\n\n"
                 if payload["status"] in (JobStatus.DONE, JobStatus.FAILED):
                     return

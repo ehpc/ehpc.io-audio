@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './auth-fixture';
 import type { QueryRecognition } from '../src/components/VoiceQuery';
 import { songArtwork, songVersions } from './song-fixtures';
 

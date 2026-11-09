@@ -45,7 +45,7 @@ const KARAOKE_INCLUDED_OPTIONS: Partial<Record<BooleanOptionKey, string>> = {
   extract_vocals: "Full vocals are included with Karaoke with pitches for the vocal listening reference.",
   extract_lyrics: "Lyrics are included with Karaoke with pitches for timed word highlighting.",
   extract_instruments: "Instruments are included with Karaoke with pitches for an instrumental backing track and download.",
-  drums: "Drum separation is included with Karaoke with pitches for the drums-only backing track. Drums, bass and other instruments are all available as downloads.",
+  drums: "Drum separation is included with Karaoke with pitches for the drums-only and Drums + Vocals backing tracks. Drums, bass and other instruments are all available as downloads.",
 };
 
 const DEFAULT_OPTIONS: SeparationOptions = {
@@ -383,17 +383,43 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                     const [hovered, setHovered] = createSignal(false);
                     const [focused, setFocused] = createSignal(false);
                     const [expanded, setExpanded] = createSignal(false);
+                    const [helpAbove, setHelpAbove] = createSignal(false);
                     const reason = () => lockedOptions()[opt.key];
                     const helpVisible = () => hovered() || focused() || expanded();
                     let helpElement: HTMLParagraphElement | undefined;
+                    let optionRow: HTMLDivElement | undefined;
                     createEffect(() => {
                       if (mobile() && reason() && helpVisible() && (focused() || expanded())
                         && helpElement?.isConnected && !helpElement.hidden) {
                         helpElement.scrollIntoView({ block: "nearest", behavior: "instant" });
                       }
                     });
+                    createEffect(() => {
+                      if (mobile() || !reason() || !helpVisible()) {
+                        setHelpAbove(false);
+                        return;
+                      }
+                      const placeHelp = () => {
+                        if (!optionRow || !helpElement || helpElement.hidden) return;
+                        const row = optionRow.getBoundingClientRect();
+                        const height = helpElement.getBoundingClientRect().height;
+                        const footer = document.querySelector(".workspace-action");
+                        const footerBox = footer?.getBoundingClientRect();
+                        const position = footer && getComputedStyle(footer).position;
+                        const bottom = footerBox && (position === "fixed" || position === "sticky")
+                          && footerBox.top < window.innerHeight ? footerBox.top : window.innerHeight;
+                        setHelpAbove(row.bottom + height > bottom && row.top >= height);
+                      };
+                      placeHelp();
+                      window.addEventListener("resize", placeHelp);
+                      window.addEventListener("scroll", placeHelp, true);
+                      onCleanup(() => {
+                        window.removeEventListener("resize", placeHelp);
+                        window.removeEventListener("scroll", placeHelp, true);
+                      });
+                    });
                     return (
-                      <div class="workspace-option-row" onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+                      <div ref={optionRow} class="workspace-option-row" onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
                         <label class="workspace-option" for={`option-${opt.key}`}>
                           <input id={`option-${opt.key}`} type="checkbox" checked={options()[opt.key]} aria-label={opt.label}
                             disabled={!!reason()} aria-describedby={reason() ? `option-help-${opt.key}` : undefined}
@@ -413,7 +439,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
                             onKeyDown={(event) => {
                               if (event.key === "Escape") { setFocused(false); setExpanded(false); setHovered(false); }
                             }}>Why?</button>
-                          <p ref={helpElement} id={`option-help-${opt.key}`} class="option-dependency-help" role="tooltip" hidden={!helpVisible()}>
+                          <p ref={helpElement} id={`option-help-${opt.key}`} class="option-dependency-help" role="tooltip" hidden={!helpVisible()}
+                            style={helpAbove() ? { top: "auto", bottom: "100%" } : undefined}>
                             {reason()} Turn off Karaoke with pitches to change this option.
                           </p>
                         </Show>

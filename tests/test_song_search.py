@@ -529,6 +529,8 @@ def test_query_cache_migration_preserves_legacy_rows_and_private_handle_behavior
 def test_atomic_claims_do_not_duplicate_work_and_restart_recovers_local_only(
     client, producer, clock
 ):
+    with db._session() as conn:
+        conn.execute("INSERT INTO auth_settings VALUES ('user_queue', 8)")
     paths = [start(client, f"song {number}") for number in range(8)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         claimed = list(

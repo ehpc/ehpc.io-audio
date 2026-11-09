@@ -50,7 +50,7 @@ dev:
 	mkdir -p dev-data
 	@test -d frontend/node_modules || (cd frontend && npm install)
 	trap 'kill 0' EXIT; \
-	(DATA_DIR=$(CURDIR)/dev-data QUEUE_CONCURRENCY=1 uv run uvicorn backend.main:app --reload --reload-dir backend --reload-dir separator --port 8000 2>&1 | sed -e 's/^/[backend] /') & \
+	(DATA_DIR=$(CURDIR)/dev-data QUEUE_CONCURRENCY=1 uv run uvicorn backend.main:app --reload --reload-dir backend --reload-dir separator --port 8000 --no-proxy-headers 2>&1 | sed -e 's/^/[backend] /') & \
 	(cd frontend && npm run dev 2>&1 | sed -e 's/^/[frontend] /') & \
 	wait
 

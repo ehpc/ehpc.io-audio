@@ -1,4 +1,4 @@
-import { render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { describe, expect, it } from "vitest";
 import type { AlignedWordDTO, JobDTO, ReferenceLineDTO, TranscriptDTO } from "~/api";
@@ -117,12 +117,12 @@ describe("karaoke provenance and output clock", () => {
     const [position, setPosition] = createSignal(10.5);
     render(() => <TimelineKaraoke job={source} position={position()} />);
     const region = screen.getByRole("region", { name: "Current karaoke line" });
-    expect(region.textContent).toBe("actual");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^actual$/);
     setPosition(16.5);
-    expect(region.textContent).toBe("Go, go—don't stop!");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^Go, go—don't stop!$/);
     expect(region.querySelector("[aria-current]")).toHaveTextContent("Go");
     setPosition(12.5);
-    expect(region.textContent).toBe("adlib");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^adlib$/);
     expect(region.querySelector("[aria-current]")).toHaveTextContent("adlib");
   });
 
@@ -198,6 +198,27 @@ describe("karaoke provenance and output clock", () => {
     source.pitch!.words = [];
     expect(karaokeLines(source)).toEqual([]);
   });
+
+  it("links only unambiguous projected word identities, not filtered transcript indices or repeated text", () => {
+    const source = job();
+    source.pitch!.words = [
+      word("unrelated", 1, 2), word("Go", 8, 9), word("go", 4, 5),
+      word("don't", 6, 7), word("don't", 6, 7),
+      { ...word("don't", 10, 11), origin: "asr" },
+    ];
+    const lines = karaokeLines(source);
+    expect(lexicalWords(lines[0]).map(part => part.pitchIndex)).toEqual([undefined, 2, undefined, undefined]);
+    expect(lexicalWords(lines[1]).map(part => part.pitchIndex)).toEqual([1, undefined, undefined, undefined]);
+    source.transcript!.words!.push(word("go", 5, 6.25));
+    expect(lexicalWords(karaokeLines(source)[0])[1].pitchIndex).toBeUndefined();
+  });
+
+  it("retains direct pitch indices for historical pitch-only words", () => {
+    const source = job();
+    source.transcript = null;
+    source.pitch!.words = [word("same", 4, 5), word("same", 6, 7)];
+    expect(karaokeLines(source).map(line => lexicalWords(line)[0].pitchIndex)).toEqual([0, 1]);
+  });
 });
 
 describe("TimelineKaraoke reactive reader", () => {
@@ -206,15 +227,16 @@ describe("TimelineKaraoke reactive reader", () => {
     render(() => <TimelineKaraoke job={job()} position={position()} />);
     const region = screen.getByRole("region", { name: "Current karaoke line" });
     expect(region).toHaveAttribute("aria-live", "off");
-    expect(region.textContent).toBe("Go, go—don't stop!");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^Go, go—don't stop!$/);
+    expect(screen.getByRole("group", { name: "Next lyrics" })).toHaveTextContent(/^Go, go—don't stop!$/);
     expect(region.querySelector("[aria-current]")).toBeNull();
     setPosition(4.5);
     expect(region.querySelector("[aria-current]")).toHaveTextContent(/^go$/);
-    expect([...region.querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Go", "stop"]);
+    expect([...screen.getByRole("group", { name: "Current lyrics" }).querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Go", "stop"]);
     setPosition(5.5);
     expect(region.querySelector("[aria-current]")).toBeNull();
-    expect(region.querySelector('[data-state="complete"]')).toHaveTextContent(/^go$/);
-    expect(region.querySelector('[data-state="pending"]')).toHaveTextContent("don't");
+    expect(screen.getByRole("group", { name: "Current lyrics" }).querySelector('[data-state="complete"]')).toHaveTextContent(/^go$/);
+    expect(screen.getByRole("group", { name: "Current lyrics" }).querySelector('[data-state="pending"]')).toHaveTextContent("don't");
     setPosition(4.25);
     expect(region.querySelector("[aria-current]")).toHaveTextContent(/^go$/);
   });
@@ -263,18 +285,56 @@ describe("TimelineKaraoke reactive reader", () => {
     const [position, setPosition] = createSignal(3);
     render(() => <TimelineKaraoke job={source} position={position()} />);
     const region = screen.getByRole("region", { name: "Current karaoke line" });
-    expect(region.textContent).toBe(text);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(text);
+    expect(screen.getByRole("group", { name: "Next lyrics" })).toHaveTextContent("Next");
     expect(region.querySelector("[aria-current]")).toBeNull();
     setPosition(5.5);
     expect(region.querySelector("[aria-current]")).toHaveTextContent("known");
     setPosition(8.75);
-    expect(region.textContent).toBe(text);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(text);
     expect(region.querySelector("[aria-current]")).toBeNull();
-    expect([...region.querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Before", "after"]);
+    expect([...screen.getByRole("group", { name: "Current lyrics" }).querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Before", "after"]);
     setPosition(9);
-    expect(region.textContent).toBe("Next");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Next");
     expect(region.querySelector("[aria-current]")).toBeNull();
     setPosition(9.75);
     expect(region.querySelector("[aria-current]")).toHaveTextContent("Next");
+  });
+
+  it("renders only the selected stem's linked pitches above their words and toggles them", () => {
+    const source = job();
+    source.pitch!.words = [word("go", 4, 5), word("Go", 8, 9)];
+    const note = { start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6, note: "C4", cents: 0, confidence: 0.9, word_indices: [0] };
+    const [notes, setNotes] = createSignal([note, { ...note, note: "D4" }]);
+    render(() => <TimelineKaraoke job={source} position={4.5} notes={notes()} />);
+    const current = screen.getByRole("group", { name: "Current lyrics" });
+    expect(within(current).getByText("C4 D4")).toBeVisible();
+    expect(within(current).getByText("go", { exact: true }).parentElement).toContainElement(within(current).getByText("C4 D4"));
+    setNotes([{ ...note, note: "G4" }]);
+    expect(within(current).getByText("G4")).toBeVisible();
+    expect(within(current).queryByText("C4 D4")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Pitches" });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(within(current).queryByText("G4")).not.toBeInTheDocument();
+    expect(within(current).getByText("go", { exact: true })).toBeVisible();
+  });
+
+  it("promotes the existing next row on adjacent playback but not by a seek", () => {
+    const [position, setPosition] = createSignal(6.9);
+    const [seeking, setSeeking] = createSignal(false);
+    const [revision, setRevision] = createSignal(0);
+    render(() => <TimelineKaraoke job={job()} position={position()} playing seeking={seeking()} seekRevision={revision()} />);
+    const next = screen.getByRole("group", { name: "Next lyrics" });
+    setPosition(6.99);
+    setPosition(7);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toBe(next);
+    expect(next).toHaveClass("timeline-karaoke-slide");
+    setSeeking(true);
+    setRevision(1);
+    setPosition(4.5);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).not.toHaveClass("timeline-karaoke-slide");
+    setPosition(7);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).not.toHaveClass("timeline-karaoke-slide");
   });
 });

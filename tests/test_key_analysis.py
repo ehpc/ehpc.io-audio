@@ -55,7 +55,7 @@ def test_real_upload_preview_without_a_job_or_gpu(
     )
     assert response.status_code == 200
     assert response.json() == {"original_key": None if silent else "C major"}
-    assert "session_id" in client.cookies
+    assert "__Host-auth_session" in client.cookies
     assert client.get("/api/jobs").json() == []
 
 

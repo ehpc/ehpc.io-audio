@@ -210,8 +210,7 @@ def test_status_aggregates_all_sessions(
     client.post("/api/jobs", data={"url": "https://example.com/1"})
     other_client.post("/api/jobs", data={"url": "https://example.com/2"})
 
-    # No cookie needed — status is unauthenticated and spans every session.
-    body = TestClient(client.app).get("/api/status").json()
+    body = client.get("/api/status").json()
     assert body["total_jobs"] == 2
     assert body["counts"]["queued"] == 2
     assert len(body["recent"]) == 2

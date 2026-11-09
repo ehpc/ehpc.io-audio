@@ -138,6 +138,8 @@ def test_failed_schema_migration_rolls_back_without_losing_old_rows(
 def test_job_claims_are_exclusive_and_stage_pair_survives_restart(
     client, dispatch_recorded
 ):
+    with db._session() as conn:
+        conn.execute("INSERT INTO auth_settings VALUES ('user_queue', 8)")
     ids = {
         client.post("/api/jobs", data={"url": f"https://example.com/song-{i}"}).json()[
             "id"
@@ -291,6 +293,8 @@ def test_rebuild_preserves_custom_unique_constraint_and_insert_trigger(legacy_da
 
 
 def test_global_stage_claim_keeps_failed_uncertain_owner_across_new_jobs(client):
+    with db._session() as conn:
+        conn.execute("INSERT INTO auth_settings VALUES ('user_queue', 8)")
     ids = [
         client.post("/api/jobs", data={"url": f"https://example.com/song-{i}"}).json()[
             "id"

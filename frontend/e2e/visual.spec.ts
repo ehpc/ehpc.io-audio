@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Locator, type Page, type TestInfo } from '@playwright/test';
+import { test } from './auth-fixture';
 import type { PitchAnalysisDTO } from '../src/api';
 import { songArtwork, songVersions } from './song-fixtures';
 
@@ -21,6 +22,29 @@ test.afterEach(async ({ page, browser }, info) => {
     viewport: page.viewportSize(),
   }, null, 2));
 });
+
+for (const viewport of [desktop, mobile]) {
+  test(`account screens ${viewport.width}`, async ({ page, context }, info) => {
+    await page.setViewportSize(viewport);
+    await context.clearCookies();
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+    await compare(page, info, `signin-${viewport.width}.png`);
+    await page.getByRole('button', { name: 'Register', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Join the workspace' })).toBeVisible();
+    await compare(page, info, `register-${viewport.width}.png`);
+    await context.addCookies([{ name: 'auth_session', value: process.env.E2E_AUTH_SESSION!, url: process.env.E2E_BASE_URL!, httpOnly: true, sameSite: 'Lax' }]);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
+    await compare(page, info, `profile-${viewport.width}.png`);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.getByRole('button', { name: 'People', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
+    await compare(page, info, `people-${viewport.width}.png`);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
 
 async function analyze(page: Page, info: TestInfo, unknown = false) {
   await page.goto('/');
@@ -153,7 +177,6 @@ for (const viewport of [desktop, mobile]) {
         await page.keyboard.press('Tab');
       }
       await expect(drumsHelp).toBeFocused();
-      await expect(drumsHelp).toHaveAccessibleDescription(/drums-only backing track/);
       await expectReadableTooltip(page, info, 'keyboard');
       await drumsHelp.press('Escape');
       await karaoke.uncheck();
@@ -333,7 +356,7 @@ for (const viewport of [mobile, desktop]) {
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8');
-    const response = await page.request.post('/api/jobs', { multipart: {
+    const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
       file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
       detect_pitch: 'true', extract_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
@@ -346,7 +369,7 @@ for (const viewport of [mobile, desktop]) {
     await page.reload();
     const view = page.getByLabel('Vocal pitch analysis', { exact: true });
     await expect(view).toBeVisible();
-    const player = view.locator('audio');
+    const player = view.locator('audio[controls]');
     // Exercise the real HTTP source; native control paint is browser-owned.
     await player.evaluate(element => {
       element.preload = 'auto';
@@ -366,6 +389,30 @@ for (const viewport of [mobile, desktop]) {
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await compare(view, info, `vocal-melody-${viewport.width}-word-notes.png`, [player]);
+    // Captured CREPE/Whisper data retains its word-to-note provenance; this is
+    // the actual reader and keyboard using the same output-clock position.
+    const reader = view.getByLabel('Current karaoke line');
+    await expect(reader.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
+    await expect(reader.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
+    await expect(reader.locator('.timeline-karaoke-pitches').first()).toBeVisible();
+    await expect(view.getByLabel('Piano keyboard')).toBeVisible();
+    await compare(view.locator('.pitch-footer'), info, `karaoke-piano-${viewport.width}.png`, [player]);
+    const piano = view.getByLabel('Piano keyboard');
+    const key = piano.getByRole('button', { name: 'Piano C3', exact: true });
+    await key.scrollIntoViewIfNeeded();
+    const bounds = (await key.boundingBox())!;
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height - 10);
+    await page.mouse.down();
+    await expect(key).toHaveAttribute('aria-pressed', 'true');
+    await expect(key).toHaveClass(/piano-key-active/);
+    await compare(piano, info, `piano-pressed-${viewport.width}.png`);
+    await page.mouse.up();
+    const toggle = view.getByRole('button', { name: 'Pitches', exact: true });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
+    await expect(reader.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
+    await expect(reader.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
   });
 }
 
@@ -386,7 +433,7 @@ for (const viewport of [mobile, desktop]) {
     await page.setViewportSize(viewport);
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
-    const response = await page.request.post('/api/jobs', { multipart: {
+    const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
       file: { name: 'synthetic-reference.wav', mimeType: 'audio/wav', buffer: source },
       extract_lyrics: 'true',
     } });
@@ -446,7 +493,7 @@ for (const viewport of [mobile, desktop]) {
     await page.setViewportSize(viewport);
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
-    const response = await page.request.post('/api/jobs', { multipart: {
+    const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
       file: { name: 'synthetic-pitch-typography.wav', mimeType: 'audio/wav', buffer: source },
       extract_pitched_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
@@ -517,7 +564,7 @@ for (const viewport of [mobile, desktop]) {
       fixture.pitch.tracks = ['vocals', 'lead', 'backing'].map(label => ({ label, notes: label === 'vocals' ? geometryNotes : [] }));
       fixture.pitch.words = [fixture.pitch.words.find((word: { text: string }) => word.text === 'acquaintance')];
       fixture.playback_labels = ['song', 'vocals', 'lead', 'backing'];
-      const response = await page.request.post('/api/jobs', { multipart: {
+      const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
         file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
         detect_pitch: 'true', extract_vocals: 'true', extract_lyrics: 'true', lead_backing: 'true',
         pitch_semitones: '1.25', tempo_percent: '125',

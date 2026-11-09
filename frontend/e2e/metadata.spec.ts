@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, type Locator } from '@playwright/test';
+import { test } from './auth-fixture';
 import { hash, inspectAudio } from './audio';
 
 test('downloaded MP3 Title matches its descriptive filename in Results and reloaded History', async ({ page }, info) => {

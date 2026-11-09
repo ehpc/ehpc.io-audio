@@ -70,13 +70,16 @@ async def start_search(
             successful_at=cached["successful_at"],
         )
         return SearchStarted(search_id=search_id)
-    await asyncio.to_thread(
-        db.create_song_search,
-        search_id,
-        session_id,
-        query_key,
-        pending_query=body.query,
-    )
+    try:
+        await asyncio.to_thread(
+            db.create_song_search,
+            search_id,
+            session_id,
+            query_key,
+            pending_query=body.query,
+        )
+    except ValueError as exc:
+        raise HTTPException(429, str(exc)) from None
     return SearchStarted(search_id=search_id)
 
 

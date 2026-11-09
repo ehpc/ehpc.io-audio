@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './auth-fixture';
 
 const source = 'https://music.youtube.com/watch?v=wf5RdLDxrUk&si=ANzOjMlDcHwwlwOL';
 

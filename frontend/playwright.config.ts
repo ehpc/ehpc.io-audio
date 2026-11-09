@@ -13,10 +13,13 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.spec.ts',
   testIgnore: [
+    '**/auth.spec.ts',
+    '**/karaoke.spec.ts',
     '**/visual.spec.ts',
     '**/youtube-key.spec.ts',
     '**/listening-clock.spec.ts',
     '**/pitch-interactions.spec.ts',
+    '**/piano.spec.ts',
     '**/pitched-lyrics-odt.spec.ts',
   ],
   workers: 1,

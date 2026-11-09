@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -33,8 +33,9 @@ function job(): JobDTO {
 }
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function scrollPlayer(source = job()) {
   const rendered = render(() => <PitchView job={source} />);
@@ -94,6 +95,199 @@ function keyboardPlayer(source = job()) {
   });
   return { ...player, play };
 }
+
+function chooseBackground(name: RegExp | string) {
+  fireEvent.click(screen.getByRole("button", { name }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(candidate, "readyState", { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(candidate);
+  fireEvent.seeked(candidate);
+  fireEvent.canPlay(candidate);
+  return candidate;
+}
+
+it("moves the timeline to a native media seek while preserving browsing and follow preference", () => {
+  const player = scrollPlayer();
+  player.state.paused = true;
+  player.wheel(3000);
+  player.end();
+  const follow = screen.getByRole("checkbox", { name: "Follow playback" });
+  fireEvent.click(follow);
+  player.audio.currentTime = 25;
+  fireEvent.seeking(player.audio);
+  fireEvent.seeked(player.audio);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(2000);
+  expect(player.viewport.scrollLeft).toBeLessThan(2554);
+  expect(follow).not.toBeChecked();
+  fireEvent.click(follow);
+  expect(player.browsing()).toBe(true);
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "25");
+});
+
+it("does not recenter a browsed viewport when an in-app word seeks to the already-current time", () => {
+  const player = scrollPlayer();
+  player.state.paused = true;
+  player.time(1);
+  player.wheel(800);
+  player.end();
+  const word = screen.getByRole("button", { name: /^world,/ });
+  fireEvent.click(word);
+  fireEvent.seeking(player.audio);
+  fireEvent.timeUpdate(player.audio);
+  fireEvent.seeked(player.audio);
+  expect(player.viewport.scrollLeft).toBe(800);
+  expect(player.browsing()).toBe(true);
+  expect(screen.getByRole("tooltip")).toHaveTextContent("world");
+});
+
+it("toggles playback after clicking or selecting karaoke text without overriding interactive controls", () => {
+  const player = keyboardPlayer();
+  player.time(1.5);
+  const reader = screen.getByRole("region", { name: "Current karaoke line" });
+  fireEvent.click(reader);
+  expect(reader).toHaveFocus();
+  const range = document.createRange();
+  range.selectNodeContents(reader);
+  window.getSelection()!.removeAllRanges();
+  window.getSelection()!.addRange(range);
+  fireEvent.keyDown(reader, { key: " " });
+  expect(player.audio.paused).toBe(false);
+  fireEvent.keyDown(reader, { key: " ", repeat: true });
+  expect(player.audio.paused).toBe(false);
+  fireEvent.keyDown(reader, { key: " " });
+  expect(player.audio.paused).toBe(true);
+  window.getSelection()!.removeAllRanges();
+});
+
+it("keeps the playing source selected while another loads, and preserves it on failure", async () => {
+  const player = keyboardPlayer();
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(10);
+  fireEvent.click(screen.getByRole("button", { name: "Full song" }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  expect(player.audio.paused).toBe(false);
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.error(candidate);
+  expect(player.audio.paused).toBe(false);
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("alert")).toBeVisible();
+});
+
+it("keeps the current playback when a shorter background cannot reach its position", () => {
+  const player = keyboardPlayer();
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(10);
+  fireEvent.click(screen.getByRole("button", { name: "Full song" }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperties(candidate, {
+    readyState: { configurable: true, value: 4 },
+    duration: { configurable: true, value: 5 },
+  });
+  fireEvent.loadedMetadata(candidate);
+  expect(player.audio.paused).toBe(false);
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("alert")).toBeVisible();
+});
+
+it("ignores stale source events after rapid choices and commits only a ready aligned source", async () => {
+  const source = job();
+  source.manifest!.push({ label: "drums", filename: "drums.mp3", download_name: "drums.mp3", duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(8);
+  fireEvent.click(screen.getByRole("button", { name: "Full song" }));
+  const stale = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  fireEvent.click(screen.getByRole("button", { name: /Drums only/ }));
+  const drums = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  fireEvent.error(stale);
+  expect(player.audio.paused).toBe(false);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  Object.defineProperty(drums, "readyState", { configurable: true, value: 4 });
+  let candidatePaused = true;
+  Object.defineProperty(drums, "paused", { configurable: true, get: () => candidatePaused });
+  const started = Promise.withResolvers<void>();
+  vi.spyOn(drums, "play").mockImplementation(() => {
+    candidatePaused = false;
+    player.audio.pause(); // App's capture-phase exclusivity guard.
+    fireEvent.play(drums);
+    return started.promise;
+  });
+  fireEvent.loadedMetadata(drums);
+  expect(drums.currentTime).toBe(8);
+  expect(player.audio.paused).toBe(false);
+  fireEvent.seeked(drums);
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  started.resolve();
+  await started.promise;
+  expect(screen.getByRole("button", { name: /Drums only/ })).toHaveAttribute("aria-pressed", "true");
+  expect(drums.paused).toBe(false);
+});
+
+it("restores the old playing source if a second choice interrupts candidate play", async () => {
+  const source = job();
+  source.manifest!.push({ label: "drums", filename: "drums.mp3", download_name: "drums.mp3", duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(8);
+  fireEvent.click(screen.getByRole("button", { name: "Full song" }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(candidate, "readyState", { configurable: true, value: 4 });
+  const attempt = Promise.withResolvers<void>();
+  vi.spyOn(candidate, "play").mockImplementation(() => { player.audio.pause(); return attempt.promise; });
+  fireEvent.loadedMetadata(candidate);
+  fireEvent.seeked(candidate);
+  expect(player.audio.paused).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /Drums only/ }));
+  expect(player.audio.paused).toBe(false);
+  expect(player.play).toHaveBeenCalledTimes(2);
+  attempt.reject(new DOMException("superseded", "AbortError"));
+  await attempt.promise.catch(() => {});
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("never resumes an interrupted source after another app player has taken over and stopped", async () => {
+  const player = keyboardPlayer();
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(8);
+  fireEvent.click(screen.getByRole("button", { name: "Full song" }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(candidate, "readyState", { configurable: true, value: 4 });
+  const attempt = Promise.withResolvers<void>();
+  vi.spyOn(candidate, "play").mockImplementation(() => { player.audio.pause(); return attempt.promise; });
+  fireEvent.loadedMetadata(candidate);
+  fireEvent.seeked(candidate);
+  const other = document.createElement("audio");
+  document.body.append(other);
+  fireEvent.play(other);
+  fireEvent.pause(other);
+  attempt.reject(new DOMException("old load failed", "NotSupportedError"));
+  await attempt.promise.catch(() => {});
+  expect(player.audio.paused).toBe(true);
+  expect(player.play).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  other.remove();
+});
+
+it("stops active media on unmount and never resumes after a pending handoff rejects", async () => {
+  const player = keyboardPlayer();
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(8);
+  fireEvent.click(screen.getByRole("button", { name: "Full song" }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(candidate, "readyState", { configurable: true, value: 4 });
+  const attempt = Promise.withResolvers<void>();
+  vi.spyOn(candidate, "play").mockImplementation(() => { player.audio.pause(); return attempt.promise; });
+  fireEvent.loadedMetadata(candidate);
+  fireEvent.seeked(candidate);
+  player.unmount();
+  attempt.reject(new DOMException("cancelled on logout", "AbortError"));
+  await attempt.promise.catch(() => {});
+  expect(player.audio.paused).toBe(true);
+  expect(player.audio.hasAttribute("src")).toBe(false);
+  expect(player.play).toHaveBeenCalledTimes(1);
+});
 
 it.each(["viewport", "ruler"])("toggles native playback with focused %s Space without repeating or arming browsing", targetName => {
   const frame = animationFrames();
@@ -169,7 +363,7 @@ it.each(["keyboard pause", "external pause", "restart", "source change"])("does 
       fireEvent.keyDown(player.viewport, { key: " " });
     }
   } else if (interruption === "external pause") player.audio.pause();
-  else fireEvent.change(screen.getByLabelText("Pitch background audio"), { target: { value: "song" } });
+  else { player.audio.pause(); chooseBackground("Full song"); }
   pending.reject(new DOMException("The old playback attempt ended.", interruption === "source change" ? "NotSupportedError" : "AbortError"));
   await pending.promise.catch(() => {});
   expect(player.audio.paused).toBe(interruption !== "restart");
@@ -211,10 +405,8 @@ it("keeps the transport action synchronized with native playback, external pause
   expect(screen.getByRole("button", { name: "Play", exact: true })).toBeEnabled();
   Object.defineProperty(player.audio, "ended", { configurable: true, value: false });
   player.audio.pause();
-  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
-  vi.spyOn(player.audio, "load").mockImplementation(() => { player.state.paused = true; fireEvent.emptied(player.audio); });
-  fireEvent.change(screen.getByLabelText("Pitch background audio"), { target: { value: "song" } });
-  expect(player.audio.paused).toBe(true);
+  chooseBackground("Full song");
+  expect(screen.getByRole("button", { name: "Full song" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("button", { name: "Play", exact: true })).toBeEnabled();
 });
 
@@ -256,29 +448,40 @@ it("preserves numeric lyrics without appended counts while selecting every assoc
   expect(screen.getByRole("tooltip")).toHaveTextContent(/^99$/);
 });
 
-it.each(["instruments", "drums"])("plays a generated %s background on the output clock without changing the analyzed voice", label => {
-  const source = job();
-  source.manifest!.push({ label, filename: `${label}.mp3`, download_name: `${label}.mp3`, duration_s: 70, size_bytes: 100 });
-  const player = keyboardPlayer(source);
-  vi.spyOn(player.audio, "load").mockImplementation(() => { player.state.paused = true; fireEvent.emptied(player.audio); });
-  const backgrounds = screen.getByRole("combobox", { name: "Pitch background audio" });
-  fireEvent.change(backgrounds, { target: { value: "song" } });
-  player.audio.volume = 0.4;
-  player.time(12.5);
+it("updates karaoke pitches and piano highlights from the selected vocal track, not the background", () => {
+  const player = keyboardPlayer();
+  player.time(1.5);
   fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
-  fireEvent.change(backgrounds, { target: { value: label } });
-  fireEvent.loadedMetadata(player.audio);
-  expect(player.audio.currentTime).toBe(10);
-  expect(player.audio.paused).toBe(true);
-  expect(player.audio.volume).toBe(0.4);
-  expect(screen.getByLabelText("Pitch vocal stem")).toHaveValue("vocals");
-  fireEvent.click(screen.getByRole("button", { name: "Forward 5 seconds", exact: true }));
-  expect(player.audio.currentTime).toBe(15);
-  fireEvent.change(backgrounds, { target: { value: "song" } });
-  fireEvent.loadedMetadata(player.audio);
-  expect(player.audio.currentTime).toBe(18.75);
-  expect(player.audio.paused).toBe(true);
+  const current = screen.getByRole("group", { name: "Current lyrics" });
+  expect(current.querySelector(".timeline-karaoke-pitches")).toHaveTextContent("C#4 D#4");
+  expect(screen.getByRole("button", { name: "Piano C#4" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "backing" } });
+  expect(current.querySelector(".timeline-karaoke-pitches")).toBeNull();
+  expect(screen.getByRole("button", { name: "Piano C#4" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
 });
+
+it.each([["instruments", /Instruments/], ["drums", /Drums only/], ["drums-vocals", /Drums \+ Vocals/]])(
+  "plays generated %s on the output clock without changing the analyzed voice", (label, name) => {
+    const source = job();
+    source.manifest!.push({ label: label as string, filename: `${label}.mp3`, download_name: `${label}.mp3`, duration_s: 70, size_bytes: 100 });
+    render(() => <PitchView job={source} />);
+    const song = chooseBackground("Full song");
+    song.volume = 0.4;
+    song.currentTime = 12.5;
+    fireEvent.timeUpdate(song);
+    const output = chooseBackground(name);
+    expect(output.currentTime).toBe(10);
+    expect(output.paused).toBe(true);
+    expect(output.volume).toBe(0.4);
+    expect(screen.getByLabelText("Pitch vocal stem")).toHaveValue("vocals");
+    fireEvent.click(screen.getByRole("button", { name: "Forward 5 seconds", exact: true }));
+    expect(output.currentTime).toBe(15);
+    const original = chooseBackground("Full song");
+    expect(original.currentTime).toBe(18.75);
+    expect(original.paused).toBe(true);
+  },
+);
 
 it("does not offer absent accompaniment bytes just because processing flags or a cleaned instrumental exist", () => {
   const source = job();
@@ -286,9 +489,9 @@ it("does not offer absent accompaniment bytes just because processing flags or a
   source.options.drums = true;
   source.manifest!.push({ label: "instruments-decrowded", filename: "cleaned.mp3", download_name: "cleaned.mp3", duration_s: 70, size_bytes: 100 });
   render(() => <PitchView job={source} />);
-  const backgrounds = screen.getByRole("combobox", { name: "Pitch background audio" });
-  expect(backgrounds.querySelector('option[value="instruments"]')).toBeDisabled();
-  expect(backgrounds.querySelector('option[value="drums"]')).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Instruments/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Drums only/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Drums \+ Vocals/ })).toBeDisabled();
 });
 
 it("uses detected time/pitch geometry, linked melisma, zoom and real player seeking without inventing syllables", () => {
@@ -455,28 +658,20 @@ it("switches between full-song and private vocals while preserving output time i
   source.has_pitch_vocals = true;
   render(() => <PitchView job={source} />);
   const audio = document.querySelector<HTMLAudioElement>("audio")!;
-  const selector = screen.getByRole("combobox", { name: "Pitch background audio" });
   fireEvent.click(document.querySelector(".pitch-note")!);
   expect(audio.currentTime).toBe(1.25);
-  fireEvent.change(selector, { target: { value: "vocals" } });
-  const background = audio.src;
-  Object.defineProperty(audio, "readyState", { configurable: true, value: 4 });
-  fireEvent.loadedMetadata(audio);
-  fireEvent.timeUpdate(audio);
-  expect(audio.currentTime).toBe(1);
+  const vocals = chooseBackground("Just vocals");
+  expect(vocals.currentTime).toBe(1);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "100");
-  fireEvent.click(document.querySelector(".pitch-note")!);
-  expect(audio.currentTime).toBe(1);
-  audio.currentTime = 5;
-  fireEvent.timeUpdate(audio);
-  expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "500");
+  vocals.currentTime = 5;
+  fireEvent.timeUpdate(vocals);
   fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "backing" } });
-  expect(audio.src).toBe(background);
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
   fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "vocals" } });
-  fireEvent.change(selector, { target: { value: "song" } });
-  expect(audio.currentTime).toBe(6.25);
+  const song = chooseBackground("Full song");
+  expect(song.currentTime).toBe(6.25);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "500");
-  expect(audio.paused).toBe(true);
+  expect(song.paused).toBe(true);
 });
 it("resets recovered reference and cursor when a different pitch job is mounted into the same view", () => {
   const first = job();
@@ -485,20 +680,15 @@ it("resets recovered reference and cursor when a different pitch job is mounted 
   const second = { ...job(), id: 8, manifest: [], has_pitch_vocals: false };
   const [active, setActive] = createSignal<JobDTO>(first);
   render(() => <PitchView job={active()} />);
-  const audio = document.querySelector<HTMLAudioElement>("audio")!;
-  const selector = screen.getByRole("combobox", { name: "Pitch background audio" }) as HTMLSelectElement;
-  fireEvent.change(selector, { target: { value: "vocals" } });
-  Object.defineProperty(audio, "readyState", { configurable: true, value: 4 });
-  fireEvent.loadedMetadata(audio);
+  const audio = chooseBackground("Just vocals");
   audio.currentTime = 4;
   fireEvent.timeUpdate(audio);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "400");
 
   setActive(second);
   const nextAudio = document.querySelector<HTMLAudioElement>("audio")!;
-  const nextSelector = screen.getByRole("combobox", { name: "Pitch background audio" }) as HTMLSelectElement;
-  expect(nextSelector.value).toBe("song");
-  expect([...nextSelector.options].find(option => option.value === "vocals")?.disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Full song" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Just vocals" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Recover cached vocals" })).toBeInTheDocument();
   expect(nextAudio.currentTime).toBe(0);
 });
@@ -508,9 +698,7 @@ it("offers cached-vocal recovery without enabling missing vocals", () => {
   source.manifest = [];
   source.has_pitch_vocals = false;
   render(() => <PitchView job={source} />);
-  const selector = screen.getByRole("combobox", { name: "Pitch background audio" }) as HTMLSelectElement;
-  const vocals = [...selector.options].find(option => option.value === "vocals")!;
-  expect(vocals.disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Just vocals" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Recover cached vocals" })).toBeInTheDocument();
 });
 it("shows immediate pitch-and-lyrics note tooltips and lyrics-only word tooltips on hover and focus", () => {
@@ -704,9 +892,8 @@ it("suspends on vertical browsing and preserves suspension through pause, seek, 
   player.end();
   expect(player.browsing()).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Forward 5 seconds" }));
-  fireEvent.change(screen.getByLabelText("Pitch background audio"), { target: { value: "song" } });
-  fireEvent.loadedMetadata(player.audio);
-  fireEvent.timeUpdate(player.audio);
+  const song = chooseBackground("Full song");
+  Object.defineProperty(song, "paused", { configurable: true, get: () => player.state.paused });
   fireEvent.input(screen.getByRole("slider", { name: "Melody zoom" }), { target: { value: "200" } });
   player.scroll(player.viewport.scrollLeft);
   const stopped = player.viewport.scrollLeft;
@@ -714,7 +901,8 @@ it("suspends on vertical browsing and preserves suspension through pause, seek, 
   fireEvent.click(preference);
   fireEvent.click(preference);
   player.state.paused = false;
-  player.time(30);
+  song.currentTime = 30;
+  fireEvent.timeUpdate(song);
   expect(player.browsing()).toBe(true);
   expect(player.viewport.scrollLeft).toBe(stopped);
   fireEvent.click(preference); // An explicit opt-out survives a manual return.
@@ -722,7 +910,8 @@ it("suspends on vertical browsing and preserves suspension through pause, seek, 
   player.end();
   player.wheel(4600);
   player.end();
-  player.time(40);
+  song.currentTime = 40;
+  fireEvent.timeUpdate(song);
   expect(preference).not.toBeChecked();
   expect(player.viewport.scrollLeft).toBe(4600);
 });
@@ -827,22 +1016,21 @@ it("skips five output seconds across original/private clocks, clamps endpoints a
   fireEvent.click(forward);
   expect(player.audio.currentTime).toBe(6.25);
   expect(player.audio.paused).toBe(true);
-  const selector = screen.getByLabelText("Pitch background audio");
-  fireEvent.change(selector, { target: { value: "vocals" } });
+  fireEvent.click(screen.getByRole("button", { name: "Just vocals" }));
   fireEvent.click(forward); // While the source's metadata/seek is pending.
-  fireEvent.loadedMetadata(player.audio);
-  expect(player.audio.currentTime).toBe(10);
-  player.state.paused = false;
+  const vocals = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(vocals, "readyState", { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(vocals);
+  fireEvent.seeked(vocals);
+  expect(vocals.currentTime).toBe(10);
+  expect(vocals.volume).toBe(0.4);
   fireEvent.click(back);
-  fireEvent.seeked(player.audio);
-  expect(player.audio.currentTime).toBe(5);
-  expect(player.audio.paused).toBe(false);
-  expect(player.audio.volume).toBe(0.4);
-  player.time(68);
+  expect(vocals.currentTime).toBe(5);
+  vocals.currentTime = 68;
+  fireEvent.timeUpdate(vocals);
   fireEvent.click(forward);
-  expect(player.audio.currentTime).toBe(pitch.duration_s);
-  fireEvent.change(selector, { target: { value: "song" } });
-  fireEvent.loadedMetadata(player.audio);
+  expect(vocals.currentTime).toBe(pitch.duration_s);
+  const song = chooseBackground("Full song");
   fireEvent.click(forward);
-  expect(player.audio.currentTime).toBe(pitch.source_duration_s);
+  expect(song.currentTime).toBe(pitch.source_duration_s);
 });

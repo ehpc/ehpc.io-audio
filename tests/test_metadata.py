@@ -19,7 +19,7 @@ from audio_samples import mp3_measurements, tone_wav
 from fastapi.testclient import TestClient
 from mutagen.id3 import APIC, ID3, TALB, TIT2, TPE1, TXXX, ID3NoHeaderError
 
-from backend import config, db, queue
+from backend import auth_store, config, db, mailer, queue
 from backend.main import app
 from backend.metadata import ensure_download_title
 from backend.models import ResultManifestEntry, download_filename
@@ -253,7 +253,7 @@ def test_transformed_whole_song_persists_combined_suffix_title(
 
 
 def test_native_http_history_download_has_title_and_preserves_original(
-    tagged_mp3: bytes, tmp_path: Path
+    tagged_mp3: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Real socket and Uvicorn, not an ASGI test transport: save exactly what an
     # external consumer downloads, then inspect it with the native tag reader.
@@ -262,6 +262,13 @@ def test_native_http_history_download_has_title_and_preserves_original(
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
+    origin = f"http://127.0.0.1:{port}"
+    monkeypatch.setattr(config, "AUTH_ORIGIN", origin)
+    codes = {}
+    monkeypatch.setattr(
+        mailer, "send_code", lambda email, code: codes.update({email: code})
+    )
+    _, invite = auth_store.create_invite(None)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", loop="asyncio"))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]})
     thread.start()
@@ -270,7 +277,20 @@ def test_native_http_history_download_has_title_and_preserves_original(
         while not server.started:
             assert thread.is_alive() and time.monotonic() < deadline
             time.sleep(0.01)
-        with httpx.Client(base_url=f"http://127.0.0.1:{port}") as browser:
+        with httpx.Client(base_url=origin, headers={"origin": origin}) as browser:
+            registration = {"email": "metadata@example.com", "invite_code": invite}
+            assert browser.post("/api/auth/start", json=registration).status_code == 202
+            deadline = time.monotonic() + 5
+            while registration["email"] not in codes:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            assert (
+                browser.post(
+                    "/api/auth/verify",
+                    json={**registration, "code": codes[registration["email"]]},
+                ).status_code
+                == 200
+            )
             response = browser.post(
                 "/api/jobs",
                 files={"file": ("Artist - Song.mp3", tagged_mp3, "audio/mpeg")},

@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
+import { test } from './auth-fixture';
 import type { AlignedWordDTO, JobDTO, ReferenceLineDTO } from '../src/api';
 
 // UI-only HTTP fixtures, not backend alignment or Modal proof. The browser still
 // decodes/plays real public-domain audio and drives the production media clock.
 const longLine = 'A lighthouse watches over quiet boats while silver clouds drift above the harbor and patient travelers follow the winding shoreline past sleeping gardens and distant windows until the morning carries every tired sailor safely homeward';
 const rapidWords = ['Bright', 'small', 'sparks', 'rise', 'then', 'fall', 'soft', 'rain'];
+const leadPitches = ['C#4', 'D4', 'D#4', 'E4', 'F4', 'F#4', 'G4', 'G#4', 'A4', 'A#4', 'B4', 'C5'];
 let original: Buffer;
 let transformed: Buffer;
 let transformedPlayback: Buffer;
@@ -76,9 +78,10 @@ function karaokeJob(): JobDTO {
     pitch: { version: 1, model: 'UI fixture, no inference', source_duration_s: 45, duration_s: 36,
       pitch_shift_semitones: 1.25, tempo_percent: 125, timestamp_reference: 'output', pitch_reference: 'output',
       word_alignment: 'UI fixture', words: words.map(word => ({ ...word, start_s: word.start_s / 1.25, end_s: word.end_s / 1.25 })),
-      tracks: ['lead', 'backing'].map(label => ({ label, notes: [
-        { start_s: 4, end_s: 6, midi: 61.25, frequency_hz: 280, confidence: 0.8, note: 'C#4', cents: 25, word_indices: [0] },
-      ] })) },
+      tracks: ['lead', 'backing'].map(label => ({ label, notes: label === 'lead'
+        ? leadPitches.map((note, index) => ({ start_s: 4 + index * 0.15, end_s: 4.15 + index * 0.15,
+          midi: 61 + index, frequency_hz: 440 * 2 ** ((61 + index - 69) / 12), confidence: 0.8, note, cents: 0, word_indices: [0] }))
+        : [{ start_s: 4, end_s: 6, midi: 64, frequency_hz: 329.6, confidence: 0.8, note: 'E4', cents: 0, word_indices: [0] }] })) },
   };
 }
 
@@ -107,8 +110,10 @@ async function mountFixture(page: Page) {
   await page.goto('/');
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(view).toBeVisible();
-  const player = view.locator('audio');
-  await view.getByRole('combobox', { name: 'Pitch background audio' }).selectOption('song');
+  const player = view.locator('audio:not([hidden])');
+  const song = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' });
+  await song.click();
+  await expect(song).toHaveAttribute('aria-pressed', 'true');
   await player.evaluate((audio: HTMLAudioElement) => { audio.preload = 'auto'; audio.load(); });
   await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.readyState >= 2 && audio.seekable.length > 0)).toBe(true);
   return { view, player, reader: view.getByRole('region', { name: 'Current karaoke line' }) };
@@ -136,6 +141,14 @@ interface PaintSample {
   gradient: string;
 }
 
+async function lyricText(line: Locator) {
+  return line.evaluate(element => {
+    const copy = element.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll('.timeline-karaoke-pitches').forEach(pitch => pitch.remove());
+    return copy.textContent ?? '';
+  });
+}
+
 async function samplePlayback(player: Locator, milliseconds: number): Promise<PaintSample[]> {
   return player.evaluate(async (audio: HTMLAudioElement, duration) => {
     const region = document.querySelector('[aria-label="Current karaoke line"]')!;
@@ -144,10 +157,12 @@ async function samplePlayback(player: Locator, milliseconds: number): Promise<Pa
     const start = performance.now();
     const complete = Promise.withResolvers<void>();
     function frame() {
-      const line = region.querySelector('p')!;
-      const active = region.querySelector('[aria-current="true"]');
+      const line = region.querySelector('[aria-label="Current lyrics"]')!;
+      const copy = line.cloneNode(true) as HTMLElement;
+      copy.querySelectorAll('.timeline-karaoke-pitches').forEach(pitch => pitch.remove());
+      const active = line.querySelector('[aria-current="true"]');
       const style = getComputedStyle(line);
-      samples.push({ time: audio.currentTime, text: line.textContent ?? '', active: active?.textContent ?? null,
+      samples.push({ time: audio.currentTime, text: copy.textContent ?? '', active: active?.textContent ?? null,
         opacity: Number(style.opacity), transform: style.transform,
         gradient: active ? getComputedStyle(active).backgroundImage : 'none' });
       if (performance.now() - start >= duration) { audio.pause(); complete.resolve(); }
@@ -165,17 +180,64 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     test('maps native clocks, paints timed words, and keeps wrapped/rapid cues readable', async ({ page }, info) => {
       test.setTimeout(120_000);
       const { view, player, reader } = await mountFixture(page);
-      const source = view.getByRole('combobox', { name: 'Pitch background audio' });
+      const source = view.getByRole('group', { name: 'Pitch background audio' });
+      const current = reader.getByRole('group', { name: 'Current lyrics' });
+      const next = reader.getByRole('group', { name: 'Next lyrics' });
       await reader.scrollIntoViewIfNeeded();
 
       // Original native clock: 5.625s / 1.25 = output4.5, a quarter through silver.
       await seekNative(player, 2.5);
-      await expect(reader).toHaveText('Before silver after');
+      await expect.poll(() => lyricText(current)).toBe('Before silver after');
+      await expect.poll(() => lyricText(next)).toBe('Next chorus');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
       await seekNative(player, 5.625);
       const silver = reader.getByText('silver', { exact: true });
+      const cell = silver.locator('..');
+      const pitch = cell.getByRole('group', { name: /^Pitches for silver:/ });
+      await expect(pitch).toHaveText(leadPitches.join(' '));
+      expect(await pitch.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+      await pitch.focus();
+      await pitch.press('ArrowRight');
+      await expect.poll(() => pitch.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+      expect(await player.evaluate(audio => audio.paused)).toBe(true);
+      const [pitchBox, wordBox, currentBox, nextBox] = await Promise.all([
+        pitch.boundingBox(), silver.boundingBox(), current.boundingBox(), next.boundingBox(),
+      ]);
+      expect(pitchBox!.y + pitchBox!.height).toBeLessThanOrEqual(wordBox!.y + 1);
+      expect(nextBox!.y).toBeGreaterThanOrEqual(currentBox!.y);
+      const pitchToggle = view.getByRole('button', { name: 'Pitches', exact: true });
+      if (viewport.width === 390) await pitchToggle.tap(); else await pitchToggle.click();
+      await expect(pitchToggle).toHaveAttribute('aria-pressed', 'false');
+      await expect(cell.locator('.timeline-karaoke-pitches')).toHaveCount(0);
+      if (viewport.width === 390) await pitchToggle.tap(); else await pitchToggle.click();
+      await expect(pitch).toHaveText(leadPitches.join(' '));
+      await view.getByLabel('Pitch vocal stem').selectOption('backing');
+      await expect(pitch).toHaveText('E4');
+      await view.getByLabel('Pitch vocal stem').selectOption('lead');
+      await expect(pitch).toHaveText(leadPitches.join(' '));
+      // Clicking lyrics focuses their stable reader; selecting its text must
+      // not prevent Space from controlling the same native player.
+      if (viewport.width === 390) await silver.tap(); else await silver.click();
+      await expect(reader).toBeFocused();
+      await page.evaluate(() => {
+        const text = document.querySelector('[aria-label="Current karaoke line"]')!;
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+      expect(await page.evaluate(() => !window.getSelection()!.isCollapsed)).toBe(true);
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate(audio => !audio.paused)).toBe(true);
+      const afterSpace = await player.evaluate(audio => audio.currentTime);
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(afterSpace + 0.2);
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+      await page.evaluate(() => window.getSelection()!.removeAllRanges());
+      await seekNative(player, 5.625);
       await expect(silver).toHaveAttribute('aria-current', 'true');
-      await expect.poll(() => reader.locator('p').evaluate(line => Number(getComputedStyle(line).opacity))).toBe(1);
+      await expect.poll(() => current.evaluate(line => Number(getComputedStyle(line).opacity))).toBe(1);
       const quarterPaint = await silver.screenshot({ animations: 'disabled' });
       const originalGradient = await silver.evaluate(word => getComputedStyle(word).backgroundImage);
       expect(originalGradient).toContain('linear-gradient');
@@ -185,7 +247,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(new Set(sung.map(sample => sample.gradient)).size).toBeGreaterThan(3);
       expect(Math.min(...sung.map(sample => sample.opacity)), 'native-clock updates must not restart the current line fade').toBeGreaterThanOrEqual(0.99);
       await seekNative(player, 5.625);
-      await source.selectOption('vocals');
+      const vocals = source.getByRole('button', { name: 'Just vocals' });
+      await vocals.click();
+      await expect(vocals).toHaveAttribute('aria-pressed', 'true');
       await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeCloseTo(4.5, 2);
       await expect(silver).toHaveAttribute('aria-current', 'true');
       await expect.poll(() => silver.evaluate(word => getComputedStyle(word).backgroundImage)).toBe(originalGradient);
@@ -196,10 +260,15 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await info.attach('silver-three-quarter-fill', { body: laterPaint, contentType: 'image/png' });
 
       await seekNative(player, 8.75);
-      await expect(reader).toHaveText('Before silver after');
+      await expect.poll(() => lyricText(current)).toBe('Before silver after');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
+      const promoted = await next.elementHandle();
+      const transition = await samplePlayback(player, 550);
+      expect(await current.evaluate((element, prior) => element === prior, promoted)).toBe(true);
+      expect(transition.some(sample => sample.time >= 9 && sample.transform !== 'none')).toBe(true);
+      await info.attach('karaoke-slide-proof', { body: JSON.stringify(transition), contentType: 'application/json' });
       await seekNative(player, 9);
-      await expect(reader).toHaveText('Next chorus');
+      await expect.poll(() => lyricText(current)).toBe('Next chorus');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
       await seekNative(player, 9.5);
       await expect(reader.locator('[aria-current]')).toHaveText('Next');
@@ -207,14 +276,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       if (viewport.width === 390) await back.tap(); else await back.click();
       await expect(reader.locator('[aria-current]')).toHaveText('silver');
       await seekNative(player, 16);
-      await expect(reader).toHaveText('Next chorus');
+      await expect.poll(() => lyricText(current)).toBe('Next chorus');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
 
       await seekNative(player, 22.5);
-      await expect(reader).toHaveText(longLine);
+      await expect.poll(() => lyricText(current)).toBe(longLine);
       await reader.scrollIntoViewIfNeeded();
       const geometry = await reader.evaluate(region => {
-        const line = region.querySelector('p')!;
+        const line = region.querySelector('[aria-label="Current lyrics"]')!;
         const rect = region.getBoundingClientRect();
         const rows = new Set([...region.querySelectorAll('span')].map(word => Math.round(word.getBoundingClientRect().top)));
         return { viewport: innerWidth, document: document.documentElement.scrollWidth,

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Page, type TestInfo } from '@playwright/test';
+import { test } from './auth-fixture';
 import type { JobDTO } from '../src/api';
 
 const directory = process.env.E2E_FIXTURE_DIR!;

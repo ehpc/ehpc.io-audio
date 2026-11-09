@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { authenticateOutsider, test } from './auth-fixture';
 import type { JobDTO } from '../src/api';
 
 const SOURCE_SHA256 = '0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04';
@@ -152,6 +153,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   await expect.poll(() => mobileText.evaluate(element => element.scrollLeft)).toBeGreaterThan(50);
   expect(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const foreign = await browser.newContext();
+  await authenticateOutsider(foreign);
   const outsider = await foreign.newPage();
   await outsider.goto(process.env.E2E_BASE_URL!);
   expect((await outsider.request.get(`/api/jobs/${id}/pitched-lyrics/vocals/download`)).status()).toBe(404);
@@ -167,7 +169,7 @@ test('pitched lyrics alone analyze hidden vocals without adding audio exports', 
   test.setTimeout(25 * 60 * 1000);
   const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-30s.flac'));
   await page.goto('/');
-  const response = await page.request.post('/api/jobs', { multipart: { file: { name: 'public-domain-excerpt.flac', mimeType: 'audio/flac', buffer: source }, extract_pitched_lyrics: 'true' } });
+  const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: { file: { name: 'public-domain-excerpt.flac', mimeType: 'audio/flac', buffer: source }, extract_pitched_lyrics: 'true' } });
   const id = (await response.json()).id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {

@@ -226,6 +226,7 @@ async def _worker_loop(worker_id: int) -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    config.validate_auth()
     await asyncio.to_thread(db.init_db)
     await asyncio.to_thread(db.reap_running_to_queued)
     tasks = [

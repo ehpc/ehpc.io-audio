@@ -6,10 +6,11 @@ from contextlib import contextmanager
 from dataclasses import asdict, fields
 from typing import NamedTuple
 
-from backend import config
+from backend import auth_store, config
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
 from separator.lyrics import Transcript, transcript_from_json
 from separator.options import SeparationOptions
+from separator.song_search import SEARCH_TTL
 
 _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
 # Renamed options in older stored jobs → current field names.
@@ -174,11 +175,26 @@ def init_db() -> None:
         conn.executescript(_SCHEMA)
         conn.execute("BEGIN IMMEDIATE")
         _migrate(conn)
+    auth_store.initialize()
 
 
 def health_check() -> None:
     with _session() as conn:
         conn.execute("SELECT 1")
+
+
+def _check_queue_capacity(conn: sqlite3.Connection, session_id: str) -> None:
+    counts = conn.execute(
+        "SELECT COUNT(*) total, SUM(session_id = ?) own FROM ("
+        "SELECT session_id FROM jobs WHERE status IN ('queued','running') "
+        "UNION ALL SELECT session_id FROM song_searches "
+        "WHERE pending_query IS NOT NULL AND created_at > ?)",
+        (session_id, int(time.time()) - SEARCH_TTL),
+    ).fetchone()
+    if (counts["own"] or 0) >= auth_store.setting(conn, "user_queue", 5) or counts[
+        "total"
+    ] >= auth_store.setting(conn, "global_queue", 50):
+        raise ValueError("Queue limit reached")
 
 
 def create_song_search(
@@ -191,6 +207,9 @@ def create_song_search(
     successful_at: float | None = None,
 ) -> None:
     with _session() as conn:
+        if pending_query is not None and session_id.startswith("acct:"):
+            conn.execute("BEGIN IMMEDIATE")
+            _check_queue_capacity(conn, session_id)
         conn.execute(
             "INSERT INTO song_searches "
             "(id, session_id, created_at, query_key, pending_query, "
@@ -334,6 +353,9 @@ def insert_job(
     # once the worker downloads it (see set_title), so it starts NULL.
     title = source_value if source_type == "upload" else None
     with _session() as conn:
+        if session_id.startswith("acct:"):
+            conn.execute("BEGIN IMMEDIATE")
+            _check_queue_capacity(conn, session_id)
         cursor = conn.execute(
             """
             INSERT INTO jobs

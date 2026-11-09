@@ -222,10 +222,13 @@ def run_separation(
             source = "instruments-decrowded" if options.decrowd else "instruments"
             run([DRUM_STEMS], paths[source])
 
-    for mix in options.mixes:
-        output = tmp_dir / f"{mix.id}.mp3"
+    mixes = [(mix.id, mix.components) for mix in options.mixes]
+    if options.detect_pitch:
+        mixes.insert(0, ("drums-vocals", ("drums", "vocals")))
+    for label, parts in mixes:
+        output = tmp_dir / f"{label}.mp3"
         start = time.monotonic()
-        inputs = [paths[options.component_label(part)] for part in mix.components]
+        inputs = [paths[options.component_label(part)] for part in parts]
 
         def produce_mix(inputs=inputs, output=output) -> bytes:
             mix_audio(inputs, output)
@@ -241,7 +244,7 @@ def run_separation(
             produce_mix,
         )
         output.write_bytes(audio)
-        results[mix.id] = StemResult(audio, time.monotonic() - start)
+        results[label] = StemResult(audio, time.monotonic() - start)
     if (options.needs_lyrics or options.detect_pitch) and "vocals" not in requested:
         requested.append("vocals")
     requested.extend(label for label in options.pitch_labels if label not in requested)

@@ -2,7 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { authenticateOutsider, test } from './auth-fixture';
 import type { JobDTO } from '../src/api';
 
 const SOURCE_SHA256 = '0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04';
@@ -49,7 +50,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   expect(job!.transcript!.timestamp_reference).toBe('original');
   expect(job!.transcript!.reference).not.toBeNull();
   expect(job!.transcript!.words![0].start_s / 1.25).toBeCloseTo(analysis.words[0].start_s, 6);
-  expect(job!.manifest!.map(entry => entry.label)).toEqual(['song', 'vocals', 'lead', 'backing', 'instruments', 'drums', 'bass', 'other-instruments']);
+  expect(job!.manifest!.map(entry => entry.label)).toEqual(['song', 'vocals', 'lead', 'backing', 'instruments', 'drums', 'bass', 'other-instruments', 'drums-vocals']);
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
   await expect(view).toBeVisible();
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[0].notes.length);
@@ -60,7 +61,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const rectangle = view.locator('.pitch-note').nth(noteIndex);
   await rectangle.scrollIntoViewIfNeeded();
   await rectangle.click();
-  const player = view.locator('audio');
+  const player = view.locator('audio:not([hidden])');
   await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(note.start_s, 1);
   await player.evaluate(element => element.play());
   await expect.poll(() => player.evaluate(element => element.currentTime)).toBeGreaterThan(note.start_s + 0.3);
@@ -85,7 +86,9 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await view.getByLabel('Pitch vocal stem', { exact: true }).selectOption('lead');
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect(player).toHaveAttribute('src', selectedBackgroundUrl!);
-  await view.getByLabel('Pitch background audio', { exact: true }).selectOption('lead');
+  const leadBackground = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: /^lead/ });
+  await leadBackground.click();
+  await expect(leadBackground).toHaveAttribute('aria-pressed', 'true');
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
   await player.evaluate(audio => audio.play());
@@ -147,6 +150,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await expect(mobilePage.getByLabel('Vocal pitch analysis', { exact: true })).toBeVisible();
   await expect(mobilePage.getByRole('button', { name: 'View vocal pitch timeline', exact: true })).toBeVisible();
   const foreign = await browser.newContext();
+  await authenticateOutsider(foreign);
   const outsider = await foreign.newPage();
   await outsider.goto(process.env.E2E_BASE_URL!);
   expect((await outsider.request.get(`/api/jobs/${id}/pitch`)).status()).toBe(404);
@@ -189,7 +193,7 @@ test('legacy API pitch-only analysis retains the hidden full-vocal prerequisite 
   expect(job!.pitch!.word_alignment).toBeNull();
   await page.reload();
   const view = page.getByLabel('Vocal pitch analysis', { exact: true });
-  await expect(view.getByLabel('Pitch background audio', { exact: true })).toHaveValue('song');
+  await expect(view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' })).toHaveAttribute('aria-pressed', 'true');
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
   const original = await page.request.get(`/api/jobs/${id}/original`);
   expect(await original.body()).toEqual(source);
@@ -225,9 +229,9 @@ test('legacy API pitch-only analysis retains the hidden full-vocal prerequisite 
   );
   await recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true }).click();
   expect((await recovery).status()).toBe(204);
-  await expect(recoveredView.getByLabel('Pitch background audio', { exact: true })).toHaveValue('vocals');
+  await expect(recoveredView.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Just vocals' })).toHaveAttribute('aria-pressed', 'true');
   expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(200);
-  const recoveredPlayer = recoveredView.locator('audio');
+  const recoveredPlayer = recoveredView.locator('audio:not([hidden])');
   await expect.poll(() => recoveredPlayer.evaluate(element => element.paused)).toBe(true);
   await recoveredPlayer.evaluate(element => element.play());
   await expect.poll(() => recoveredPlayer.evaluate(element =>
@@ -250,7 +254,8 @@ test('legacy API pitch-only analysis retains the hidden full-vocal prerequisite 
   expect(analysisPostCount).toBe(1);
   expect(modalCallId()).toBe(originalCallId);
 
-  const outsider = await browser.newPage();
-  expect((await outsider.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
-  await outsider.close();
+  const foreign = await browser.newContext();
+  await authenticateOutsider(foreign);
+  expect((await foreign.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
+  await foreign.close();
 });

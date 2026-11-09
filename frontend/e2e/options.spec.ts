@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expect, type Page, type TestInfo } from '@playwright/test';
+import { authenticateOutsider, test } from './auth-fixture';
 import type { BooleanOptionKey, JobDTO, SeparationOptions } from '../src/api';
 import { displayOutputLabel } from '../src/lib/expectedStems';
 import { keyScale, transposeKey } from '../src/lib/music';
@@ -359,6 +360,7 @@ for (const item of cases) {
     }
     if (item.name === 'identity-original-only' || item.name === 'all-booleans-enabled') {
       const stranger = await browser.newContext();
+      await authenticateOutsider(stranger);
       try {
         const isolated = await stranger.newPage();
         await isolated.goto('/');

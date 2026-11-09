@@ -1,7 +1,8 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
+import { authenticateOutsider, test } from './auth-fixture';
 import type { JobDTO } from '../src/api';
 import { transposeKey } from '../src/lib/music';
 import { hash, pcm } from './audio';
@@ -203,6 +204,7 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
     expect(retainedFirstAudio.rawSha256).toBe(proofs[0]!.outputs.mix.rawSha256);
     expect(retainedFirstAudio.audioEssenceSha256).toBe(proofs[0]!.outputs.mix.audioEssenceSha256);
     const foreign = await browser.newContext();
+    await authenticateOutsider(foreign);
     try {
       const outsider = await foreign.newPage();
       await outsider.goto('/');

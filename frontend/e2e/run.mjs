@@ -9,6 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
 import { transform } from 'esbuild';
 import { startMediaRelay } from './media-relay.mjs';
+import { startAuthSmtp } from './auth-smtp.mjs';
+
+// Use the already-provisioned environment rather than resolving dependencies
+// for each backend or fixture subprocess; callers may explicitly override this.
+process.env.UV_NO_SYNC ??= 'true';
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(frontend, '..');
@@ -76,6 +81,7 @@ await new Promise(resolve => reservation.close(resolve));
 const backendURL = `http://127.0.0.1:${port}`;
 const mediaRelay = throttleMedia ? await startMediaRelay(backendURL) : null;
 const baseURL = mediaRelay?.url ?? backendURL;
+const smtp = await startAuthSmtp(temporary);
 const environment = {
   ...process.env,
   DATA_DIR: resolve(temporary, 'data'),
@@ -85,8 +91,11 @@ const environment = {
   QUEUE_CONCURRENCY: visual ? '0' : '1',
   QUEUE_POLL_INTERVAL_S: '0.1',
   DOWNLOAD_MAX_ATTEMPTS: '1',
-  COOKIE_SECRET: `isolated-e2e-${temporary}`,
-  COOKIE_SECURE: 'false',
+  AUTH_ORIGIN: baseURL,
+  AUTH_OTP_SECRET: randomBytes(32).toString('hex'),
+  AUTH_INVITE_SECRET: randomBytes(32).toString('hex'),
+  AUTH_SMTP_SOCKET: smtp.socketPath,
+  AUTH_ADMIN_EMAIL: 'e2e-admin@example.test',
   E2E_BASE_URL: baseURL,
   E2E_FIXTURE_URL: fixtureURL,
   E2E_FIXTURE_DIR: temporary,
@@ -94,7 +103,7 @@ const environment = {
   E2E_REPO_ROOT: root,
   E2E_FIXTURE_SEED: String(fixtureSeed),
 };
-const backend = spawn('uv', ['run', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(port)], {
+const backend = spawn('uv', ['run', 'uvicorn', 'backend.main:app', '--no-proxy-headers', '--host', '127.0.0.1', '--port', String(port)], {
   cwd: root, env: environment, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let backendLog = '';
@@ -116,6 +125,7 @@ const cleanup = async () => {
   await mediaRelay?.stop();
   if (backend.exitCode === null && !backendError) backend.kill('SIGTERM');
   await backendClosed;
+  await smtp.stop();
   await new Promise(resolve => source.close(resolve));
   try {
     await cp(
@@ -139,6 +149,36 @@ try {
     if (Date.now() > deadline) throw new Error('Real backend failed to become healthy');
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+  const adminCommand = (...args) => {
+    const result = spawnSync('uv', ['run', 'python', '-m', 'backend.auth_admin', ...args], { cwd: root, env: environment, encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(`Auth fixture command failed: ${result.stderr}`);
+    return result.stdout.trim();
+  };
+  for (const name of ['user_daily_work', 'global_daily_work', 'user_queue', 'global_queue']) adminCommand('budget', name, '100000');
+  const post = (path, body) => fetch(`${baseURL}/api/auth/${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: baseURL }, body: JSON.stringify(body),
+  });
+  const createSession = async email => {
+    const invite = adminCommand('seed-invite').split(/\s+/)[1];
+    const started = await post('start', { email, invite_code: invite });
+    if (!started.ok) throw new Error(`Auth fixture start failed: ${started.status}`);
+    let code;
+    const deadline = Date.now() + 15_000;
+    while (!code) {
+      try { code = await readFile(resolve(temporary, `mail-${encodeURIComponent(email)}.txt`), 'utf8'); }
+      catch (error) {
+        if (error.code !== 'ENOENT' || Date.now() >= deadline) throw error;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+    const verified = await post('verify', { email, invite_code: invite, code });
+    if (!verified.ok) throw new Error(`Auth fixture verification failed: ${verified.status}`);
+    const cookie = verified.headers.get('set-cookie')?.match(/(?:^|,\s*)auth_session=([^;]+)/)?.[1];
+    if (!cookie) throw new Error('Auth fixture did not receive a session cookie');
+    return cookie;
+  };
+  environment.E2E_AUTH_SESSION = await createSession(environment.AUTH_ADMIN_EMAIL);
+  environment.E2E_AUTH_OUTSIDER_SESSION = await createSession('e2e-outsider@example.test');
   console.log(`Built frontend + real HTTP backend: ${baseURL}; isolated DATA_DIR=${environment.DATA_DIR}`);
   child = spawn(process.execPath, ['node_modules/@playwright/test/cli.js', 'test', ...arguments_], {
     cwd: frontend, env: environment, stdio: 'inherit',

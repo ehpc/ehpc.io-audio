@@ -8,6 +8,14 @@ choose the audio outputs, lyrics, or vocal pitch analysis you want.
 Multiple people can use it at once; submissions go through a queue, and each
 visitor sees their live position.
 
+## Private access
+
+Invite-only email-OTP access and its operator configuration are implemented and
+tested locally but **are not deployed**. The existing send-only mail service is
+active; one approved delivery passed SPF, DKIM and DMARC, which does not establish ongoing
+deliverability. See [ACCESS_PLAN.md](ACCESS_PLAN.md) for bootstrap, invitation
+accounting, credential provisioning, legacy ownership and rollout prerequisites.
+
 ## Architecture
 
 ```text
@@ -294,7 +302,7 @@ authorization does not grant additional rights under the model licenses.
 
 | Selection | Output label or file |
 |---|---|
-| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), timestamped lyrics, and included `vocals`, `instruments`, `drums`, `bass`, `other-instruments` downloads |
+| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), timestamped lyrics, and included `vocals`, `instruments`, `drums`, `bass`, `other-instruments`, and `drums-vocals` downloads |
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
 | Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, also shown in Results/History (output audio clock) |
@@ -373,8 +381,8 @@ Arrow keys, Home and End navigate the tab bar.
 **Karaoke with pitches** is the first output option, marked with a decorative
 microphone. Selecting it includes and locks **Extract vocals**, **Extract
 lyrics**, **Extract instruments**, and **Split drums, bass & other instruments**.
-Every newly processed karaoke job therefore offers the four backing choices:
-Full song, Just vocals, Instruments, and Drums only. Drum separation also
+Every newly processed karaoke job therefore offers five backing choices:
+Full song, Just vocals, Instruments, Drums only, and Drums + Vocals. Drum separation also
 produces public **bass** and **other-instruments** downloads, not just drums.
 The unchanged original is retained; existing pitch/tempo rules determine
 whether an additional transformed full-song download is generated.
@@ -382,8 +390,12 @@ Hover an included option or focus/tap its **Why?** button for an immediate
 explanation; Escape dismisses it. Turning karaoke off restores each output's
 previous manual choice, including a drums-only selection without a public
 instrumental download. The preview and submitted request use the same included
-outputs. No one-part mix or other automatic mix is inserted; existing mixes,
+outputs. No user-configured one-part mix is inserted; existing custom mixes,
 vocal splits, cleanup, and standalone pitched-lyrics choices remain independent.
+Karaoke with pitches also exports **Drums + Vocals**, mixed from the selected
+cleaned vocal and drum stems before pitch and tempo adjustments. Existing jobs
+show this backing only if it is present in their manifest; no historical
+processing is triggered.
 On a cold cache, the instrumental and drum/bass/other separation models add
 processing work. Compatible already-computed stages are reused from cache;
 this is not a promise that the additional outputs are cost-free.
@@ -632,9 +644,17 @@ transformed backgrounds use the output clock.
 
 With focus on the timeline's scroll region or time ruler, **Space** toggles that
 same native player without scrolling the page; holding Space does not repeatedly
-toggle playback. It does not clear a browsing pause. Focused notes and word
-buttons retain their selection actions, and other controls retain their own
-keyboard behavior.
+toggle playback. Space also works in the lyric reader when text is selected, but
+not while typing in an input. It does not clear a browsing pause. Focused notes
+and word buttons retain their selection actions, as do other controls.
+
+Vocal pitch analysis also includes a compact scrollable piano below the audio
+player. Detected notes illuminate on the selected vocal track's output clock
+only while it is playing; detection does not produce automatic piano sound.
+Press and hold keys with a pointer, touch, Space or Enter for an independent
+synthesized piano-like tone. It sustains while held and fades briefly on release,
+alongside the selected backing player. The instrument uses browser Web Audio
+rather than sampled piano, suspends when idle, and reports unavailable audio.
 
 With **Follow playback** enabled, the timeline advances when the playhead passes
 about 75% of the visible note area, excluding the sticky note axis, leaving room
@@ -647,21 +667,23 @@ changes and restarting playback do not resume following. Turning Follow off is
 an explicit opt-out; turning it back on does not clear an existing browsing
 pause. Browsers without native scroll-end events use a best-effort
 stationary-frame fallback for gesture completion.
+A seek in the native audio controls reveals the playhead even with Follow off,
+without clearing an existing browsing pause.
 
-A karaoke reader above the player previews the next supported lyric line up
-to one second early without replacing a line still being sung. Known words
-fill progressively using their published timings and the same output clock;
-untimed words within a supported line stay neutral. No syllable timings are
-invented. Pitch-only or ASR-gap words can appear as short individual cues, which
-remain legible immediately. Long lines wrap in a keyboard-scrollable reader
-whose focus survives cue changes; reduced-motion preferences disable the entry
-animation.
+The karaoke reader shows the current lyric line and a dimmed next timed line.
+Natural progression slides the next line upward; seeks jump directly, and
+reduced-motion preferences suppress animation. Known words fill progressively
+using published timings and the same output clock; untimed words remain neutral.
+An optional **Pitches** row shows only unambiguously linked notes from the
+selected vocal track above each word. Long pitch sequences remain horizontally
+scrollable and accessible; no syllable timings or note links are invented.
+Pitch-only or ASR-gap words can appear as short individual cues.
 
 **Background audio** is independent of the detected **Vocal stem** selector.
 Choose **Full song** (the transformed song when available, otherwise the
 unchanged original), **Just vocals** (all vocal parts, not necessarily the
-selected detected voice), **Instruments**, or **Drums only**. New karaoke
-submissions include the required public instrumental and drum outputs.
+selected detected voice), **Instruments**, **Drums only**, or
+**Drums + Vocals**. New karaoke submissions include the required outputs.
 Older stored jobs do not gain missing stems automatically: their unavailable
 choices remain disabled. Run **Karaoke with pitches** again to produce missing
 outputs, reusing compatible cached stages rather than silently launching work
@@ -671,9 +693,12 @@ output clock; nonzero pitch also produces the transformed full-song reference.
 A cleaned instrumental is not silently substituted for the instrumental output.
 Other exported detected vocal
 stems remain available. The initial reference retains the matching exported
-stem when one exists. Switching backgrounds preserves the current output-clock
-position, maps it to the new source's clock, and stops the old source without
-autoplay. Selecting another history job resets its playback and reference state.
+stem when one exists. Accessible background buttons preserve the output-clock
+position, playback state and volume. During a switch the existing source keeps
+playing until the replacement is ready and aligned; a failed replacement leaves
+the old source playing. A newer selection or external player takeover prevents
+an outdated switch from resuming it. Only one HTML audio player is audible at a
+time. Selecting another history job resets its playback and reference state.
 Source-picker rows shrink within mobile cards, so long transformed-stem labels cannot widen the device viewport or displace note tap targets.
 
 New pitch-timeline jobs retain their already-computed full-vocal prerequisite
@@ -893,15 +918,44 @@ If you hit that `ImportError` before setting this, just recreate the venv:
 
 ### Run the app
 
+The server requires its two authentication secrets and origin. Without an SMTP
+socket, OTP delivery fails and sign-in cannot complete. For local-only
+development, run the existing E2E Unix SMTP sink in a **separate terminal**;
+it writes OTPs to private local files and sends no mail:
+
 ```sh
+umask 077
+export AUTH_DEV_DIR="$HOME/.cache/vocals-auth-dev"
+mkdir -p "$AUTH_DEV_DIR"
+node --input-type=module -e 'import {startAuthSmtp} from "./frontend/e2e/auth-smtp.mjs"; await startAuthSmtp(process.env.AUTH_DEV_DIR); console.log("Local SMTP sink ready");'
+```
+
+In the application terminal, create two independent keys once and retain them
+across local restarts. Keep the files and invitation/OTP values private:
+
+```sh
+umask 077
+export AUTH_DEV_DIR="$HOME/.cache/vocals-auth-dev"
+mkdir -p "$AUTH_DEV_DIR" dev-data
+test -s "$AUTH_DEV_DIR/otp-key" || openssl rand -hex 32 > "$AUTH_DEV_DIR/otp-key"
+test -s "$AUTH_DEV_DIR/invite-key" || openssl rand -hex 32 > "$AUTH_DEV_DIR/invite-key"
+export AUTH_OTP_SECRET="$(cat "$AUTH_DEV_DIR/otp-key")"
+export AUTH_INVITE_SECRET="$(cat "$AUTH_DEV_DIR/invite-key")"
+export AUTH_ORIGIN="http://localhost:5173"
+export AUTH_ADMIN_EMAIL="admin@example.test"
+export AUTH_SMTP_SOCKET="$AUTH_DEV_DIR/smtp.sock"
+export AUTH_TRUSTED_PROXY_CIDRS=""
+DATA_DIR="$PWD/dev-data" uv run python -m backend.auth_admin seed-invite
 make dev
 ```
 
-This starts the backend (`uvicorn --reload` on `:8000`) and the frontend
-(Vite dev server, proxying `/api` and `/health` to `:8000`) together in one
-terminal, prefixed `[backend]`/`[frontend]`, and stops both on Ctrl-C. Open
-the URL Vite prints (typically `http://localhost:5173`). Job data, uploads,
-and results are written to `./dev-data/` (gitignored).
+Open the URL Vite prints, normally `http://localhost:5173`; `AUTH_ORIGIN` must
+match the browser's actual frontend origin, not the backend's port 8000. Use the
+private seed invitation to register the configured admin email, then read its
+local OTP from `$AUTH_DEV_DIR/mail-admin%40example.test`. Run `seed-invite` only
+when a new seed invitation is needed. The backend (`uvicorn --reload` on
+`:8000`) and Vite run together; Ctrl-C stops both. Stop the separate SMTP sink
+when finished. Local job data, uploads and results use `./dev-data/`.
 
 ### Lint / typecheck
 
@@ -1035,15 +1089,14 @@ separately measure per-component spectral amplitudes, non-normalized sums,
 multichannel alignment, overload limiting, unsafe/duplicate names, privacy,
 interrupted-job recovery, retry and historical migrations.
 
-The 68-case live-queue Chromium browser matrix covers processing/behavior,
-unknown keys, download metadata, native MP3 uploads, responsive workspaces,
-adjustments, retained forms, lyrics, exclusive playback, vocal pitch, pitched
-lyrics, and six song-discovery UI cases. A required stored-analysis lane covers
-legacy native pitch-timeline interaction, new karaoke form submissions with all
-four playable backgrounds and public audio downloads, and ODT exports at
-desktop/mobile widths. These disjoint lanes retain their existing behavior cases.
-The separate native-listening, visual and manual YouTube suites are excluded
-from the live-queue matrix.
+The live-queue Chromium browser matrix covers processing/behavior, unknown
+keys, download metadata, native MP3 uploads, responsive workspaces,
+adjustments, retained forms, lyrics, exclusive playback, vocal pitch and
+pitched lyrics. A required stored-analysis lane separately covers
+authentication, karaoke/piano, native pitch-timeline interaction and ODT
+exports at desktop/mobile widths. These disjoint lanes retain their behavior
+cases. The separate native-listening, visual and manual YouTube suites are
+excluded from the live-queue matrix.
 
 Historical stored-analysis cases publish their existing synthetic/captured pitch
 fixtures directly. Complete Karaoke fixtures instead execute the production
@@ -1053,10 +1106,16 @@ FFmpeg provenance. These cheap lanes run with empty Modal/OpenRouter credentials
 and a deliberately nonexistent production manifest. `--visual` disables the
 normal queue; each owned publisher requires isolated data and an unclaimed
 queued job. This proves CPU assembly, public artifacts and browser behavior,
-not neural quality. CI requires all six seeded cases before paid GPU work:
+not neural quality. CI requires the complete seeded lane before paid GPU work:
 
 ```sh
 node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
+```
+
+To run just the authentication cases through the same mandatory seeded config:
+
+```sh
+node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts auth.spec.ts
 ```
 
 The dedicated Firefox listening regression uploads original, aperiodic synthetic
@@ -1428,8 +1487,12 @@ recordings are included or fetched.
 | `MODAL_TEST_GPU` | *(unset)* | Strict isolated-test-only `L4` or `L40S` override; production remains `L40S` |
 | `MODAL_GPU_IDLE_SECONDS` | `60` | Positive GPU idle-window seconds, a deployment setting rather than an algorithm version |
 | `OPENROUTER_API_KEY` | *(unset)* | Server-only VPS discovery credential; never sent to Modal or browsers |
-| `COOKIE_SECRET` | *(insecure dev default)* | Signs the session cookie — **must** be set to a stable secret in prod; rotating it logs everyone out |
-| `COOKIE_SECURE` | `false` | Set `true` in prod (behind TLS) — a `Secure` cookie is silently dropped over plain HTTP, which is why local dev defaults to `false` |
+| `AUTH_OTP_SECRET` | *(required)* | Stable secret of at least 32 bytes for OTP verification; distinct from the invitation secret |
+| `AUTH_INVITE_SECRET` | *(required)* | Stable independent secret of at least 32 bytes for invitation derivation |
+| `AUTH_ORIGIN` | *(required)* | Exact browser origin; HTTPS in production, loopback HTTP for development |
+| `AUTH_ADMIN_EMAIL` | `ehpc@ehpc.io` | Seed-invited administrator's email |
+| `AUTH_SMTP_SOCKET` | `/run/audio-mail/submit.sock` | Unix SMTP socket; development may use the local E2E sink |
+| `AUTH_TRUSTED_PROXY_CIDRS` | *(empty)* | Only immediate trusted proxy networks; production use requires an enforced gateway-only ingress policy and raw ASGI peer |
 
 ## Running on Kubernetes
 
@@ -1526,7 +1589,7 @@ recordings are included or fetched.
    prerequisite to resolve, not permission to silently repeat recognition.
    Existing complete transcript caches are checked before that raw-stage path.
 
-   Preserve `/data`, original job files and the stable cookie secret. Drain
+   Preserve `/data`, original job files and all stable auth secrets. Drain
    active audio/search work and block new upload admission before terminating
    old web instances. Verify new web behavior and required legacy-cache hits,
    then stop the old `audio-separator-v2` app without deleting its volumes.
@@ -1538,51 +1601,18 @@ recordings are included or fetched.
    - A single-writer `PersistentVolumeClaim` mounted at `/data` — holds SQLite,
      uploads, results, source-clock artifacts and private preparation receipts.
    - A `Secret` with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`.
-   - A `Secret` with `COOKIE_SECRET` — generate once, keep stable across
-     redeploys.
+   - A `Secret` with distinct stable `AUTH_OTP_SECRET` and
+     `AUTH_INVITE_SECRET`, each at least 32 bytes.
    - A server-only `OPENROUTER_API_KEY` secret for local song discovery.
      Keep it out of the GPU app, image layers and browser environment.
 
 4. **Deployment**, `replicas: 1` (see [Architecture](#architecture)):
-
-   ```yaml
-   spec:
-     replicas: 1
-     template:
-       spec:
-         terminationGracePeriodSeconds: 300
-         containers:
-           - name: audio
-             image: ghcr.io/ehpc/ehpc.io-audio:prod
-             ports:
-               - containerPort: 8000
-             env:
-               - name: DATA_DIR
-                 value: /data
-               - name: QUEUE_CONCURRENCY
-                 value: "1"
-               - name: MODAL_APP_NAME
-                 value: audio-inference-v3
-               - name: COOKIE_SECURE
-                 value: "true"
-               - name: MODAL_TOKEN_ID
-                 valueFrom: { secretKeyRef: { name: audio-modal-token, key: token-id } }
-               - name: MODAL_TOKEN_SECRET
-                 valueFrom: { secretKeyRef: { name: audio-modal-token, key: token-secret } }
-               - name: COOKIE_SECRET
-                 valueFrom: { secretKeyRef: { name: audio-cookie-secret, key: secret } }
-               - name: OPENROUTER_API_KEY
-                 valueFrom: { secretKeyRef: { name: audio-openrouter, key: api-key } }
-             volumeMounts:
-               - { name: data, mountPath: /data }
-             livenessProbe:
-               httpGet: { path: /health, port: 8000 }
-             readinessProbe:
-               httpGet: { path: /health, port: 8000 }
-         volumes:
-           - name: data
-             persistentVolumeClaim: { claimName: audio-data-pvc }
-   ```
+   use the prepared `ehpc.io-configs/k8s/120-audio/` manifests rather than a
+   floating image tag. They preserve the single-writer PVC and render the host
+   mail-socket group dynamically. The production gateway trust, NetworkPolicy
+   enforcement, node probes and secret provisioning are release gates; see
+   [ACCESS_PLAN.md](ACCESS_PLAN.md). The prepared access changes are not yet
+   deployed.
 
 The container starts Uvicorn with `--timeout-graceful-shutdown 5`, so an open
 SSE response cannot indefinitely postpone lifespan cleanup. Audio and discovery

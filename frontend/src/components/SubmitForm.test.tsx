@@ -355,6 +355,7 @@ describe("SubmitForm", () => {
     for (const label of ["instruments", "drums", "bass", "other-instruments"]) {
       expect(screen.getByText(label, { exact: true })).toBeInTheDocument();
     }
+    expect(screen.getByText("Drums + Vocals", { exact: true })).toBeInTheDocument();
     for (const name of ["Lyrics with pitches", "Split by gender (male/female)", "Split lead & backing vocals"]) {
       expect(screen.getByRole("checkbox", { name, exact: true })).not.toBeChecked();
       expect(screen.getByRole("checkbox", { name, exact: true })).toBeEnabled();
@@ -369,6 +370,7 @@ describe("SubmitForm", () => {
     expect(lyrics).not.toBeChecked();
     expect(instruments).not.toBeChecked();
     expect(drums).not.toBeChecked();
+    expect(screen.queryByText("Drums + Vocals", { exact: true })).toBeNull();
     pending.resolve({ id: 42, status: "queued", position: 1 });
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
     expect(onSubmitted.mock.calls[0][0].options).toEqual(expect.objectContaining({
@@ -461,10 +463,30 @@ describe("SubmitForm", () => {
     const help = screen.getByRole("button", { name: "Why Split drums, bass & other instruments is included" });
     help.focus();
     expect(screen.getByRole("tooltip")).toBeVisible();
-    expect(help).toHaveAccessibleDescription(/drums-only backing track.*Drums, bass and other instruments.*downloads/);
+    expect(help).toHaveAccessibleDescription(/drums-only and Drums \+ Vocals backing tracks.*Drums, bass and other instruments.*downloads/);
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(screen.getByRole("checkbox", { name: "Split drums, bass & other instruments", exact: true })).toBeDisabled();
+  });
+
+  it("places desktop help above its option when it would overflow, and repositions on scroll", async () => {
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true }));
+    const help = screen.getByRole("button", { name: "Why Split drums, bass & other instruments is included" });
+    const row = help.parentElement!;
+    const tooltip = row.querySelector('[role="tooltip"]') as HTMLElement;
+    let top = window.innerHeight - 40;
+    vi.spyOn(row, "getBoundingClientRect").mockImplementation(() =>
+      ({ top, bottom: top + 40 } as DOMRect));
+    vi.spyOn(tooltip, "getBoundingClientRect").mockImplementation(() =>
+      ({ height: 100 } as DOMRect));
+    fireEvent.focus(help);
+    expect(tooltip.style.bottom).toBe("100%");
+    expect(tooltip.style.top).toBe("auto");
+    top = 100;
+    fireEvent.scroll(window);
+    expect(tooltip.style.bottom).toBe("");
+    expect(tooltip.style.top).toBe("");
   });
 
   it("explains a disabled lyric selection immediately on hover, keyboard focus and an info-button click", async () => {

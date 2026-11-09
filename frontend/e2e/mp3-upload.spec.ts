@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test, type Request } from '@playwright/test';
+import { expect, type Request } from '@playwright/test';
+import { test } from './auth-fixture';
 import { hash } from './audio';
 
 const providers = [

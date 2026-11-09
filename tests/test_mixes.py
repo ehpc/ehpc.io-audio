@@ -98,6 +98,190 @@ def test_arbitrary_graph_sums_every_selected_component_at_unity_gain(
             )
 
 
+@pytest.mark.skipif(
+    not _NATIVE or not shutil.which("rubberband"),
+    reason="FFmpeg and Rubber Band required",
+)
+def test_karaoke_backing_is_real_cached_mix_on_output_clock(
+    client: TestClient,
+    other_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = ffmpeg_tone(
+        tmp_path / "original.wav", (110, 110), amplitude=0.1
+    ).read_bytes()
+    response = client.post(
+        "/api/jobs",
+        files={"file": ("Source.wav", original)},
+        data={
+            "detect_pitch": "true",
+            "pitch_semitones": "12",
+            "tempo_percent": "125",
+            "mixes": json.dumps(
+                [
+                    {
+                        "id": "mix-custom",
+                        "name": "My backing",
+                        "components": ["vocals", "drums"],
+                    }
+                ]
+            ),
+        },
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    db.set_original_key(job_id, "C major")
+    job = db.get_job(job_id)
+    assert job is not None
+    frequencies = {
+        "vocals": 370,
+        "instruments": 110,
+        "drums": 220,
+        "bass": 330,
+        "other-instruments": 550,
+    }
+    tones = {
+        label: ffmpeg_tone(
+            tmp_path / f"fixture-{label}.wav", (frequency, frequency), amplitude=0.1
+        ).read_bytes()
+        for label, frequency in frequencies.items()
+    }
+    models = []
+
+    def separate(
+        source: Path, stem: Stem, out_dir: Path
+    ) -> dict[str, tuple[StemResult, Path]]:
+        models.append(stem.model)
+        out_dir.mkdir(parents=True)
+        outputs = {}
+        for output in stem.outputs:
+            path = out_dir / f"{output.label}.wav"
+            path.write_bytes(tones[output.label])
+            outputs[output.label] = (StemResult(tones[output.label], 0.1), path)
+        return outputs
+
+    real_mix = stems.mix_audio
+    calls = []
+
+    def counted_mix(inputs: list[Path], output: Path) -> None:
+        calls.append(tuple(path.read_bytes() for path in inputs))
+        real_mix(inputs, output)
+
+    monkeypatch.setattr(stems, "mix_audio", counted_mix)
+    results = stems.run_separation(
+        tmp_path / "original.wav",
+        job.options,
+        tmp_path / "first",
+        tmp_path / "cache",
+        separate,
+    )
+    assert models == [
+        stems.VOCALS_STEM.model,
+        stems.INSTRUMENTS_STEM.model,
+        stems.DRUM_STEMS.model,
+    ]
+    assert len(calls) == 1
+    assert results["drums-vocals"].data == results["mix-custom"].data
+    source_mix = decode_audio(results["drums-vocals"].data)
+    for frequency in (220, 370):
+        assert frequency_amplitude(source_mix, frequency) == pytest.approx(
+            0.1, abs=0.015
+        )
+    assert frequency_amplitude(source_mix, 330) < 0.008
+
+    def forbidden_mix(inputs: list[Path], output: Path) -> None:
+        raise AssertionError("cached mix must not be recomputed")
+
+    monkeypatch.setattr(stems, "mix_audio", forbidden_mix)
+    repeated = stems.run_separation(
+        tmp_path / "original.wav",
+        job.options,
+        tmp_path / "second",
+        tmp_path / "cache",
+        separate,
+    )
+    assert repeated["drums-vocals"].data == results["drums-vocals"].data
+    manifest = queue._persist_results(
+        job, {label: results[label] for label in job.options.output_labels}
+    )
+    db.mark_done(job_id, manifest)
+    entry = next(
+        item
+        for item in client.get(f"/api/jobs/{job_id}").json()["manifest"]
+        if item["label"] == "drums-vocals"
+    )
+    assert entry["display_name"] == "Drums + Vocals"
+    assert "Drums + Vocals" in entry["download_name"]
+    assert "source-key-C-major" in entry["download_name"]
+    assert "pitch+12st" in entry["download_name"]
+    assert "tempo125pct" in entry["download_name"]
+    download = client.get(f"/api/jobs/{job_id}/results/drums-vocals")
+    assert download.status_code == 200
+    assert (
+        other_client.get(f"/api/jobs/{job_id}/results/drums-vocals").status_code == 404
+    )
+    assert ID3(io.BytesIO(download.content))["TIT2"].text == [
+        entry["download_name"].removesuffix(".mp3")
+    ]
+    audio = decode_audio(download.content)
+    assert audio.duration_s == pytest.approx(0.8, abs=0.04)
+    assert frequency_amplitude(audio, 440) > 0.04
+    expected_audio = decode_audio(
+        queue.transform_audio(
+            results["drums-vocals"].data, job.options, config.DATA_DIR / "artifacts"
+        )
+    )
+    assert audio.channels == expected_audio.channels
+    assert client.get(f"/api/jobs/{job_id}/original").content == original
+
+
+@pytest.mark.skipif(not _NATIVE, reason="FFmpeg required")
+@pytest.mark.parametrize("cleanup", [False, True])
+def test_karaoke_mix_uses_requested_cleaned_components(
+    cleanup: bool, tmp_path: Path
+) -> None:
+    frequencies = {
+        "vocals": 440,
+        "vocals-decrowded": 550,
+        "vocals-decrowded-dry": 660,
+        "instruments": 110,
+        "instruments-decrowded": 130,
+        "drums": 220,
+        "bass": 330,
+        "other-instruments": 770,
+    }
+
+    def separate(
+        source: Path, stem: Stem, out_dir: Path
+    ) -> dict[str, tuple[StemResult, Path]]:
+        if stem.model == stems.DRUM_STEMS.model:
+            assert source.stem == (
+                "instruments-decrowded" if cleanup else "instruments"
+            )
+        out_dir.mkdir(parents=True)
+        outputs = {}
+        for output in stem.outputs:
+            path = ffmpeg_tone(
+                out_dir / f"{output.label}.wav",
+                (frequencies[output.label],) * 2,
+                amplitude=0.1,
+            )
+            outputs[output.label] = (StemResult(path.read_bytes(), 0.1), path)
+        return outputs
+
+    options = SeparationOptions(
+        detect_pitch=True, decrowd=cleanup, decrowd_vocals=cleanup, dereverb=cleanup
+    )
+    result = stems.run_separation(
+        tmp_path / "source.wav", options, tmp_path, tmp_path / "cache", separate
+    )
+    audio = decode_audio(result["drums-vocals"].data)
+    for frequency in (220, 660 if cleanup else 440):
+        assert frequency_amplitude(audio, frequency) == pytest.approx(0.1, abs=0.015)
+    assert frequency_amplitude(audio, 440 if cleanup else 660) < 0.008
+
+
 @pytest.mark.skipif(not _NATIVE, reason="FFmpeg required")
 @pytest.mark.parametrize("count", [3, 5, 9])
 def test_multi_input_overload_is_limited_without_clipping(

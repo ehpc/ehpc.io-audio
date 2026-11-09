@@ -50,4 +50,4 @@ USER app
 EXPOSE 8000
 # replicas: 1 only — the sqlite file, the in-process job-claim lock, and the SSE
 # pub/sub in backend/events.py all assume a single process, so no --workers flag.
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5", "--no-proxy-headers"]

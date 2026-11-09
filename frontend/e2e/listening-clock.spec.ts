@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './auth-fixture';
 
 const completeSourceJob = String.raw`
 import os,sys
@@ -36,7 +37,7 @@ test('Firefox partial-stream seeking keeps decoded audio on the native clock', a
     references.set(`/__listening-reference/${name}.wav`, await readFile(path));
   }
   await page.goto('/');
-  const submitted = await page.request.post('/api/jobs', { multipart: {
+  const submitted = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
     file: { name: 'aperiodic-vbr.mp3', mimeType: 'audio/mpeg', buffer: await readFile(sourcePath) },
     detect_pitch: 'true',
   } });

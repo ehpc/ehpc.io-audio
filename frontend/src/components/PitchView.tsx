@@ -1,20 +1,18 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show, untrack, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { JobDTO, PitchNoteDTO } from "~/api";
 import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, recoverPitchVocals, resultUrl } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
+import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
 import { Button } from "~/components/button";
 import TimelineKaraoke from "./TimelineKaraoke";
+import PianoKeyboard from "./PianoKeyboard";
 
 const ROW_HEIGHT = 24;
 const AXIS_WIDTH = 54;
 const MIN_ZOOM = 40;
 const MAX_ZOOM = 640;
 const ZOOM_STEP = 20;
-const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-function noteName(midi: number): string {
-  return `${NOTE_NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;
-}
 function timeLabel(seconds: number): string {
   const centiseconds = Math.round(seconds * 100);
   const minutes = Math.floor(centiseconds / 6000);
@@ -45,7 +43,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [follow, setFollow] = createSignal(true);
   const [browsing, setBrowsing] = createSignal(false);
   const [playbackError, setPlaybackError] = createSignal("");
+  const [referenceError, setReferenceError] = createSignal("");
   const [nativePaused, setNativePaused] = createSignal(true);
+  const [seeking, setSeeking] = createSignal(false);
+  const [seekRevision, setSeekRevision] = createSignal(0);
   const [recoveredVocals, setRecoveredVocals] = createSignal(false);
   const [recoveringVocals, setRecoveringVocals] = createSignal(false);
   const [recoveryError, setRecoveryError] = createSignal("");
@@ -215,6 +216,11 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       scrollSettled = true;
       finishUserScroll();
     };
+    const otherAudioStarted = (event: Event) => {
+      if (event.target instanceof HTMLAudioElement && event.target !== audio
+        && (!pending || event.target !== slots[pending.slot])) cancelReference(false);
+    };
+    document.addEventListener("play", otherAudioStarted, true);
     window.addEventListener("pointerup", pointerEnded);
     window.addEventListener("pointercancel", pointerEnded);
     window.addEventListener("touchend", touchEnded, { passive: true });
@@ -223,6 +229,11 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     window.addEventListener("scrollend", scrollEnded, true);
     onCleanup(() => {
       playAttempt++;
+      cancelReference(false);
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      document.removeEventListener("play", otherAudioStarted, true);
       window.removeEventListener("scroll", dismissTooltip, true);
       window.removeEventListener("resize", dismissTooltip);
       window.removeEventListener("pointerup", pointerEnded);
@@ -256,24 +267,24 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const hasVocals = () => recoveredVocals() || props.job.has_pitch_vocals;
   const hasSong = () => hasOutput("song") || props.job.has_original;
   const otherReferences = () => analysis().tracks.filter(item => item.label !== "vocals"
-    && item.label !== "song" && item.label !== "instruments" && item.label !== "drums" && hasOutput(item.label));
+    && item.label !== "song" && item.label !== "instruments" && item.label !== "drums" && item.label !== "drums-vocals" && hasOutput(item.label));
   const initialTrack = track()?.label;
   const [reference, setReference] = createSignal(
     initialTrack && hasOutput(initialTrack) && (initialTrack !== "vocals" || hasVocals())
       ? initialTrack : hasSong() ? "song" : hasVocals() ? "vocals" : "song",
   );
-  const sourceClock = () => reference() === "song" && !hasOutput("song");
-  const referenceUrl = () => {
-    const url = reference() === "song"
+  const sourceClock = (label = reference()) => label === "song" && !hasOutput("song");
+  const referenceUrl = (label = reference()) => {
+    const url = label === "song"
       ? hasOutput("song") ? resultUrl(props.job.id, "song") : props.job.has_original ? originalUrl(props.job.id) : undefined
-      : reference() === "vocals" ? pitchVocalsUrl(props.job.id)
-        : resultUrl(props.job.id, reference());
+      : label === "vocals" ? pitchVocalsUrl(props.job.id)
+        : resultUrl(props.job.id, label);
     return url ? playbackUrl(url) : undefined;
   };
   const referenceLabel = () => reference() === "song"
     ? hasOutput("song") ? "Transformed full song (not isolated vocals)" : "Original full song (unchanged, not isolated vocals)"
     : reference() === "vocals" ? `Just vocals (all vocal parts) · ${displayOutputLabel("vocals", props.job.options)}`
-      : displayOutputLabel(reference() === "instruments" ? "Instruments" : reference() === "drums" ? "Drums only" : reference(), props.job.options);
+      : displayOutputLabel(reference() === "instruments" ? "Instruments" : reference() === "drums" ? "Drums only" : reference() === "drums-vocals" ? "Drums + Vocals" : reference(), props.job.options);
   const recoverVocals = async () => {
     setRecoveringVocals(true);
     setRecoveryError("");
@@ -287,20 +298,119 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       setRecoveringVocals(false);
     }
   };
-  const toAudioTime = (seconds: number) => sourceClock() ? seconds * analysis().tempo_percent / 100 : seconds;
-  const fromAudioTime = (seconds: number) => sourceClock() ? seconds / (analysis().tempo_percent / 100) : seconds;
-  let pendingSourcePosition: number | null = null;
+  const toAudioTime = (seconds: number, label = reference()) => sourceClock(label) ? seconds * analysis().tempo_percent / 100 : seconds;
+  const fromAudioTime = (seconds: number, label = reference()) => sourceClock(label) ? seconds / (analysis().tempo_percent / 100) : seconds;
+  const [activeSlot, setActiveSlot] = createSignal(0);
+  const sources = [createSignal({ url: referenceUrl() }), createSignal<{ url: string | undefined }>({ url: undefined })] as const;
+  const slots: HTMLAudioElement[] = [];
+  let pending: { slot: number; label: string; phase: "loading" | "seeking" | "playing"; wasPlaying: boolean } | undefined;
+  let nativeSeekPending = false;
+  let internalSeekTime: number | null = null;
+  const setAudioTime = (seconds: number) => {
+    // Browsers may emit seeking even when assigning the current time.
+    internalSeekTime = seconds;
+    audio.currentTime = seconds;
+  };
+  const cancelReference = (restorePlayback = true) => {
+    const previous = pending;
+    pending = undefined;
+    if (!previous) return;
+    const discarded = slots[previous.slot];
+    discarded.pause();
+    discarded.removeAttribute("src");
+    discarded.load();
+    sources[previous.slot][1]({ url: undefined });
+    if (restorePlayback && previous.wasPlaying && audio.paused
+      && !Array.from(document.querySelectorAll("audio")).some(item => item !== audio && !item.paused)) {
+      const old = audio;
+      void old.play().catch(error => {
+        if (audio === old) setPlaybackError(error instanceof Error ? error.message : "Playback could not be resumed.");
+      });
+    }
+  };
+  const referenceFailed = (candidate: NonNullable<typeof pending>, error: unknown) => {
+    if (pending !== candidate) return;
+    cancelReference();
+    setReferenceError(error instanceof Error || error instanceof DOMException
+      ? error.message : "This reference audio could not be played.");
+  };
+  const promoteReference = (candidate: NonNullable<typeof pending>) => {
+    if (pending !== candidate) return;
+    const previous = audio;
+    const oldSlot = activeSlot();
+    pending = undefined;
+    playAttempt++;
+    stopPlaybackClock();
+    previous.pause();
+    audio = slots[candidate.slot];
+    audio.volume = previous.volume;
+    audio.muted = previous.muted;
+    setActiveSlot(candidate.slot);
+    previous.removeAttribute("src");
+    previous.load();
+    sources[oldSlot][1]({ url: undefined });
+    setReference(candidate.label);
+    internalSeekTime = null;
+    nativeSeekPending = false;
+    setSeeking(false);
+    setPlaybackError("");
+    setReferenceError("");
+    syncNativePlayback();
+    updatePosition();
+    if (!audio.paused) startPlaybackClock();
+  };
+  const prepareReference = (index: number) => {
+    const candidate = pending;
+    if (!candidate || candidate.slot !== index || candidate.phase === "playing") return;
+    const target = slots[index];
+    if (target.readyState < 1) return;
+    const current = Math.max(0, Math.min(analysis().duration_s, fromAudioTime(audio.currentTime)));
+    const requestedTime = toAudioTime(current, candidate.label);
+    if (Number.isFinite(target.duration)
+      && (requestedTime > target.duration || (!audio.paused && !audio.ended && requestedTime >= target.duration))) {
+      referenceFailed(candidate, new Error("This background does not cover the current playback position."));
+      return;
+    }
+    const targetTime = requestedTime;
+    if (target.seeking) return;
+    if (Math.abs(target.currentTime - targetTime) > 0.08) {
+      candidate.phase = "seeking";
+      try {
+        target.currentTime = targetTime;
+      } catch (error) {
+        referenceFailed(candidate, error);
+      }
+      return;
+    }
+    if (target.readyState < (audio.paused || audio.ended ? 2 : 3)) return;
+    target.volume = audio.volume;
+    target.muted = audio.muted;
+    if (audio.paused || audio.ended) {
+      promoteReference(candidate);
+      return;
+    }
+    candidate.phase = "playing";
+    candidate.wasPlaying = true;
+    void target.play().then(() => promoteReference(candidate), error => referenceFailed(candidate, error));
+  };
   const changeReference = (label: string) => {
+    cancelReference();
     if (label === reference()) return;
-    // Capture before the DOM src mutation can emit source-reset media events.
-    pendingSourcePosition = position();
-    setReference(label);
+    const url = referenceUrl(label);
+    if (!url) return;
+    const slot = 1 - activeSlot();
+    pending = { slot, label, phase: "loading", wasPlaying: false };
+    setPlaybackError("");
+    setReferenceError("");
+    sources[slot][1]({ url });
+    slots[slot].load();
   };
   const seek = (seconds: number) => {
     const next = Math.max(0, Math.min(analysis().duration_s, seconds));
+    setSeekRevision(value => value + 1);
+    if (audio && Math.abs(audio.currentTime - toAudioTime(next)) > 0.001) setSeeking(true);
     setPosition(next);
-    if (pendingSourcePosition !== null) pendingSourcePosition = next;
-    if (audio) audio.currentTime = toAudioTime(next);
+    if (audio) setAudioTime(toAudioTime(next));
   };
   let rulerGesture: { x: number; y: number; scrollLeft: number; moved: boolean } | undefined;
   const seekRuler = (event: MouseEvent & { currentTarget: HTMLDivElement }) => {
@@ -314,9 +424,15 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
   const togglePlayback = () => {
     if (!referenceUrl()) return;
+    if (pending?.phase === "playing") {
+      cancelReference(false);
+      syncNativePlayback();
+      return;
+    }
     const attempt = ++playAttempt;
     if (!audio.paused) audio.pause();
     else {
+      setReferenceError("");
       setPlaybackError("");
       void audio.play().catch((error: unknown) => {
         if (attempt !== playAttempt) return;
@@ -328,8 +444,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     }
   };
   const togglePlaybackKey = (event: KeyboardEvent): boolean => {
-    if (event.key !== " " || event.target !== event.currentTarget || event.defaultPrevented
-      || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey) return false;
+    const target = event.target;
+    const element = target instanceof Element ? target : null;
+    if (event.key !== " " || event.defaultPrevented || event.isComposing || event.keyCode === 229
+      || event.ctrlKey || event.metaKey || event.altKey
+      || (element instanceof HTMLElement && element.isContentEditable)
+      || element?.closest("input, textarea, select, button, a, [contenteditable]:not([contenteditable='false']), [role='button'], .timeline-karaoke-pitches")
+      || (element?.closest("[role='slider']") && !element.closest(".pitch-ruler"))) return false;
     event.preventDefault();
     event.stopPropagation();
     if (!event.repeat) togglePlayback();
@@ -359,23 +480,6 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (viewport) moveViewport(center * next - viewport.clientWidth / 2 + AXIS_WIDTH);
   };
   createEffect(() => {
-    // Native source changes stop the old audio without autoplay; the existing
-    // global playback guard remains the only owner of exclusive playback.
-    referenceUrl();
-    untrack(() => {
-      const next = pendingSourcePosition ?? position();
-      pendingSourcePosition = next > 0 ? next : null;
-      if (audio) {
-        playAttempt++;
-        stopPlaybackClock();
-        setPlaybackError("");
-        audio.load();
-        syncNativePlayback();
-        audio.currentTime = toAudioTime(next);
-      }
-    });
-  });
-  createEffect(() => {
     track()?.label;
     dismissTooltip();
     setSelectedNote(null);
@@ -392,18 +496,16 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     moveViewport(viewport.scrollLeft, rowCenter - availableHeight / 2);
   });
   const updatePosition = () => {
-    // Loading a different source briefly reports zero before its metadata and
-    // pending seek arrive. Keep the shared output-clock cursor during that gap.
     const next = fromAudioTime(audio.currentTime);
-    if (pendingSourcePosition !== null) {
-      if (audio.readyState === 0 || audio.seeking || Math.abs(next - pendingSourcePosition) > 0.05) return;
-      pendingSourcePosition = null;
-    }
     setPosition(next);
     // Armed input alone is not movement (for example a subpixel wheel delta).
     // Observe pending physical movement before any auto-follow write.
-    if (viewport) onTimelineScroll();
-    if (follow() && !browsing() && !gestureActive() && !(userScroll && userScrolled) && !audio.paused && viewport) {
+    if (nativeSeekPending) {
+      if (viewport) {
+        const x = AXIS_WIDTH + next * zoom();
+        moveViewport(x - viewport.clientWidth * 0.25);
+      }
+    } else if (follow() && !browsing() && !gestureActive() && !(userScroll && userScrolled) && !audio.paused && viewport) {
       const x = AXIS_WIDTH + next * zoom();
       const forwardBoundary = viewport.scrollLeft + AXIS_WIDTH + (viewport.clientWidth - AXIS_WIDTH) * 0.75;
       if (x > forwardBoundary || x < viewport.scrollLeft + AXIS_WIDTH) {
@@ -426,16 +528,16 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             <For each={analysis().tracks}>{item => <option value={item.label}>{item.label}</option>}</For>
           </select>
         </label>
-        <label>Background audio
-          <select aria-label="Pitch background audio" aria-describedby={!hasOutput("instruments") || !hasOutput("drums") ? backgroundHelpId : undefined}
-            value={reference()} onChange={event => changeReference(event.currentTarget.value)}>
-            <option value="song" disabled={!hasSong()}>Full song</option>
-            <option value="vocals" disabled={!hasVocals()}>Just vocals</option>
-            <option value="instruments" disabled={!hasOutput("instruments")}>{displayOutputLabel("Instruments", props.job.options)}</option>
-            <option value="drums" disabled={!hasOutput("drums")}>{displayOutputLabel("Drums only", props.job.options)}</option>
-            <For each={otherReferences()}>{item => <option value={item.label}>{displayOutputLabel(item.label, props.job.options)}</option>}</For>
-          </select>
-        </label>
+        <div role="group" aria-label="Pitch background audio" aria-describedby={!hasOutput("instruments") || !hasOutput("drums") || !hasOutput("drums-vocals") ? backgroundHelpId : undefined}
+          class="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+          <span>Background audio</span>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "song" ? "secondary" : "outline"} aria-pressed={reference() === "song"} disabled={!hasSong()} onClick={() => changeReference("song")}>Full song</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "vocals" ? "secondary" : "outline"} aria-pressed={reference() === "vocals"} disabled={!hasVocals()} onClick={() => changeReference("vocals")}>Just vocals</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "instruments" ? "secondary" : "outline"} aria-pressed={reference() === "instruments"} disabled={!hasOutput("instruments")} onClick={() => changeReference("instruments")}>{displayOutputLabel("Instruments", props.job.options)}</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums" ? "secondary" : "outline"} aria-pressed={reference() === "drums"} disabled={!hasOutput("drums")} onClick={() => changeReference("drums")}>{displayOutputLabel("Drums only", props.job.options)}</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums-vocals" ? "secondary" : "outline"} aria-pressed={reference() === "drums-vocals"} disabled={!hasOutput("drums-vocals")} onClick={() => changeReference("drums-vocals")}>{displayOutputLabel("Drums + Vocals", props.job.options)}</Button>
+          <For each={otherReferences()}>{item => <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === item.label ? "secondary" : "outline"} aria-pressed={reference() === item.label} onClick={() => changeReference(item.label)}>{displayOutputLabel(item.label, props.job.options)}</Button>}</For>
+        </div>
         <div class="pitch-zoom" role="group" aria-label="Timeline zoom">
           <Button type="button" variant="outline" aria-label="Zoom out melody" disabled={zoom() <= MIN_ZOOM} onClick={() => changeZoom(zoom() - ZOOM_STEP)}>−</Button>
           <label class="pitch-zoom-value">
@@ -448,8 +550,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <label class="pitch-follow"><input type="checkbox" checked={follow()} onChange={event => setFollow(event.currentTarget.checked)} /> Follow playback</label>
       </div>
       <p class="text-sm">Reference audio: <strong>{referenceLabel()}</strong>.</p>
-      <Show when={!hasOutput("instruments") || !hasOutput("drums")}>
-        <p id={backgroundHelpId} class="text-xs text-muted-foreground">For unavailable backgrounds, select “Extract instruments” or “Split drums, bass &amp; other instruments” in Outputs before processing. Only generated audio is available in this job.</p>
+      <Show when={!hasOutput("instruments") || !hasOutput("drums") || !hasOutput("drums-vocals")}>
+        <p id={backgroundHelpId} class="text-xs text-muted-foreground">Only generated audio is available in this job. Select “Extract instruments” for instruments or “Split drums, bass &amp; other instruments” together with pitch analysis for drums and the drums-and-vocals mix.</p>
       </Show>
       <Show when={!hasVocals()}>
         <p class="text-xs text-muted-foreground">This stored job has no vocal listening reference. Recover its already-computed vocals from the cache without rerunning analysis.</p>
@@ -593,19 +695,52 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           </Button>
           <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => seek(position() + 5)}>+5 s</Button>
         </div>
-        <TimelineKaraoke job={props.job} position={position()} />
         <p class="pitch-follow-status" role="status">
           <Show when={follow() && browsing()}>Auto-follow paused while browsing. Scroll back to the playhead to resume.</Show>
         </p>
         <Show when={playbackError()}><p role="alert" class="text-sm text-destructive">{playbackError()}</p></Show>
-        <audio ref={audio} aria-label={`Pitch reference: ${referenceLabel()}`} controls preload="none" class="w-full" src={referenceUrl()}
-          onPlay={startPlaybackClock} onPause={stopPlaybackClock} onEnded={stopPlaybackClock}
-          onEmptied={() => { stopPlaybackClock(); setPlaybackError(""); }}
-          onError={() => { stopPlaybackClock(); setPlaybackError(audio.error?.message || "This reference audio could not be played."); }}
-          onLoadedMetadata={() => {
-            if (pendingSourcePosition !== null) audio.currentTime = toAudioTime(pendingSourcePosition);
-          }}
-          onTimeUpdate={updatePosition} onSeeked={updatePosition} />
+        <Show when={referenceError()}><p role="alert" class="text-sm text-destructive">{referenceError()}</p></Show>
+        <TimelineKaraoke job={props.job} position={position()} notes={notes()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey} />
+        <For each={[0, 1]}>{index => <Show when={sources[index][0]()} keyed>{source =>
+          <audio ref={element => { slots[index] = element; if (index === 0 && !audio) audio = element; }}
+            aria-label={`Pitch reference: ${referenceLabel()}`} controls={activeSlot() === index}
+            hidden={activeSlot() !== index} preload={activeSlot() === index ? "none" : "auto"}
+            style={{ display: activeSlot() === index ? "block" : "none" }} class="w-full" src={source.url}
+            onSeeking={event => {
+              if (event.currentTarget !== audio) return;
+              setSeeking(true);
+              setSeekRevision(value => value + 1);
+              nativeSeekPending = internalSeekTime === null || Math.abs(audio.currentTime - internalSeekTime) > 0.01;
+              if (nativeSeekPending) internalSeekTime = null;
+            }}
+            onPlay={event => {
+              if (event.currentTarget !== audio) return;
+              if (pending?.phase === "playing") cancelReference(false);
+              startPlaybackClock();
+            }}
+            onPause={event => { if (event.currentTarget === audio) stopPlaybackClock(); }}
+            onEnded={event => { if (event.currentTarget === audio) stopPlaybackClock(); }}
+            onEmptied={event => { if (event.currentTarget === audio) stopPlaybackClock(); }}
+            onError={event => {
+              if (event.currentTarget !== slots[index]) return;
+              if (event.currentTarget === audio) {
+                stopPlaybackClock();
+                setPlaybackError(audio.error?.message || "This reference audio could not be played.");
+              } else if (pending?.slot === index) referenceFailed(pending, new Error(event.currentTarget.error?.message || "This reference audio could not be played."));
+            }}
+            onLoadedMetadata={event => { if (event.currentTarget === slots[index]) prepareReference(index); }}
+            onCanPlay={event => { if (event.currentTarget === slots[index]) prepareReference(index); }}
+            onTimeUpdate={event => { if (event.currentTarget === audio) updatePosition(); }}
+            onSeeked={event => {
+              if (event.currentTarget === audio) {
+                updatePosition();
+                nativeSeekPending = false;
+                internalSeekTime = null;
+                setSeeking(false);
+              } else if (event.currentTarget === slots[index]) prepareReference(index);
+            }} />
+        }</Show>}</For>
+        <PianoKeyboard notes={notes()} position={position()} playing={!nativePaused()} />
       </footer>
     </section>
   );

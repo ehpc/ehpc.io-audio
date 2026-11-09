@@ -1,0 +1,326 @@
+diff --git a/k8s/120-audio/deployment.yaml b/k8s/120-audio/deployment.yaml
+--- a/k8s/120-audio/deployment.yaml
++++ b/k8s/120-audio/deployment.yaml
+@@ -30,6 +30,11 @@
+         - name: data
+           persistentVolumeClaim:
+             claimName: audio-data
++        # Mount the directory, not the socket inode, so socket restarts remain visible.
++        - name: audio-mail
++          hostPath:
++            path: /run/audio-mail
++            type: Directory
+       containers:
+         - name: audio
+           image: ghcr.io/ehpc/ehpc.io-audio@sha256:b3975c7f740224d1b8180c98577aab5e54308ae1d39720aac44848e3b533af0d
+@@ -37,6 +42,26 @@
+           env:
+             - name: MODAL_APP_NAME
+               value: audio-inference-v3
++            - name: AUTH_ORIGIN
++              value: https://audio.ehpc.io
++            - name: AUTH_ADMIN_EMAIL
++              value: ehpc@ehpc.io
++            - name: AUTH_SMTP_SOCKET
++              value: /run/audio-mail/submit.sock
++            # Valid only while gateway-only ingress is enforced and this node
++            # retains its verified gateway pod subnet; recheck before rollout.
++            - name: AUTH_TRUSTED_PROXY_CIDRS
++              value: "10.42.0.0/24"
++            - name: AUTH_OTP_SECRET
++              valueFrom:
++                secretKeyRef:
++                  name: audio-auth
++                  key: AUTH_OTP_SECRET
++            - name: AUTH_INVITE_SECRET
++              valueFrom:
++                secretKeyRef:
++                  name: audio-auth
++                  key: AUTH_INVITE_SECRET
+             - name: MODAL_TOKEN_ID
+               valueFrom:
+                 secretKeyRef:
+@@ -57,6 +82,9 @@
+           volumeMounts:
+             - name: data
+               mountPath: /data
++            - name: audio-mail
++              mountPath: /run/audio-mail
++              readOnly: true
+           resources:
+             requests:
+               memory: "128Mi"
+diff --git a/k8s/120-audio/network-policy.yaml b/k8s/120-audio/network-policy.yaml
+--- /dev/null
++++ b/k8s/120-audio/network-policy.yaml
+@@ -0,0 +1,25 @@
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: audio-gateway-only
++  namespace: default
++spec:
++  podSelector:
++    matchLabels:
++      app: audio
++  policyTypes:
++    - Ingress
++  ingress:
++    - from:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: default
++          podSelector:
++            matchLabels:
++              app.kubernetes.io/instance: ngf
++              app.kubernetes.io/managed-by: ngf-nginx
++              app.kubernetes.io/name: main-gateway-nginx
++              gateway.networking.k8s.io/gateway-name: main-gateway
++      ports:
++        - protocol: TCP
++          port: 8000
+diff --git a/nixos/audio-render.py b/nixos/audio-render.py
+--- /dev/null
++++ b/nixos/audio-render.py
+@@ -0,0 +1,39 @@
++"""Render an audio deployment with the host's runtime mail-socket group."""
++import hmac
++import sys
++from pathlib import Path
++
++import yaml
++
++def validate_secrets(otp: Path, invite: Path) -> None:
++    a, b = otp.read_bytes().strip(), invite.read_bytes().strip()
++    if len(a) < 32 or len(b) < 32 or hmac.compare_digest(a, b):
++        raise ValueError('Audio auth keys must be distinct and at least 32 bytes')
++
++
++def render(source: Path, destination: Path, gid_text: str) -> None:
++    if not gid_text.isascii() or not gid_text.isdecimal() or not 0 < int(gid_text) <= 4294967295:
++        raise ValueError('Invalid audio-mail group ID')
++    deployment = yaml.safe_load(source.read_text())
++    if not isinstance(deployment, dict) or deployment.get('kind') != 'Deployment' or deployment.get('metadata', {}).get('name') != 'audio':
++        raise ValueError('Expected the audio Deployment')
++    security = deployment['spec']['template']['spec']['securityContext']
++    if security.get('fsGroup') != 1000:
++        raise ValueError('Unexpected audio PVC fsGroup')
++    groups = security.get('supplementalGroups', [])
++    if not isinstance(groups, list) or any(type(group) is not int or group < 0 for group in groups):
++        raise ValueError('Invalid existing supplemental groups')
++    security['supplementalGroups'] = sorted(set([*groups, int(gid_text)]))
++    destination.write_text(yaml.safe_dump(deployment, sort_keys=False))
++
++
++if __name__ == '__main__':
++    if len(sys.argv) != 4:
++        raise SystemExit('usage: audio-render.py DEPLOYMENT OUTPUT MAIL_GID | --check-secrets OTP INVITE')
++    try:
++        if sys.argv[1] == '--check-secrets':
++            validate_secrets(Path(sys.argv[2]), Path(sys.argv[3]))
++        else:
++            render(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])
++    except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
++        raise SystemExit(str(error)) from error
+diff --git a/nixos/rke2.nix b/nixos/rke2.nix
+--- a/nixos/rke2.nix
++++ b/nixos/rke2.nix
+@@ -124,6 +124,20 @@
+       type: Opaque
+       stringData:
+         OPENROUTER_API_KEY: "${config.sops.placeholder."openrouter-api-key"}"
++    '';
++  };
++
++  sops.templates."audio-auth" = {
++    content = ''
++      apiVersion: v1
++      kind: Secret
++      metadata:
++        name: audio-auth
++        namespace: default
++      type: Opaque
++      stringData:
++        AUTH_OTP_SECRET: "${config.sops.placeholder."audio-auth-otp-secret"}"
++        AUTH_INVITE_SECRET: "${config.sops.placeholder."audio-auth-invite-secret"}"
+     '';
+   };
+ 
+@@ -169,10 +183,19 @@
+     script = ''
+       set -euo pipefail
+ 
+-      if [[ ! -r "${config.sops.templates."audio-modal-token".path}" || ! -r "${config.sops.templates."audio-openrouter".path}" ]]; then
++      if [[ ! -r "${config.sops.templates."audio-modal-token".path}" || ! -r "${config.sops.templates."audio-openrouter".path}" || ! -r "${config.sops.templates."audio-auth".path}" || ! -r "${config.sops.secrets."audio-auth-otp-secret".path}" || ! -r "${config.sops.secrets."audio-auth-invite-secret".path}" ]]; then
+         echo "[apply-k8s-manifests] Audio Secret templates are not ready; refusing to apply manifests." >&2
+         exit 1
+       fi
++
++      # Check only key validity, never emit their contents or put them in argv.
++      ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3 ${./audio-render.py} --check-secrets \
++        "${config.sops.secrets."audio-auth-otp-secret".path}" "${config.sops.secrets."audio-auth-invite-secret".path}" \
++        || { echo "[apply-k8s-manifests] Audio auth keys must be distinct and at least 32 bytes." >&2; exit 1; }
++      audio_mail_group=$(getent group audio-mail) || { echo "[apply-k8s-manifests] audio-mail group unavailable." >&2; exit 1; }
++      IFS=: read -r audio_mail_name _ audio_mail_gid _ <<< "$audio_mail_group"
++      [[ "$audio_mail_name" == audio-mail && "$audio_mail_gid" =~ ^[0-9]+$ && "$audio_mail_gid" != 0 && -d /run/audio-mail ]] \
++        || { echo "[apply-k8s-manifests] Invalid audio-mail group or socket directory." >&2; exit 1; }
+ 
+       echo KUBECONFIG=$KUBECONFIG
+ 
+@@ -253,14 +276,30 @@
+       echo "[apply-k8s-manifests] Applying 110-dns-01-test"
+       kubectl apply -f 110-dns-01-test
+ 
++      # Resolve the host's dynamically allocated mail group for this apply only.
++      # Preserve fsGroup and any existing supplemental groups.
++      audio_tmp=$(mktemp -d)
++      trap 'rm -rf "$audio_tmp"' EXIT
++      cp -R 120-audio "$audio_tmp/120-audio"
++      ${pkgs.python3.withPackages (ps: [ ps.pyyaml ])}/bin/python3 ${./audio-render.py} \
++        120-audio/deployment.yaml "$audio_tmp/120-audio/deployment.yaml" "$audio_mail_gid"
++
++      # Apply the ingress restriction before the app can trust forwarded IPs.
++      # Enforcement must also be verified as a separate rollout prerequisite.
++      kubectl apply -f 120-audio/network-policy.yaml
++      rm "$audio_tmp/120-audio/network-policy.yaml"
++
+       echo "[apply-k8s-manifests] Applying dynamic manifest audio-modal-token"
+       kubectl apply -f "${config.sops.templates."audio-modal-token".path}"
+ 
+       echo "[apply-k8s-manifests] Applying dynamic manifest audio-openrouter"
+       kubectl apply -f "${config.sops.templates."audio-openrouter".path}"
+ 
+-      echo "[apply-k8s-manifests] Applying 120-audio"
+-      kubectl apply -f 120-audio
++      echo "[apply-k8s-manifests] Applying dynamic manifest audio-auth"
++      kubectl apply -f "${config.sops.templates."audio-auth".path}"
++
++      echo "[apply-k8s-manifests] Applying 120-audio with runtime mail group"
++      kubectl apply -f "$audio_tmp/120-audio"
+ 
+       echo "[apply-k8s-manifests] Done"
+     '';
+diff --git a/nixos/sops.nix b/nixos/sops.nix
+--- a/nixos/sops.nix
++++ b/nixos/sops.nix
+@@ -24,4 +24,6 @@
+   sops.secrets."modal-token-id" = { };
+   sops.secrets."modal-token-secret" = { };
+   sops.secrets."openrouter-api-key" = { };
++  sops.secrets."audio-auth-otp-secret" = { };
++  sops.secrets."audio-auth-invite-secret" = { };
+ }
+diff --git a/tests/audio-render-test.py b/tests/audio-render-test.py
+--- /dev/null
++++ b/tests/audio-render-test.py
+@@ -0,0 +1,110 @@
++"""Exercise the actual rendered deployment and rotating Unix socket semantics."""
++import copy
++import importlib.util
++import socket
++import tempfile
++import unittest
++from pathlib import Path
++
++import yaml
++
++ROOT = Path(__file__).resolve().parents[1]
++SPEC = importlib.util.spec_from_file_location('audio_render', ROOT / 'nixos/audio-render.py')
++MODULE = importlib.util.module_from_spec(SPEC)
++SPEC.loader.exec_module(MODULE)
++
++
++class RenderTest(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.root = Path(self.tmp.name)
++        self.original = yaml.safe_load((ROOT / 'k8s/120-audio/deployment.yaml').read_text())
++        self.source = self.root / 'deployment.yaml'
++        self.out = self.root / 'rendered.yaml'
++
++    def create(self, value):
++        self.source.write_text(yaml.safe_dump(value))
++
++    def test_real_deployment_adds_runtime_gid_without_changing_other_values(self):
++        original = copy.deepcopy(self.original)
++        security = original['spec']['template']['spec']['securityContext']
++        security['supplementalGroups'] = [321, 888]
++        self.create(original)
++        MODULE.render(self.source, self.out, '777')
++        result = yaml.safe_load(self.out.read_text())
++        result_security = result['spec']['template']['spec']['securityContext']
++        self.assertEqual(result_security['supplementalGroups'], [321, 777, 888])
++        del result_security['supplementalGroups']
++        del security['supplementalGroups']
++        self.assertEqual(result, original)
++        self.assertNotIn('777', self.source.read_text())
++
++    def test_bad_gid_and_unsafe_security_fail_closed_without_output(self):
++        for gid in ('', '0', '-1', '12x', '4294967296'):
++            self.create(self.original)
++            with self.assertRaises(ValueError):
++                MODULE.render(self.source, self.out, gid)
++            self.assertFalse(self.out.exists())
++        altered = copy.deepcopy(self.original)
++        altered['spec']['template']['spec']['securityContext']['fsGroup'] = 5
++        self.create(altered)
++        with self.assertRaises(ValueError):
++            MODULE.render(self.source, self.out, '777')
++        self.assertFalse(self.out.exists())
++
++    def test_secret_preflight_rejects_missing_short_and_equal_values(self):
++        otp, invite = self.root / 'otp', self.root / 'invite'
++        otp.write_bytes(b'a' * 32)
++        with self.assertRaises(OSError):
++            MODULE.validate_secrets(otp, invite)
++        invite.write_bytes(b'b' * 31)
++        with self.assertRaises(ValueError):
++            MODULE.validate_secrets(otp, invite)
++        invite.write_bytes(b'a' * 32)
++        with self.assertRaises(ValueError):
++            MODULE.validate_secrets(otp, invite)
++        invite.write_bytes(b'b' * 32)
++        MODULE.validate_secrets(otp, invite)
++
++    def test_socket_directory_survives_socket_replacement(self):
++        pod = self.original['spec']['template']['spec']
++        volume = next(v for v in pod['volumes'] if v['name'] == 'audio-mail')
++        mount = next(v for v in pod['containers'][0]['volumeMounts'] if v['name'] == 'audio-mail')
++        self.assertEqual(volume['hostPath'], {'path': '/run/audio-mail', 'type': 'Directory'})
++        self.assertEqual(mount['mountPath'], '/run/audio-mail')
++        self.assertTrue(mount['readOnly'])
++        path = self.root / 'submit.sock'
++        first = socket.socket(socket.AF_UNIX)
++        first.bind(str(path))
++        first.close()
++        path.unlink()
++        second = socket.socket(socket.AF_UNIX)
++        self.addCleanup(second.close)
++        second.bind(str(path))
++        second.listen()
++        client = socket.socket(socket.AF_UNIX)
++        self.addCleanup(client.close)
++        client.connect(str(path))
++        conn, _ = second.accept()
++        conn.close()
++
++    def test_policy_selects_only_gateway_in_default_namespace(self):
++        policy = yaml.safe_load((ROOT / 'k8s/120-audio/network-policy.yaml').read_text())
++        spec = policy['spec']
++        self.assertEqual(spec['podSelector']['matchLabels'], {'app': 'audio'})
++        self.assertEqual(spec['policyTypes'], ['Ingress'])
++        rule, = spec['ingress']
++        self.assertEqual(rule['ports'], [{'protocol': 'TCP', 'port': 8000}])
++        peer, = rule['from']
++        self.assertEqual(peer['namespaceSelector']['matchLabels'], {'kubernetes.io/metadata.name': 'default'})
++        selector = peer['podSelector']['matchLabels']
++        gateway = {'app.kubernetes.io/instance': 'ngf', 'app.kubernetes.io/managed-by': 'ngf-nginx',
++                   'app.kubernetes.io/name': 'main-gateway-nginx', 'gateway.networking.k8s.io/gateway-name': 'main-gateway'}
++        self.assertEqual(selector, gateway)
++        self.assertTrue(all(gateway.get(k) == v for k, v in selector.items()))
++        self.assertFalse(all({'app': 'untrusted'}.get(k) == v for k, v in selector.items()))
++
++
++if __name__ == '__main__':
++    unittest.main()

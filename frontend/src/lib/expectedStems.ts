@@ -6,6 +6,7 @@ import type { StemManifestEntry, SeparationOptions } from "~/api";
  */
 function outputBaseLabel(label: string, options: SeparationOptions): string {
   if (label === "original") return "Original (unchanged)";
+  if (label === "drums-vocals") return "Drums + Vocals";
   const mix = options.mixes?.find((candidate) => candidate.id === label);
   return mix ? mix.name : label === "song" ? "Full song" : label;
 }
@@ -62,8 +63,9 @@ export function expectedStems(options: SeparationOptions): string[] {
   if (options.extract_instruments) labels.push("instruments");
   if (options.decrowd) labels.push("instruments-decrowded");
   if (options.drums) labels.push("drums", "bass", "other-instruments");
+  if (options.detect_pitch) labels.push("drums-vocals");
   for (const mix of options.mixes) labels.push(mix.id);
-  if (dry && !selections) labels.push("vocals-dry");
+  if (dry && !selections && !options.detect_pitch) labels.push("vocals-dry");
   if (options.pitch_semitones !== 0 || (labels.length === 0 && options.tempo_percent !== 100)) labels.unshift("song");
   return labels;
 }

@@ -5,10 +5,17 @@ import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
 import ResultsView from "./components/ResultsView";
 import HistoryView from "./components/HistoryView";
+import { useAuth } from "./AuthProvider";
+import ProfileView from "./ProfileView";
+import AdminView from "./AdminView";
+import { Button } from "~/components/button";
 
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
   const [history, setHistory] = createSignal<JobDTO[]>([]);
+  const auth = useAuth();
+  const [tab, setTab] = createSignal<"workspace" | "profile" | "people">("workspace");
+  const [accountError, setAccountError] = createSignal("");
 
   onMount(() => {
     const pauseOtherAudio = (event: Event) => {
@@ -58,6 +65,18 @@ const App: Component = () => {
         <h1>ehpc's Vocal Tools</h1>
         <p>Your audio workspace</p>
       </header>
+      <nav class="account-nav" aria-label="Account navigation">
+        <div class="account-tabs">
+          <Button variant={tab() === "workspace" ? "secondary" : "ghost"} aria-pressed={tab() === "workspace"} onClick={() => setTab("workspace")}>Workspace</Button>
+          <Button variant={tab() === "profile" ? "secondary" : "ghost"} aria-pressed={tab() === "profile"} onClick={() => setTab("profile")}>Profile</Button>
+          <Show when={auth.profile().is_admin}><Button variant={tab() === "people" ? "secondary" : "ghost"} aria-pressed={tab() === "people"} onClick={() => setTab("people")}>People</Button></Show>
+        </div>
+        <div class="account-actions"><span>{auth.profile().email}</span><Button variant="outline" onClick={() => { setAccountError(""); void auth.logout().catch((error) => setAccountError(error instanceof Error ? error.message : "Could not sign out.")); }}>Sign out</Button></div>
+      </nav>
+      <Show when={accountError()}><p role="alert" class="auth-error">{accountError()}</p></Show>
+      <Show when={tab() === "profile"}><ProfileView profile={auth.profile()} refresh={auth.refresh} /></Show>
+      <Show when={tab() === "people" && auth.profile().is_admin}><AdminView /></Show>
+      <div hidden={tab() !== "workspace"}>
 
       <SubmitForm onSubmitted={onSubmitted} />
 
@@ -70,6 +89,7 @@ const App: Component = () => {
       </Show>
 
       <HistoryView jobs={history()} onSelect={setJob} onRetried={onSubmitted} />
+      </div>
     </main>
   );
 };

@@ -115,7 +115,7 @@ def test_processing_reuses_source_clock_analysis_across_export_changes(tmp_path)
         vocal_durations[0] / 4, abs=1 / 16000
     )
     assert Counter(calls) == Counter(
-        separation=2, recognition=1, alignment=1, structure=1, pitch=1
+        separation=3, recognition=1, alignment=1, structure=1, pitch=1
     )
 
     def forbidden(*args):
@@ -136,7 +136,7 @@ def test_processing_reuses_source_clock_analysis_across_export_changes(tmp_path)
         context,
     )
     assert shifted.transcript == first.transcript
-    assert list(shifted.audio) == ["mix-two"]
+    assert list(shifted.audio) == ["drums-vocals", "mix-two"]
     assert shifted.pitch_json is not None
     pitch = pitch_from_json(shifted.pitch_json)
     original_pitch = pitch_from_json(first.pitch_json)
@@ -218,7 +218,7 @@ def test_adding_lyrics_to_cached_pitch_invokes_only_missing_dependencies(tmp_pat
     first = processing.run_processing(
         source, SeparationOptions(detect_pitch=True), tmp_path, context
     )
-    assert calls == ["separation", "pitch"]
+    assert calls == ["separation", "separation", "separation", "pitch"]
     assert first.transcript is None and first.pitch_json is not None
     assert pitch_from_json(first.pitch_json).words == []
     calls.clear()

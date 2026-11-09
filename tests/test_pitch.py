@@ -139,8 +139,6 @@ def test_pitch_targets_every_requested_vocal_stem_not_instrumental_mixes(
     options: SeparationOptions, expected: list[str]
 ) -> None:
     assert options.pitch_labels == expected
-    if options.detect_pitch and not options.output_labels:
-        assert options.result_labels == []
 
 
 def test_pitch_lifecycle_download_history_retry_and_session_isolation(

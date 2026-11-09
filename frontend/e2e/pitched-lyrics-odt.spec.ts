@@ -1,31 +1,32 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { authenticateOutsider, test } from './auth-fixture';
 import type { JobDTO } from '../src/api';
 
 // Synthetic stored analysis exercises production storage/DTO/export and real HTTP.
 // The dedicated seeded config runs with queue workers disabled.
 const publish = String.raw`
-import os,runpy,sys
+import os,sys
 from pathlib import Path
 from backend import config,db
 from separator.pitch import pitch_to_json
+from tests.pitched_lyrics_odt_fixture import document_fixture
 assert config.QUEUE_CONCURRENCY == 0
 assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
 job=db.get_job(int(sys.argv[1]))
 assert job is not None and job.status == 'queued' and job.modal_call_id is None
-fixture=runpy.run_path('tests/test_pitched_lyrics_odt.py')['document_fixture']
-transcript,analysis=fixture(3)
+transcript,analysis=document_fixture(3)
 db.mark_done(int(sys.argv[1]),[],transcript,pitch_to_json(analysis))
 db.set_title(int(sys.argv[1]),'Synthetic [ODT]')
 db.set_original_key(int(sys.argv[1]),'C major')
 `;
 const inspect = String.raw`
-import json,runpy,sys,zipfile
+import json,sys,zipfile
 from xml.etree import ElementTree as ET
 from separator.pitched_lyrics_odt import MIME_TYPE,NS
-text=runpy.run_path('tests/test_pitched_lyrics_odt.py')['odf_text']
+from tests.pitched_lyrics_odt_fixture import odf_text as text
 with zipfile.ZipFile(sys.argv[1]) as archive:
  assert archive.infolist()[0].filename=='mimetype'
  assert archive.infolist()[0].compress_type==zipfile.ZIP_STORED
@@ -42,7 +43,7 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
-    const response = await page.request.post('/api/jobs', { multipart: {
+    const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
       file: { name: 'synthetic-odt.wav', mimeType: 'audio/wav', buffer: source }, extract_pitched_lyrics: 'true',
     } });
     expect(response.ok()).toBe(true);
@@ -103,6 +104,7 @@ for (const width of [1440, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await view.screenshot({ path: info.outputPath(`odt-${width}-timestamp-columns.png`) });
     const foreign = await browser.newContext();
+    await authenticateOutsider(foreign);
     const outsider = await foreign.newPage();
     await outsider.goto(process.env.E2E_BASE_URL!);
     expect((await outsider.request.get(`/api/jobs/${id}/pitched-lyrics/lead/download?format=odt`)).status()).toBe(404);

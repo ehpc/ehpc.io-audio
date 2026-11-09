@@ -97,11 +97,16 @@ class SeparationOptions:
             raise ValueError("tempo_percent must be finite and positive")
 
     def display_name(self, label: str) -> str:
+        if label == "drums-vocals":
+            return "Drums + Vocals"
         return next((mix.name for mix in self.mixes if mix.id == label), label)
 
     @property
     def mix_components(self) -> set[str]:
-        return {component for mix in self.mixes for component in mix.components}
+        components = {component for mix in self.mixes for component in mix.components}
+        if self.detect_pitch:
+            components.update(("drums", "vocals"))
+        return components
 
     def component_label(self, component: str) -> str:
         """Resolve global cleanup once for both extraction planning and mixing."""
@@ -152,6 +157,8 @@ class SeparationOptions:
             labels.append("instruments-decrowded")
         if self.drums:
             labels.extend(("drums", "bass", "other-instruments"))
+        if self.detect_pitch:
+            labels.append("drums-vocals")
         labels.extend(mix.id for mix in self.mixes)
         if self.dereverb and not labels:
             labels.append("vocals-dry")

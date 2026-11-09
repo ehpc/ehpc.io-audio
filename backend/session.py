@@ -1,28 +1,10 @@
-import uuid
+"""Resolve the authenticated account's stable ownership identifier."""
 
-from fastapi import Request, Response
-from itsdangerous import BadSignature, URLSafeTimedSerializer
-
-from backend import config
-
-_serializer = URLSafeTimedSerializer(config.COOKIE_SECRET)
+from fastapi import HTTPException, Request
 
 
-def get_session_id(request: Request, response: Response) -> str:
-    cookie = request.cookies.get(config.SESSION_COOKIE_NAME)
-    if cookie is not None:
-        try:
-            return _serializer.loads(cookie)
-        except BadSignature:
-            pass
-
-    session_id = str(uuid.uuid4())
-    response.set_cookie(
-        config.SESSION_COOKIE_NAME,
-        _serializer.dumps(session_id),
-        max_age=config.COOKIE_MAX_AGE_S,
-        httponly=True,
-        samesite="lax",
-        secure=config.COOKIE_SECURE,
-    )
-    return session_id
+def get_session_id(request: Request) -> str:
+    user = getattr(request.state, "principal", None)
+    if user is None:
+        raise HTTPException(401, "Authentication required")
+    return user.id

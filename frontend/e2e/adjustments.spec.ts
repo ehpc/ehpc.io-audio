@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect } from '@playwright/test';
+import { test } from './auth-fixture';
 
 for (const viewport of [
   { width: 375, height: 812 },

@@ -46,6 +46,16 @@ describe("expectedStems", () => {
     expect(expectedStems({ ...NONE, tempo_percent: 80 })).toEqual(["song"]);
   });
 
+  it("adds the canonical karaoke backing only while karaoke is selected", () => {
+    const karaoke = { ...NONE, detect_pitch: true, pitch_semitones: 2, tempo_percent: 125 };
+    expect(expectedStems(karaoke)).toEqual(["song", "drums-vocals"]);
+    expect(expectedStems({ ...karaoke, detect_pitch: false })).toEqual(["song"]);
+    expect(expectedStems({ ...NONE, extract_pitched_lyrics: true })).toEqual([]);
+    expect(displayOutputLabel("drums-vocals", karaoke)).toBe("Drums + Vocals (pitch +2 st, tempo 125%)");
+    expect(expectedStems({ ...karaoke, dereverb: true, mixes: [MIX("mix-1", ["vocals", "drums"], "My backing")] }))
+      .toEqual(["song", "drums-vocals", "mix-1"]);
+  });
+
   it("emits one result per queued mix, labelled by its stable id", () => {
     expect(expectedStems({ ...NONE, mixes: [MIX("mix-1", ["drums", "bass"]), MIX("mix-2", ["bass", "vocals"])] }))
       .toEqual(["mix-1", "mix-2"]);

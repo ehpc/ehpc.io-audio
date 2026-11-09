@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "jobs.db"
@@ -33,10 +34,43 @@ def prepared_models_root() -> Path:
     return Path(explicit) if explicit else DATA_DIR / "artifacts"
 
 
-SESSION_COOKIE_NAME = "session_id"
-COOKIE_SECRET = os.environ.get("COOKIE_SECRET", "dev-insecure-secret-change-me")
-# Default false: local/dev runs over plain HTTP, and a Secure cookie is silently
-# dropped by clients on non-TLS connections, breaking session persistence. Prod
-# (behind TLS) must set COOKIE_SECURE=true explicitly.
-COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
-COOKIE_MAX_AGE_S = 60 * 60 * 24 * 365
+# Authentication keys must be stable, distinct secrets supplied by the operator.
+AUTH_OTP_SECRET = os.environ.get("AUTH_OTP_SECRET", "")
+AUTH_INVITE_SECRET = os.environ.get("AUTH_INVITE_SECRET", "")
+AUTH_ORIGIN = os.environ.get("AUTH_ORIGIN", "")
+AUTH_ADMIN_EMAIL = os.environ.get("AUTH_ADMIN_EMAIL", "ehpc@ehpc.io").lower()
+AUTH_TRUSTED_PROXY_CIDRS = os.environ.get("AUTH_TRUSTED_PROXY_CIDRS", "")
+AUTH_SMTP_SOCKET = os.environ.get("AUTH_SMTP_SOCKET", "/run/audio-mail/submit.sock")
+
+
+def validate_auth() -> None:
+    if (
+        len(AUTH_OTP_SECRET.encode()) < 32
+        or len(AUTH_INVITE_SECRET.encode()) < 32
+        or AUTH_OTP_SECRET == AUTH_INVITE_SECRET
+    ):
+        raise RuntimeError(
+            "AUTH_OTP_SECRET and AUTH_INVITE_SECRET must be distinct secrets "
+            "of at least 32 bytes"
+        )
+    origin = urlsplit(AUTH_ORIGIN)
+    if (
+        origin.username
+        or origin.password
+        or origin.path
+        or origin.query
+        or origin.fragment
+        or not origin.hostname
+        or origin.scheme not in ("http", "https")
+    ):
+        raise RuntimeError("AUTH_ORIGIN must be an exact HTTPS origin")
+    if origin.scheme == "http" and origin.hostname not in (
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    ):
+        raise RuntimeError("HTTP AUTH_ORIGIN is allowed only on loopback")
+
+
+def auth_cookie_secure() -> bool:
+    return urlsplit(AUTH_ORIGIN).scheme == "https"

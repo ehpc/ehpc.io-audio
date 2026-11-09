@@ -1,11 +1,21 @@
+import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 
+from backend import auth_store, config
 from backend.queue import lifespan
-from backend.routes import health, jobs, key_analysis, results, song_search, status
+from backend.routes import (
+    auth,
+    health,
+    jobs,
+    key_analysis,
+    results,
+    song_search,
+    status,
+)
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -18,6 +28,61 @@ logging.basicConfig(
 
 def create_app() -> FastAPI:
     fastapi_app = FastAPI(lifespan=lifespan)
+
+    @fastapi_app.middleware("http")
+    async def access_control(request: Request, call_next):
+        path = request.url.path
+        if not (path == "/api" or path.startswith("/api/")):
+            return await call_next(request)
+        unsafe = request.method not in {"GET", "HEAD", "OPTIONS"}
+        if unsafe and (
+            not config.AUTH_ORIGIN
+            or request.headers.get("origin") != config.AUTH_ORIGIN
+        ):
+            return JSONResponse({"detail": "Invalid origin"}, status_code=403)
+        public = path in {"/api/auth/start", "/api/auth/verify"}
+        user = None
+        if not public:
+            token = request.cookies.get(auth.cookie_name(), "")
+            user = await asyncio.to_thread(
+                auth_store.authenticate, token, activity=unsafe
+            )
+            if user is None:
+                return JSONResponse(
+                    {"detail": "Authentication required"}, status_code=401
+                )
+            if path == "/api/status" and not user.is_admin:
+                return JSONResponse(
+                    {"detail": "Administrator required"}, status_code=403
+                )
+            request.state.principal = user
+            expensive = unsafe and (
+                path == "/api/jobs"
+                or path == "/api/song-search"
+                or path == "/api/key-analysis"
+                or path.endswith("/retry")
+                or path.endswith("/pitch-reference/vocals")
+            )
+            if expensive and not await asyncio.to_thread(
+                auth_store.reserve_work, user.id
+            ):
+                return JSONResponse(
+                    {"detail": "Workload limit reached"}, status_code=429
+                )
+        response = await call_next(request)
+        if user is not None and unsafe and path != "/api/auth/logout":
+            response.set_cookie(
+                auth.cookie_name(),
+                request.cookies[auth.cookie_name()],
+                max_age=auth_store.SESSION_IDLE,
+                httponly=True,
+                secure=config.auth_cookie_secure(),
+                samesite="lax",
+                path="/",
+            )
+        return response
+
+    fastapi_app.include_router(auth.router, prefix="/api")
     fastapi_app.include_router(health.router)
     fastapi_app.include_router(jobs.router, prefix="/api")
     fastapi_app.include_router(results.router, prefix="/api")

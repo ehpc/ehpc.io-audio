@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
+import { test } from './auth-fixture';
 import type { JobDTO } from '../src/api';
 
 const directory = process.env.E2E_FIXTURE_DIR!;

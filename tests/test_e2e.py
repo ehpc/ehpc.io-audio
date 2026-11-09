@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 import pytest
 from audio_samples import mp3_measurements, tone_wav
+from fastapi import Request
 from fastapi.testclient import TestClient
 from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 from transport_fixture import LocalVolume, produce_result
@@ -418,7 +419,18 @@ def test_event_stream_heartbeats_and_delivers_terminal_event(
     async def consume_stream() -> tuple[dict, str, list[dict]]:
         record = db.get_job(job_id)
         assert record is not None
-        response = await jobs_route.job_events(job_id, record.session_id)
+        request = Request(
+            {
+                "type": "http",
+                "headers": [
+                    (
+                        b"cookie",
+                        f"__Host-auth_session={client.cookies['__Host-auth_session']}".encode(),
+                    )
+                ],
+            }
+        )
+        response = await jobs_route.job_events(job_id, request, record.session_id)
         assert response.headers["cache-control"] == "no-cache"
         assert response.headers["x-accel-buffering"] == "no"
         stream = cast(AsyncIterator[str], aiter(response.body_iterator))
@@ -466,7 +478,18 @@ def test_event_stream_snapshot_catches_completion_after_subscription(
     async def consume_stream() -> list[dict]:
         record = db.get_job(job_id)
         assert record is not None
-        response = await jobs_route.job_events(job_id, record.session_id)
+        request = Request(
+            {
+                "type": "http",
+                "headers": [
+                    (
+                        b"cookie",
+                        f"__Host-auth_session={client.cookies['__Host-auth_session']}".encode(),
+                    )
+                ],
+            }
+        )
+        response = await jobs_route.job_events(job_id, request, record.session_id)
         stream = cast(AsyncIterator[str], aiter(response.body_iterator))
         return [json.loads(chunk.removeprefix("data: ")) async for chunk in stream]
 

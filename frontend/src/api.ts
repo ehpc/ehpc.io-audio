@@ -279,6 +279,92 @@ type SongSearchStatus = { status: "pending" } | { status: "done"; songs: SongMat
 
 const API_BASE = "/api";
 
+export interface AuthInvite {
+  id: string;
+  code: string | null;
+  status: "pending" | "activated" | "revoked";
+  recipient_email: string | null;
+  activated_at: number | null;
+  created_at: number;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  is_admin: boolean;
+  invite_limit: number;
+  disabled: boolean;
+}
+
+export interface AuthProfile extends Omit<AdminUser, "disabled"> {
+  invites: AuthInvite[];
+}
+
+export class AuthHttpError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "AuthHttpError";
+  }
+}
+
+const authEvents = new EventTarget();
+
+export function onUnauthorized(listener: () => void): () => void {
+  authEvents.addEventListener("unauthorized", listener);
+  return () => authEvents.removeEventListener("unauthorized", listener);
+}
+
+async function authRequest<T>(path: string, init: RequestInit = {}, isPublic = false): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
+  if (!response.ok) throw await responseError(response, !isPublic);
+  if (response.status === 204) return undefined as T;
+  return await response.json() as T;
+}
+
+function jsonRequest(method: string, body: object): RequestInit {
+  return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+export function authStart(email: string, inviteCode?: string): Promise<{ message: string }> {
+  return authRequest("/auth/start", jsonRequest("POST", { email, invite_code: inviteCode }), true);
+}
+
+export function authVerify(email: string, code: string, inviteCode?: string): Promise<{ email: string }> {
+  return authRequest("/auth/verify", jsonRequest("POST", { email, code, invite_code: inviteCode }), true);
+}
+
+export function authMe(): Promise<AuthProfile> {
+  return authRequest("/auth/me");
+}
+
+export function createInvite(): Promise<{ id: string; code: string }> {
+  return authRequest("/auth/invites", { method: "POST" });
+}
+
+export function deleteInvite(id: string): Promise<void> {
+  return authRequest(`/auth/invites/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function authLogout(): Promise<void> {
+  return authRequest("/auth/logout", { method: "POST" });
+}
+
+export function authActivity(): Promise<void> {
+  return authRequest("/auth/activity", { method: "POST" });
+}
+
+export function adminUsers(): Promise<AdminUser[]> {
+  return authRequest("/admin/users");
+}
+
+export function updateAdminUser(id: string, update: { invite_limit?: number; disabled?: boolean }): Promise<AdminUser> {
+  return authRequest(`/admin/users/${encodeURIComponent(id)}`, jsonRequest("PATCH", update));
+}
+
+export function revokeUserSessions(id: string): Promise<void> {
+  return authRequest(`/admin/users/${encodeURIComponent(id)}/revoke-sessions`, { method: "POST" });
+}
+
 const OPTION_KEYS: BooleanOptionKey[] = [
   "extract_vocals",
   "extract_instruments",
@@ -296,14 +382,16 @@ function isTerminal(status: JobStatus): boolean {
   return status === "done" || status === "failed";
 }
 
-async function readError(res: Response): Promise<string> {
+async function responseError(res: Response, notify = true): Promise<AuthHttpError> {
+  if (notify && res.status === 401) authEvents.dispatchEvent(new Event("unauthorized"));
+  let message = `Request failed with status ${res.status}`;
   try {
-    const body = (await res.json()) as { detail?: string };
-    if (body?.detail) return body.detail;
+    const body = (await res.json()) as { detail?: unknown };
+    if (typeof body?.detail === "string" && body.detail) message = body.detail;
   } catch {
-    // fall through to a generic message
+    // Keep the generic message for non-JSON responses.
   }
-  return `Request failed with status ${res.status}`;
+  return new AuthHttpError(res.status, message);
 }
 
 export function audioSettingsError(options: SeparationOptions): string | null {
@@ -343,7 +431,7 @@ export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(await readError(res));
+    throw await responseError(res);
   }
   return (await res.json()) as SubmitResult;
 }
@@ -358,7 +446,7 @@ export async function analyzeKey(source: AudioSource, signal: AbortSignal): Prom
     credentials: "include",
     signal,
   });
-  if (!res.ok) throw new Error(await readError(res));
+  if (!res.ok) throw await responseError(res);
   return (await res.json()) as KeyAnalysis;
 }
 
@@ -371,7 +459,7 @@ export async function searchSong(query: string, signal: AbortSignal): Promise<So
     credentials: "include",
     signal,
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await responseError(response);
   const { search_id } = await response.json() as { search_id: string; status: "pending" };
   while (true) {
     signal.throwIfAborted();
@@ -391,7 +479,7 @@ export async function searchSong(query: string, signal: AbortSignal): Promise<So
       credentials: "include",
       signal,
     });
-    if (!poll.ok) throw new Error(await readError(poll));
+    if (!poll.ok) throw await responseError(poll);
     const result = await poll.json() as SongSearchStatus;
     if (result.status === "done") return result.songs;
   }
@@ -402,7 +490,7 @@ export async function getCurrentJob(): Promise<JobDTO | null> {
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(await readError(res));
+    throw await responseError(res);
   }
   return (await res.json()) as JobDTO | null;
 }
@@ -412,7 +500,7 @@ export async function getJob(id: number): Promise<JobDTO> {
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(await readError(res));
+    throw await responseError(res);
   }
   return (await res.json()) as JobDTO;
 }
@@ -423,7 +511,7 @@ export async function retryJob(id: number): Promise<SubmitResult> {
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(await readError(res));
+    throw await responseError(res);
   }
   return (await res.json()) as SubmitResult;
 }
@@ -433,7 +521,7 @@ export async function listJobs(): Promise<JobDTO[]> {
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(await readError(res));
+    throw await responseError(res);
   }
   return (await res.json()) as JobDTO[];
 }
@@ -441,7 +529,7 @@ export async function listJobs(): Promise<JobDTO[]> {
 export async function getStatus(): Promise<StatusDTO> {
   const res = await fetch(`${API_BASE}/status`, { credentials: "include" });
   if (!res.ok) {
-    throw new Error(await readError(res));
+    throw await responseError(res);
   }
   return (await res.json()) as StatusDTO;
 }
@@ -468,7 +556,7 @@ export function pitchVocalsUrl(id: number): string {
 
 export async function recoverPitchVocals(id: number): Promise<void> {
   const response = await fetch(pitchVocalsUrl(id), { method: "POST", credentials: "include" });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await responseError(response);
 }
 
 export function pitchedLyricsDownloadUrl(id: number, label: string, format: "txt" | "odt" = "txt"): string {
@@ -517,6 +605,9 @@ export function subscribeToJob(
   source.onerror = () => {
     if (closed) return;
     close();
+    // EventSource exposes no HTTP status. Probe the session rather than treating
+    // every network/stream error as an expired login.
+    void authMe().catch(() => {});
     onError?.();
   };
 

@@ -24,12 +24,23 @@ def server(root, port, prohibit="", key_version=""):
         DATA_DIR=str(root),
         PYTHONPATH=str(Path(__file__).resolve().parent.parent),
         QUEUE_CONCURRENCY="2",
-        COOKIE_SECRET="owned-cache-proof",
-        COOKIE_SECURE="false",
+        AUTH_ORIGIN=f"http://127.0.0.1:{port}",
         CACHE_PORT=str(port),
         CACHE_FORBID=prohibit,
         CACHE_KEY_VERSION=key_version,
     )
+    # Provision through the same challenge-verification transaction as the API;
+    # this isolated process captures the generated code at the mail boundary.
+    provision = (
+        "from backend import auth_store,db; import secrets; db.init_db(); "
+        "email=secrets.token_hex(8)+'@example.com'; "
+        "_,invite=auth_store.create_invite(None); "
+        "challenge=auth_store.start(email,invite,'127.0.0.1'); "
+        "print(auth_store.verify(email,challenge[1],invite)[0])"
+    )
+    token = subprocess.check_output(
+        [sys.executable, "-c", provision], env=environment, text=True
+    ).strip()
     process = subprocess.Popen(
         [sys.executable, str(Path(__file__).with_name("cache_http_worker.py"))],
         env=environment,
@@ -37,12 +48,17 @@ def server(root, port, prohibit="", key_version=""):
         stderr=subprocess.STDOUT,
     )
     try:
-        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+        with httpx.Client(
+            base_url=f"http://127.0.0.1:{port}",
+            timeout=30,
+            headers={"origin": f"http://127.0.0.1:{port}"},
+            cookies={"auth_session": token},
+        ) as client:
             deadline = time.monotonic() + 20
             while True:
                 assert process.poll() is None, process.communicate()[0].decode()
                 try:
-                    if client.get("/api/jobs").status_code == 200:
+                    if client.get("/health").status_code == 200:
                         break
                 except httpx.ConnectError:
                     pass
