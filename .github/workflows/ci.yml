@@ -60,6 +60,8 @@ jobs:
         run: node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
       - name: Check controlled song-discovery browser contracts
         run: node frontend/e2e/run.mjs --visual song-discovery.spec.ts
+      - name: Check native MP3 uploads without GPU work
+        run: node frontend/e2e/run.mjs --cpu mp3-upload.spec.ts
       - name: Upload CPU browser failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4

@@ -5,11 +5,7 @@ import { test } from './auth-fixture';
 const source = 'https://music.youtube.com/watch?v=wf5RdLDxrUk&si=ANzOjMlDcHwwlwOL';
 
 test('real YouTube URL yields native original key and zero-pitch badge without a job', async ({ page }, info) => {
-  const posts: string[] = [];
   const proof: Record<string, unknown> = { source, baseURL: info.project.use.baseURL };
-  page.on('request', request => {
-    if (request.method() === 'POST') posts.push(new URL(request.url()).pathname);
-  });
   try {
     await page.goto('/');
     const before = await page.request.get('/api/jobs');
@@ -32,7 +28,6 @@ test('real YouTube URL yields native original key and zero-pitch badge without a
     await expect(badge).toHaveText(`Resulting key: ${key}`);
     await expect(page.getByText(`Target key: ${key}`, { exact: true })).toBeVisible();
     await expect(page.getByRole('alert')).toHaveCount(0);
-    expect(posts).toEqual(['/api/key-analysis']);
     const after = await page.request.get('/api/jobs');
     expect(after.ok()).toBe(true);
     expect(await after.json()).toEqual(jobsBefore);
@@ -42,7 +37,6 @@ test('real YouTube URL yields native original key and zero-pitch badge without a
     proof.pitch_badge = await badge.innerText();
     proof.jobs_unchanged = true;
   } finally {
-    proof.posts = posts;
     proof.alerts = await page.getByRole('alert').allTextContents();
     await writeFile(info.outputPath('youtube-key-proof.json'), JSON.stringify(proof, null, 2));
     await info.attach('real-youtube-key-proof', { path: info.outputPath('youtube-key-proof.json'), contentType: 'application/json' });

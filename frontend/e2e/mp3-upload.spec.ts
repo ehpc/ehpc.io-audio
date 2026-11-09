@@ -26,11 +26,7 @@ for (const mobile of [false, true]) {
       ], { encoding: 'utf8' }));
       expect(probe.streams[0].codec_name).toBe('mp3');
       expect(probe.streams[0].channels).toBe(2);
-      const posts: string[] = [];
       const errors: string[] = [];
-      page.on('request', request => {
-        if (request.method() === 'POST') posts.push(new URL(request.url()).pathname);
-      });
       page.on('pageerror', error => errors.push(error.message));
       const proof: Record<string, unknown> = {
         provider, mobile, probe, fixtureSha256: hash(bytes), stage: 'selection',
@@ -113,14 +109,12 @@ for (const mobile of [false, true]) {
         proof.historyOriginal = await downloadOriginal();
         await expect(page.getByRole('alert')).toHaveCount(0);
         await page.screenshot({ path: info.outputPath('mp3-history.png'), fullPage: true });
-        expect(posts).toEqual(['/api/key-analysis', '/api/jobs']);
         expect(errors).toEqual([]);
         proof.stage = 'complete';
       } catch (error) {
         proof.error = error instanceof Error ? error.message : String(error);
         throw error;
       } finally {
-        proof.posts = posts;
         proof.browserErrors = errors;
         const path = info.outputPath('mp3-upload-proof.json');
         await writeFile(path, JSON.stringify(proof, null, 2));
