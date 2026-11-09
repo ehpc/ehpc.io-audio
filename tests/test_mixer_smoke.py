@@ -19,7 +19,7 @@ from audio_samples import decode_audio
 from gpu_smoke import gpu_context
 from mutagen.id3 import ID3
 
-from backend import config
+from backend import auth_store, config, mailer
 from backend.main import app as web_app
 from separator.audio import mix_audio
 from separator.modal_app import TIMEOUT
@@ -70,6 +70,16 @@ def test_ephemeral_gpu_queue_delivers_arbitrary_mixes(
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
+    origin = f"http://127.0.0.1:{port}"
+    monkeypatch.setattr(config, "AUTH_ORIGIN", origin)
+    code_received = threading.Event()
+    codes: dict[str, str] = {}
+
+    def capture_code(email: str, code: str) -> None:
+        codes[email] = code
+        code_received.set()
+
+    monkeypatch.setattr(mailer, "send_code", capture_code)
     server = uvicorn.Server(
         uvicorn.Config(web_app, log_level="warning", loop="asyncio")
     )
@@ -80,7 +90,23 @@ def test_ephemeral_gpu_queue_delivers_arbitrary_mixes(
         while not server.started:
             assert thread.is_alive() and time.monotonic() < deadline
             time.sleep(0.05)
-        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30) as client:
+        with httpx.Client(
+            base_url=origin, headers={"origin": origin}, timeout=30
+        ) as client:
+            assert client.get("/api/auth/me").status_code == 401
+            email = "mixer-smoke@example.com"
+            _, invite = auth_store.create_invite(None)
+            started = client.post(
+                "/api/auth/start", json={"email": email, "invite_code": invite}
+            )
+            assert started.status_code == 202
+            assert code_received.wait(timeout=10)
+            verified = client.post(
+                "/api/auth/verify",
+                json={"email": email, "invite_code": invite, "code": codes[email]},
+            )
+            assert verified.status_code == 200
+            assert client.get("/api/auth/me").status_code == 200
             submitted = client.post(
                 "/api/jobs",
                 files={"file": ("Real music.wav", source, "audio/wav")},

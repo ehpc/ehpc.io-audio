@@ -42,11 +42,37 @@ def test_deployed_full_singing_per_stem_words_and_fractional_transform(
         gpu_context(tmp_path / "computed"),
     )
     elapsed = time.monotonic() - started
-    assert list(result.audio) == ["vocals", "lead", "backing"]
+    assert list(result.audio) == ["vocals", "lead", "backing", "drums-vocals"]
     assert result.pitch_json is not None
     analysis = pitch_from_json(result.pitch_json)
     assert [track.label for track in analysis.tracks] == ["vocals", "lead", "backing"]
     assert 141 < analysis.source_duration_s < 142
+    backing_path = tmp_path / "drums-vocals.mp3"
+    backing_path.write_bytes(result.audio["drums-vocals"].data)
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,sample_rate:format=duration",
+            "-of",
+            "json",
+            str(backing_path),
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    backing = json.loads(probe.stdout)
+    assert backing["streams"][0]["codec_name"] == "mp3"
+    assert int(backing["streams"][0]["sample_rate"]) == 48000
+    # run_processing keeps source-clock audio; export applies tempo later.
+    assert float(backing["format"]["duration"]) == pytest.approx(
+        analysis.source_duration_s, abs=0.2
+    )
     assert analysis.duration_s == pytest.approx(analysis.source_duration_s / 1.25)
     assert analysis.pitch_shift_semitones == 1.25
     assert analysis.timestamp_reference == analysis.pitch_reference == "output"
