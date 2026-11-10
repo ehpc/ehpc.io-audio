@@ -22,6 +22,24 @@ test.afterEach(async ({ page, browser }, info) => {
     viewport: page.viewportSize(),
   }, null, 2));
 });
+// Fixed, synthetic metadata in the isolated database exercises the actual admin
+// activity UI without sending searches, mail, or inference requests.
+const seedAccountActivity = String.raw`
+import sys
+from backend import db
+with db._session() as c:
+    admin, member = sys.argv[1:]
+    t = 1767268800
+    c.execute("UPDATE auth_users SET last_login_at=?,last_activity_at=? WHERE id=?", (t, t+60, member))
+    c.execute("UPDATE auth_invites SET activated_at=? WHERE recipient_id=?", (t-3600, member))
+    c.execute("INSERT OR REPLACE INTO auth_invites (id,verifier,owner_id,recipient_id,created_at,activated_at,revoked) VALUES (?,?,?,?,?,?,0)", ("visual-pending", "visual-pending-verifier", member, None, t, None))
+    c.execute("INSERT OR REPLACE INTO auth_invites (id,verifier,owner_id,recipient_id,created_at,activated_at,revoked) VALUES (?,?,?,?,?,?,0)", ("visual-activated", "visual-activated-verifier", member, admin, t-300, t-200))
+    for job_id,title,status in [(-2,"Completed fixture track","done"),(-1,"Queued fixture track","queued")]:
+        c.execute("INSERT OR REPLACE INTO jobs (id,session_id,status,source_type,source_value,title,options_json,created_at,started_at,finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (job_id,member,status,"upload","fixture.wav",title,"{}",t,t+1 if status=="done" else None,t+2 if status=="done" else None))
+    c.execute("INSERT OR REPLACE INTO song_searches (id,session_id,created_at,result_json,activity_query) VALUES (?,?,?,?,?)", ("visual-search",member,t,"[]","Fixture song query"))
+    c.execute("INSERT OR REPLACE INTO song_searches (id,session_id,created_at,result_json,activity_query) VALUES (?,?,?,?,?)", ("visual-search-unknown",member,t-30,"[]",None))
+`;
+
 
 for (const viewport of [desktop, mobile]) {
   test(`account screens ${viewport.width}`, async ({ page, context }, info) => {
@@ -37,11 +55,33 @@ for (const viewport of [desktop, mobile]) {
     await page.goto('/');
     await page.getByRole('button', { name: 'Profile', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Profile', exact: true })).toBeVisible();
+    await expect(page.getByText(/Unlimited invitations/)).toBeVisible();
     await compare(page, info, `profile-${viewport.width}.png`);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.getByRole('button', { name: 'People', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
     await compare(page, info, `people-${viewport.width}.png`);
+    const admin = await (await page.request.get('/api/auth/me')).json();
+    const adminCard = page.locator('div').filter({ has: page.getByRole('heading', { name: admin.email, exact: true }) }).filter({ has: page.getByRole('button', { name: 'View activity' }) }).last();
+    await expect(adminCard.getByText('Invite limit: Unlimited')).toBeVisible();
+    await expect(adminCard.getByRole('button', { name: 'Grant +1 invite' })).toHaveCount(0);
+    const people = await (await page.request.get('/api/admin/users')).json() as { id: string; email: string }[];
+    const member = people.find(person => person.email === 'e2e-outsider@example.test')!;
+    execFileSync('uv', ['run', 'python', '-c', seedAccountActivity, admin.id, member.id], {
+      cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+    });
+    const memberCard = page.locator('div').filter({ has: page.getByRole('heading', { name: member.email, exact: true }) }).filter({ has: page.getByRole('button', { name: 'View activity' }) }).last();
+    await memberCard.getByRole('button', { name: 'View activity' }).click();
+    const activity = memberCard.getByRole('region', { name: 'Activity' });
+    await expect(activity.getByText(/Registered:/)).toBeVisible();
+    await expect(activity.getByText(/Last login:/)).toBeVisible();
+    await expect(activity.getByText(/Completed fixture track.*done/)).toBeVisible();
+    await expect(activity.getByText(/Queued fixture track.*queued/)).toBeVisible();
+    await expect(activity.getByText(/Fixture song query.*completed/)).toBeVisible();
+    await expect(activity.getByText(/Query unavailable/)).toBeVisible();
+    await expect(activity.getByText(/e2e-admin@example.test.*activated/)).toBeVisible();
+    await expect(activity.getByRole('button', { name: 'Withdraw unused invitation' })).toBeVisible();
+    await compare(activity, info, `people-activity-${viewport.width}.png`);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
@@ -367,7 +407,7 @@ for (const viewport of [mobile, desktop]) {
       env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
     });
     await page.reload();
-    const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+    const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
     await expect(view).toBeVisible();
     const player = view.locator('audio[controls]');
     // Exercise the real HTTP source; native control paint is browser-owned.
@@ -413,6 +453,72 @@ for (const viewport of [mobile, desktop]) {
     await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
     await expect(reader.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
     await expect(reader.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
+  });
+}
+
+// Synthetic alignment stresses a crowded word without changing the captured
+// CREPE/Whisper provenance fixture above. Audio remains paused at a fixed seek.
+for (const viewport of [mobile, desktop]) {
+  test(`crowded karaoke pitches ${viewport.width}`, async ({ page }, info) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
+    const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8'));
+    const words = [
+      { text: 'silver', start_s: 5, end_s: 7.5, probability: null, origin: 'reference-aligned' },
+      { text: 'Next', start_s: 11.875, end_s: 13.125, probability: null, origin: 'reference-aligned' },
+      { text: 'chorus', start_s: 13.75, end_s: 15.625, probability: null, origin: 'reference-aligned' },
+    ];
+    const line = (text: string, start_s: number, end_s: number) => ({
+      text, start_s, end_s, status: 'aligned', support: 0.8, reason: 'Synthetic visual fixture',
+      unconfirmed_words: [], recognized_variant: null,
+    });
+    fixture.transcript.words = words;
+    fixture.transcript.segments = [];
+    fixture.transcript.sections = [];
+    fixture.transcript.canonical_word_positions = words.map((_, word_index) => ({
+      word_index, reference_line_index: word_index === 0 ? 0 : 1,
+      reference_token_index: word_index === 0 ? 1 : word_index - 1,
+    }));
+    fixture.transcript.reference = { ...fixture.transcript.reference, status: 'partial',
+      lines: [line('Before silver, after', 3.75, 11.25), line('Next chorus', 11.875, 15.625)] };
+    fixture.pitch.words = words.map(word => ({ ...word, start_s: word.start_s / 1.25, end_s: word.end_s / 1.25 }));
+    const pitches = ['C#4', 'D4', 'D#4', 'E4', 'F4', 'F#4', 'G4', 'G#4', 'A4', 'A#4', 'B4', 'C5',
+      'C#5', 'D5', 'D#5', 'E5', 'F5', 'F#5', 'G5', 'G#5', 'A5', 'A#5', 'B5', 'C6'];
+    const note = (name: string, midi: number, start_s: number, word: number) => ({
+      note: name, midi, frequency_hz: 440 * 2 ** ((midi - 69) / 12), confidence: 0.8, cents: 0,
+      start_s, end_s: start_s + 0.07, word_indices: [word],
+    });
+    fixture.pitch.tracks = [{ label: 'lead', notes: [
+      ...pitches.map((name, i) => note(name, 61 + i, 4 + i * 0.08, 0)),
+      ...['F#4', 'G#4', 'A#4'].map((name, i) => note(name, 66 + i * 2, 9.5 + i * 0.2, 1)),
+      ...['C#5', 'D#5', 'F#5'].map((name, i) => note(name, [73, 75, 78][i], 11 + i * 0.2, 2)),
+    ] }];
+    const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
+      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+      detect_pitch: 'true', extract_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
+    } });
+    expect(response.ok()).toBe(true);
+    const id = (await response.json()).id as number;
+    execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
+      cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(fixture),
+      env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+    });
+    await page.reload();
+    const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
+    const player = view.locator('audio[controls]');
+    await player.evaluate(audio => { audio.preload = 'auto'; audio.load(); });
+    await expect.poll(() => player.evaluate(audio => Number.isFinite(audio.duration) && audio.seekable.length > 0)).toBe(true);
+    await player.evaluate(audio => { audio.pause(); audio.currentTime = 5.625; });
+    await expect.poll(() => player.evaluate(audio => !audio.seeking && audio.paused && Math.abs(audio.currentTime - 5.625) < 0.05)).toBe(true);
+    const reader = view.getByLabel('Current karaoke line');
+    await expect(reader.getByRole('group', { name: /^Pitches for silver:/ })).toHaveText(pitches.join(' '));
+    const next = reader.getByRole('group', { name: 'Next lyrics' });
+    await expect(next.getByText('Next', { exact: true })).toBeVisible();
+    await expect(next.getByText('chorus', { exact: true })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    await compare(reader, info, `karaoke-crowded-${viewport.width}.png`);
   });
 }
 
@@ -576,7 +682,7 @@ for (const viewport of [mobile, desktop]) {
         env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
       });
       await page.reload();
-      const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+      const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
       await expect(view).toBeVisible();
       const assertDeviceWidth = async () => {
         expect(await page.evaluate(() => innerWidth)).toBe(viewport.width);

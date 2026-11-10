@@ -25,17 +25,17 @@ beforeEach(() => {
 });
 
 describe("ProfileView", () => {
-  it("shows occupied slots and invite details, with revocation only for pending invitations", () => {
+  it("shows occupied slots and recipient details without access or withdrawal controls for members", () => {
     render(() => <ProfileView profile={profile} refresh={vi.fn()} />);
     expect(screen.getByText("owner@example.com")).toBeInTheDocument();
-    expect(screen.getByText("2 of 3 invite slots used")).toBeInTheDocument();
+    expect(screen.getByText(/2 of 3 invite slots used.*1 remaining/)).toBeInTheDocument();
     expect(screen.getByText("Recipient: friend@example.com")).toBeInTheDocument();
     expect(screen.getByText(/^Activated:/)).toBeInTheDocument();
     const cards = screen.getAllByRole("listitem");
     expect(within(cards[0]).getByText("pending")).toBeInTheDocument();
-    expect(within(cards[0]).getByRole("button", { name: "Revoke" })).toBeInTheDocument();
+    expect(within(cards[0]).queryByRole("button", { name: /withdraw|revoke/i })).not.toBeInTheDocument();
     expect(within(cards[1]).getByText("activated")).toBeInTheDocument();
-    expect(within(cards[1]).queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
+    expect(within(cards[1]).queryByRole("button", { name: /withdraw|revoke|disable/i })).not.toBeInTheDocument();
   });
 
   it("creates an invite and refreshes the profile, but disables creation at the limit", async () => {
@@ -50,16 +50,29 @@ describe("ProfileView", () => {
     expect(screen.getByRole("button", { name: "Create invite" })).toBeDisabled();
   });
 
-  it("confirms revocation and refreshes only after a successful deletion", async () => {
+  it("keeps unlimited admin invitations available beyond the regular allowance", async () => {
+    const invites = Array.from({ length: 4 }, (_, index) => ({ ...profile.invites[0], id: `pending-${index}` }));
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    render(() => <ProfileView profile={{ ...profile, is_admin: true, invite_limit: null, invites }} refresh={refresh} />);
+    expect(screen.getByText(/Unlimited invitations.*4 used/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Create invite" }));
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("lets an unlimited admin withdraw only unused invitations after confirmation", async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
-    render(() => <ProfileView profile={profile} refresh={refresh} />);
-    await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    render(() => <ProfileView profile={{ ...profile, is_admin: true, invite_limit: null }} refresh={refresh} />);
+    expect(screen.getByText(/Unlimited invitations/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create invite" })).toBeEnabled();
+    const cards = screen.getAllByRole("listitem");
+    expect(within(cards[1]).queryByRole("button", { name: /withdraw|revoke|disable/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Withdraw unused invitation" }));
     expect(api.deleteInvite).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await userEvent.click(screen.getByRole("button", { name: "Withdraw unused invitation" }));
     expect(api.deleteInvite).toHaveBeenCalledWith("invite-1");
     expect(refresh).toHaveBeenCalledOnce();
-    expect(await screen.findByText("Invite revoked.")).toBeInTheDocument();
+    expect(await screen.findByText("Invitation withdrawn.")).toBeInTheDocument();
     confirm.mockRestore();
   });
 

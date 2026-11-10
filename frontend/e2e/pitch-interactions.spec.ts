@@ -103,7 +103,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     });
     await page.reload();
 
-    const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+    const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
     await expect(view).toBeVisible();
     const player = view.locator('audio:not([hidden])');
     const scroll = view.getByRole('region', { name: 'Scrollable vocal melody timeline', exact: true });
@@ -590,7 +590,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     try {
       const errorPage = await errorContext.newPage();
       await errorPage.goto('/');
-      const errorView = errorPage.getByLabel('Vocal pitch analysis', { exact: true });
+      const errorView = errorPage.getByRole('region', { name: 'Karaoke with pitches', exact: true });
       const failedPlayer = errorView.locator('audio:not([hidden])');
       await activate(errorView.getByRole('button', { name: 'Play', exact: true }));
       await expect.poll(() => failedPlayer.evaluate(audio => audio.currentTime)).toBeGreaterThan(0.3);
@@ -631,6 +631,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole('spinbutton', { name: 'Tempo (% of original)' }).fill('125');
       if (viewport.width <= 700) await activate(page.getByRole('tab', { name: 'Outputs', exact: true }));
       await page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true }).check();
+      await page.getByRole('checkbox', { name: 'Lyrics with pitches', exact: true }).check();
       for (const name of ['Extract vocals', 'Extract lyrics', 'Extract instruments', 'Split drums, bass & other instruments']) {
         const dependency = page.getByRole('checkbox', { name, exact: true });
         await expect(dependency).toBeChecked();
@@ -645,7 +646,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(queuedResponse.ok()).toBe(true);
       const queued = await queuedResponse.json() as JobDTO;
       expect(queued.options).toMatchObject({
-        detect_pitch: true, extract_vocals: true, extract_lyrics: true,
+        detect_pitch: true, extract_vocals: true, extract_lyrics: true, extract_pitched_lyrics: true,
         extract_instruments: true, drums: true, mixes: [],
         pitch_semitones: 1.25, tempo_percent: 125,
       });
@@ -665,18 +666,44 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(completed.status).toBe('done');
       expect(completed.manifest?.map(stem => stem.label).sort()).toEqual([...labels].sort());
       await page.reload();
+      const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+      const historyCard = history.locator('.rounded-lg').filter({ has: page.locator(`a[href="/api/jobs/${queued.id}/pitch"]`) });
+      await activate(page.getByRole('button', { name: 'Start another job', exact: true }));
+      await expect(history.getByRole('region', { name: 'Lyrics with pitches', exact: true })).toHaveCount(0);
+      await expect(historyCard.locator('a[href*="/results/"]')).toHaveCount(0);
+      await expect(historyCard.locator('a[href$="/original"]')).toHaveCount(0);
+      await expect(history.getByRole('region', { name: 'Lyrics transcript', exact: true })).toHaveCount(0);
+      expect(completed.transcript?.timestamped_text?.length).toBeGreaterThan(0);
+      await expect(history).not.toContainText(completed.transcript!.timestamped_text!);
+      await history.screenshot({ path: info.outputPath('compact-history.png') });
+      await activate(historyCard.getByRole('button', { name: 'View Karaoke with pitches', exact: true }));
 
-      const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+      const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
       await expect(view).toBeVisible();
+      const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+      const pitchedLyrics = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
+      const transcript = results.getByRole('region', { name: 'Lyrics transcript', exact: true });
+      await expect(pitchedLyrics).toBeVisible();
+      await expect(transcript).toBeVisible();
+      const karaokeBox = (await view.boundingBox())!;
+      const pitchedBox = (await pitchedLyrics.boundingBox())!;
+      const transcriptBox = (await transcript.boundingBox())!;
+      expect(karaokeBox.y + karaokeBox.height).toBeLessThanOrEqual(pitchedBox.y);
+      expect(pitchedBox.y + pitchedBox.height).toBeLessThanOrEqual(transcriptBox.y);
+      await results.screenshot({ path: info.outputPath('ordered-result-sections.png') });
       const player = view.locator('audio:not([hidden])');
       const backgrounds = view.getByRole('group', { name: 'Pitch background audio', exact: true });
       const play = view.getByRole('button', { name: 'Play', exact: true });
       const pause = view.getByRole('button', { name: 'Pause', exact: true });
       await view.getByRole('slider', { name: 'Melody zoom', exact: true }).fill('40');
       await player.evaluate(audio => { audio.preload = 'auto'; audio.load(); audio.volume = 0.4; });
-      await activate(backgrounds.getByRole('button', { name: 'Full song' }));
       await expect(backgrounds.getByRole('button', { name: 'Full song' })).toHaveAttribute('aria-pressed', 'true');
       await expect.poll(() => player.evaluate(audio => audio.duration)).toBeCloseTo(fixture.pitch.duration_s, 1);
+      const initialSource = await player.evaluate(audio => audio.currentSrc);
+      expect(new URL(initialSource).pathname).toBe(`/api/jobs/${queued.id}/results/song`);
+      const initialResponse = await page.request.get(initialSource, { headers: { Range: 'bytes=0-255' } });
+      expect(initialResponse.status()).toBe(206);
+      expect(initialResponse.headers()['content-type']).toContain('audio/mp4');
       await activate(view.getByRole('button', { name: 'Forward 5 seconds', exact: true }));
       let outputTime = 5;
       const playbackProof = [];
@@ -689,6 +716,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await expect.poll(() => player.evaluate(audio => audio.duration)).toBeCloseTo(duration, 1);
         await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeCloseTo(outputTime, 1);
         expect(await player.evaluate(audio => audio.paused && audio.volume === 0.4)).toBe(true);
+        if (label === 'vocals') {
+          await view.getByRole('slider', { name: 'Melody zoom', exact: true }).fill('80');
+          await expect(button).toHaveAttribute('aria-pressed', 'true');
+          await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeCloseTo(outputTime, 1);
+          await view.getByRole('slider', { name: 'Melody zoom', exact: true }).fill('40');
+        }
         await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1')) / 40).toBeCloseTo(outputTime, 1);
         const beforePlay = await player.evaluate(audio => audio.currentTime);
         await activate(play);
@@ -700,7 +733,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       }
       await view.locator('.pitch-footer').screenshot({ path: info.outputPath('complete-karaoke-transport.png') });
 
-      const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
       const downloads = [];
       for (const label of labels) {
         const pending = page.waitForEvent('download');
@@ -735,6 +767,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const originalPath = info.outputPath('original.ogg');
       await original.saveAs(originalPath);
       expect((await readFile(originalPath)).equals(source)).toBe(true);
+      const closingAudio = await player.elementHandle();
+      await activate(play);
+      const beforeClose = await player.evaluate(audio => audio.currentTime);
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(beforeClose + 0.2);
+      await activate(page.getByRole('button', { name: 'Start another job', exact: true }));
+      expect(await closingAudio!.evaluate(audio => audio.paused)).toBe(true);
+      await expect(history.getByRole('region', { name: 'Lyrics transcript', exact: true })).toHaveCount(0);
+      await closingAudio!.dispose();
       await info.attach('complete-karaoke-backgrounds', {
         body: Buffer.from(JSON.stringify({
           viewport, options: queued.options, publicLabels: completed.manifest?.map(stem => stem.label),

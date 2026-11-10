@@ -292,8 +292,18 @@ export interface AdminUser {
   id: string;
   email: string;
   is_admin: boolean;
-  invite_limit: number;
+  invite_limit: number | null;
   disabled: boolean;
+}
+
+export interface AdminUserActivity {
+  registered_at: number | null;
+  last_login_at: number | null;
+  last_activity_at: number | null;
+  invite_used: number;
+  invites: Omit<AuthInvite, "code">[];
+  jobs: { id: number; title: string | null; status: string; created_at: number; started_at: number | null; finished_at: number | null }[];
+  searches: { id: string; query: string | null; status: "pending" | "completed" | "expired" | "failed"; created_at: number }[];
 }
 
 export interface AuthProfile extends Omit<AdminUser, "disabled"> {
@@ -355,6 +365,14 @@ export function authActivity(): Promise<void> {
 
 export function adminUsers(): Promise<AdminUser[]> {
   return authRequest("/admin/users");
+}
+
+export function adminUserActivity(id: string): Promise<AdminUserActivity> {
+  return authRequest(`/admin/users/${encodeURIComponent(id)}/activity`);
+}
+
+export function grantInviteSlot(id: string): Promise<AdminUser> {
+  return authRequest(`/admin/users/${encodeURIComponent(id)}/invite-slot`, { method: "POST" });
 }
 
 export function updateAdminUser(id: string, update: { invite_limit?: number; disabled?: boolean }): Promise<AdminUser> {

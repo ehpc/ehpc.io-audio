@@ -21,16 +21,16 @@ def browser() -> TestClient:
     )
 
 
-def test_invite_registration_profile_and_slots(client, monkeypatch):
+def test_invite_registration_profile_and_slots(client, other_client, monkeypatch):
     codes = {}
     monkeypatch.setattr(
         mailer, "send_code", lambda email, code: codes.__setitem__(email, code)
     )
-    owner = client.get("/api/auth/me").json()
-    assert owner["is_admin"] and owner["invite_limit"] == 3
-    invites = [client.post("/api/auth/invites").json() for _ in range(3)]
-    assert client.post("/api/auth/invites").status_code == 409
-    listed = client.get("/api/auth/me").json()["invites"]
+    owner = other_client.get("/api/auth/me").json()
+    assert not owner["is_admin"] and owner["invite_limit"] == 3
+    invites = [other_client.post("/api/auth/invites").json() for _ in range(3)]
+    assert other_client.post("/api/auth/invites").status_code == 409
+    listed = other_client.get("/api/auth/me").json()["invites"]
     assert {i["code"] for i in listed} == {i["code"] for i in invites}
     other = browser()
     args = {"email": "new@example.com", "invite_code": invites[0]["code"]}
@@ -43,7 +43,7 @@ def test_invite_registration_profile_and_slots(client, monkeypatch):
     )
     activated = next(
         i
-        for i in client.get("/api/auth/me").json()["invites"]
+        for i in other_client.get("/api/auth/me").json()["invites"]
         if i["id"] == invites[0]["id"]
     )
     assert (
@@ -51,9 +51,15 @@ def test_invite_registration_profile_and_slots(client, monkeypatch):
         and activated["recipient_email"] == args["email"]
     )
     assert activated["activated_at"] and activated["code"] is None
+    assert (
+        other_client.delete("/api/auth/invites/" + invites[0]["id"]).status_code == 403
+    )
     assert client.delete("/api/auth/invites/" + invites[0]["id"]).status_code == 404
+    assert (
+        other_client.delete("/api/auth/invites/" + invites[1]["id"]).status_code == 403
+    )
     assert client.delete("/api/auth/invites/" + invites[1]["id"]).status_code == 204
-    assert client.post("/api/auth/invites").status_code == 200
+    assert other_client.post("/api/auth/invites").status_code == 200
     assert other.get("/api/auth/me").json()["invites"] == []
     assert other.get("/api/admin/users").status_code == 403
 

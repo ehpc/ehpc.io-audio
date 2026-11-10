@@ -106,8 +106,8 @@ def test_uncertain_mail_preserves_code_without_leaking_eligibility(monkeypatch):
         )
 
 
-def test_invite_allowance_is_atomic(client):
-    owner = client.get("/api/auth/me").json()["id"]
+def test_invite_allowance_is_atomic(other_client):
+    owner = other_client.get("/api/auth/me").json()["id"]
     auth_store.update_user(owner, invite_limit=1)
 
     def issue(_):

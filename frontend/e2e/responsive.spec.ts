@@ -153,8 +153,10 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-    const exactMixName = new RegExp('^' + mixLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*Source key: C major$');
-    await expect(history.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveAccessibleName(exactMixName);
+    await expect(history.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveCount(0);
+    await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+    await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
+    await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
     await expect(page.getByTestId('mix-item')).toHaveAttribute('data-mix-name', mixName);
     await page.getByRole('button', { name: `Remove ${mixName}`, exact: true }).click();

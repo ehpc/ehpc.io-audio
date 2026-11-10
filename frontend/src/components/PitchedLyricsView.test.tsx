@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { createSignal, Show } from "solid-js";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { JobDTO } from "~/api";
 import PitchedLyricsView from "./PitchedLyricsView";
@@ -8,6 +9,7 @@ import HistoryView from "./HistoryView";
 beforeEach(() => {
   // jsdom has no native media loading; real playback is covered by browser E2E.
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
 });
 
 const job: JobDTO = {
@@ -59,7 +61,7 @@ it("reserves server-defined wide glyph columns without splitting ordinary text i
 it("shows the requested pitched output without surfacing hidden analysis as extra views or audio exports", () => {
   render(() => <ResultsView job={job} onReset={vi.fn()} />);
   expect(screen.getByRole("region", { name: "Aligned pitch and lyric text" }).textContent).toBe(job.pitched_lyrics![0].text);
-  expect(screen.queryByRole("heading", { name: "Vocal pitch timeline" })).toBeNull();
+  expect(screen.queryByRole("heading", { name: "Karaoke with pitches" })).toBeNull();
   expect(screen.queryByText("not the pitched renderer")).toBeNull();
   expect(document.querySelectorAll("audio")).toHaveLength(1);
 });
@@ -68,19 +70,58 @@ it("also shows both legacy views when they were explicitly requested", () => {
   const combined = { ...job, options: { ...job.options, extract_lyrics: true, detect_pitch: true } };
   render(() => <ResultsView job={combined} onReset={vi.fn()} />);
   expect(screen.getByRole("region", { name: "Aligned pitch and lyric text" }).textContent).toBe(job.pitched_lyrics![0].text);
-  expect(screen.getByRole("heading", { name: "Vocal pitch timeline" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Karaoke with pitches" })).toBeInTheDocument();
   expect(screen.getByLabelText("Timestamped lyrics")).toHaveTextContent("not the pitched renderer");
   expect(screen.getByRole("link", { name: "Download pitch JSON" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Download timestamped TXT" })).toBeInTheDocument();
 });
 
-it("history uses the same canonical view and stem changes do not select the job card", () => {
-  const select = vi.fn();
-  render(() => <HistoryView jobs={[job]} onSelect={select} onRetried={vi.fn()} />);
-  const text = screen.getByRole("region", { name: "Aligned pitch and lyric text" });
-  expect(text.textContent).toBe(job.pitched_lyrics![0].text);
-  fireEvent.click(screen.getByRole("combobox", { name: "Pitched lyrics vocal stem" }));
+it("keeps karaoke, pitched lyrics and lyrics in order as output data arrives", () => {
+  const combined = { ...job, options: { ...job.options, extract_lyrics: true, detect_pitch: true } };
+  const [current, setCurrent] = createSignal<JobDTO>({ ...combined, pitch: null, pitched_lyrics: null });
+  render(() => <ResultsView job={current()} onReset={vi.fn()} />);
+  expect(screen.getByRole("region", { name: "Lyrics transcript" })).toBeVisible();
+  setCurrent({ ...combined, pitch: null });
   fireEvent.change(screen.getByRole("combobox", { name: "Pitched lyrics vocal stem" }), { target: { value: "backing" } });
-  expect(text.textContent).toBe(job.pitched_lyrics![1].text);
-  expect(select).not.toHaveBeenCalled();
+  setCurrent(combined);
+  const karaoke = screen.getByRole("region", { name: "Karaoke with pitches" });
+  const pitched = screen.getByRole("region", { name: "Lyrics with pitches" });
+  const lyrics = screen.getByRole("region", { name: "Lyrics transcript" });
+  expect(karaoke.compareDocumentPosition(pitched) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(pitched.compareDocumentPosition(lyrics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Pitched lyrics vocal stem" })).toHaveValue("backing");
+  expect(lyrics.compareDocumentPosition(screen.getByRole("link", { name: "Download original" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it.each(["karaoke", "original"] as const)("opens a compact history entry into ordered results and stops %s audio on close", (player) => {
+  const combined = { ...job, options: { ...job.options, extract_lyrics: true, detect_pitch: true } };
+  const other = { ...job, id: 10, title: "Another song" };
+  const [jobs, setJobs] = createSignal<JobDTO[]>([combined, other]);
+  const [selected, setSelected] = createSignal<JobDTO | null>(null);
+  render(() => <>
+    <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
+    <HistoryView jobs={jobs()} onSelect={setSelected} onRetried={vi.fn()} />
+  </>);
+  expect(screen.queryByText("not the pitched renderer")).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Aligned pitch and lyric text" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "View Karaoke with pitches" }));
+  const karaoke = screen.getByRole("region", { name: "Karaoke with pitches" });
+  const pitched = screen.getByRole("region", { name: "Lyrics with pitches" });
+  const lyrics = screen.getByRole("region", { name: "Lyrics transcript" });
+  expect(karaoke.compareDocumentPosition(pitched) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(pitched.compareDocumentPosition(lyrics) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByLabelText("Timestamped lyrics")).toHaveTextContent("not the pitched renderer");
+  fireEvent.change(screen.getByRole("combobox", { name: "Pitched lyrics vocal stem" }), { target: { value: "backing" } });
+  setJobs([combined, { ...other, title: "Updated other song" }]);
+  expect(screen.getByRole("combobox", { name: "Pitched lyrics vocal stem" })).toHaveValue("backing");
+  const audio = player === "karaoke"
+    ? karaoke.querySelector<HTMLAudioElement>("audio:not([hidden])")!
+    : screen.getByRole("link", { name: "Download original" }).parentElement!.querySelector<HTMLAudioElement>("audio")!;
+  Object.defineProperty(audio, "paused", { configurable: true, value: false });
+  const pause = vi.spyOn(audio, "pause");
+  fireEvent.play(audio);
+  fireEvent.click(screen.getByRole("button", { name: "Start another job" }));
+  expect(pause).toHaveBeenCalled();
+  expect(screen.queryByRole("region", { name: "Karaoke with pitches" })).not.toBeInTheDocument();
+  expect(screen.queryByText("not the pitched renderer")).not.toBeInTheDocument();
 });

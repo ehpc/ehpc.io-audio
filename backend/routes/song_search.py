@@ -66,6 +66,7 @@ async def start_search(
             search_id,
             session_id,
             query_key,
+            activity_query=body.query,
             result=result.model_dump(),
             successful_at=cached["successful_at"],
         )
@@ -77,6 +78,7 @@ async def start_search(
             session_id,
             query_key,
             pending_query=body.query,
+            activity_query=body.query,
         )
     except ValueError as exc:
         raise HTTPException(429, str(exc)) from None

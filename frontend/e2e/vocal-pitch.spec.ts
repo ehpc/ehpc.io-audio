@@ -51,7 +51,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   expect(job!.transcript!.reference).not.toBeNull();
   expect(job!.transcript!.words![0].start_s / 1.25).toBeCloseTo(analysis.words[0].start_s, 6);
   expect(job!.manifest!.map(entry => entry.label)).toEqual(['song', 'vocals', 'lead', 'backing', 'instruments', 'drums', 'bass', 'other-instruments', 'drums-vocals']);
-  const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+  const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(view).toBeVisible();
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[0].notes.length);
   await expect(view.locator('.pitch-note text').first()).toHaveText(analysis.tracks[0].notes[0].note);
@@ -110,7 +110,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   const mobile = await browser.newContext({ storageState, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
   const mobilePage = await mobile.newPage();
   await mobilePage.goto(process.env.E2E_BASE_URL!);
-  const mobileView = mobilePage.getByLabel('Vocal pitch analysis', { exact: true });
+  const mobileView = mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(mobileView).toBeVisible();
   // Compare against the configured device width, not an overflow-expanded innerWidth.
   expect(await mobilePage.evaluate(() => window.innerWidth)).toBe(mobilePage.viewportSize()!.width);
@@ -147,8 +147,8 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobilePage.viewportSize()!.width);
   await mobileView.screenshot({ path: info.outputPath('pitch-mobile-short-note-zoom.png') });
   await mobilePage.reload();
-  await expect(mobilePage.getByLabel('Vocal pitch analysis', { exact: true })).toBeVisible();
-  await expect(mobilePage.getByRole('button', { name: 'View vocal pitch timeline', exact: true })).toBeVisible();
+  await expect(mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true })).toBeVisible();
+  await expect(mobilePage.getByRole('button', { name: 'View Karaoke with pitches', exact: true })).toBeVisible();
   const foreign = await browser.newContext();
   await authenticateOutsider(foreign);
   const outsider = await foreign.newPage();
@@ -198,7 +198,7 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   expect(job!.pitch!.tracks[0].notes.some(note => note.start_s < 4.5 && note.end_s > 2.5)).toBe(true);
   expect(job!.pitch!.word_alignment).toBeNull();
   await page.reload();
-  const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+  const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' })).toHaveAttribute('aria-pressed', 'true');
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
   expect((await page.request.get(`/api/jobs/${id}/results/drums`)).status()).toBe(404);
@@ -248,7 +248,7 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   ));
   expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
   await page.reload();
-  const recoveredView = page.getByLabel('Vocal pitch analysis', { exact: true });
+  const recoveredView = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(recoveredView).toBeVisible();
   await expect(recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true })).toBeVisible();
 

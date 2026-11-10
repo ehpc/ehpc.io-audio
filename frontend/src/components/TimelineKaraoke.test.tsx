@@ -309,7 +309,7 @@ describe("TimelineKaraoke reactive reader", () => {
     render(() => <TimelineKaraoke job={source} position={4.5} notes={notes()} />);
     const current = screen.getByRole("group", { name: "Current lyrics" });
     expect(within(current).getByText("C4 D4")).toBeVisible();
-    expect(within(current).getByText("go", { exact: true }).parentElement).toContainElement(within(current).getByText("C4 D4"));
+    expect(within(current).getByText("go", { exact: true }).closest(".timeline-karaoke-cell")).toContainElement(within(current).getByText("C4 D4"));
     setNotes([{ ...note, note: "G4" }]);
     expect(within(current).getByText("G4")).toBeVisible();
     expect(within(current).queryByText("C4 D4")).not.toBeInTheDocument();
@@ -318,6 +318,35 @@ describe("TimelineKaraoke reactive reader", () => {
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(within(current).queryByText("G4")).not.toBeInTheDocument();
     expect(within(current).getByText("go", { exact: true })).toBeVisible();
+  });
+
+  it("keeps repeated-word pitch sequences with their own occurrence through promotion and toggling", () => {
+    const source = job();
+    source.pitch!.words = [word("go", 4, 5), word("Go", 8, 9)];
+    const base = { start_s: 4, end_s: 5, midi: 61, frequency_hz: 277.2, cents: 0, confidence: 0.9 };
+    const notes = [
+      { ...base, note: "C#4", word_indices: [0] },
+      { ...base, note: "D#4", word_indices: [0] },
+      { ...base, note: "F#5", word_indices: [1] },
+    ];
+    const [position, setPosition] = createSignal(4.5);
+    render(() => <TimelineKaraoke job={source} position={position()} notes={notes} playing />);
+    const current = screen.getByRole("group", { name: "Current lyrics" });
+    const next = screen.getByRole("group", { name: "Next lyrics" });
+    expect(within(current).getByRole("group", { name: "Pitches for go: C#4 D#4" }).parentElement)
+      .toContainElement(within(current).getByText("go", { exact: true }));
+    expect(within(current).getByText("go", { exact: true }).parentElement).toHaveTextContent(/^go—$/);
+    expect(within(next).getByRole("group", { name: "Pitches for Go: F#5" }).parentElement)
+      .toContainElement(within(next).getByText("Go", { exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+    expect(within(current).queryByRole("group", { name: /Pitches for/ })).not.toBeInTheDocument();
+    expect(within(next).queryByRole("group", { name: /Pitches for/ })).not.toBeInTheDocument();
+    setPosition(8.5);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toBe(next);
+    expect(within(next).getByText("Go", { exact: true })).toHaveAttribute("aria-current", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+    expect(within(next).getByRole("group", { name: "Pitches for Go: F#5" })).toBeVisible();
+    expect(within(next).queryByRole("group", { name: /C#4/ })).not.toBeInTheDocument();
   });
 
   it("promotes the existing next row on adjacent playback but not by a seek", () => {

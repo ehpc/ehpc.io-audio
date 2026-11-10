@@ -105,6 +105,10 @@ for (const mobile of [false, true]) {
         await page.screenshot({ path: info.outputPath('mp3-results.png'), fullPage: true });
         proof.stage = 'history';
         await page.reload();
+        const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+        const card = history.locator('.rounded-lg').filter({ hasText: 'native-upload.MP3' }).first();
+        await expect(card.locator(`a[href='/api/jobs/${id}/original']`)).toHaveCount(0);
+        await card.getByRole('button', { name: 'View results', exact: true }).click();
         await expect(page.locator(`a[href='/api/jobs/${id}/original']`).first()).toBeVisible();
         proof.historyOriginal = await downloadOriginal();
         await expect(page.getByRole('alert')).toHaveCount(0);

@@ -8,7 +8,8 @@ import type { AlignedWordDTO, JobDTO, ReferenceLineDTO } from '../src/api';
 // decodes/plays real public-domain audio and drives the production media clock.
 const longLine = 'A lighthouse watches over quiet boats while silver clouds drift above the harbor and patient travelers follow the winding shoreline past sleeping gardens and distant windows until the morning carries every tired sailor safely homeward';
 const rapidWords = ['Bright', 'small', 'sparks', 'rise', 'then', 'fall', 'soft', 'rain'];
-const leadPitches = ['C#4', 'D4', 'D#4', 'E4', 'F4', 'F#4', 'G4', 'G#4', 'A4', 'A#4', 'B4', 'C5'];
+const leadPitches = ['C#4', 'D4', 'D#4', 'E4', 'F4', 'F#4', 'G4', 'G#4', 'A4', 'A#4', 'B4', 'C5',
+  'C#5', 'D5', 'D#5', 'E5', 'F5', 'F#5', 'G5', 'G#5', 'A5', 'A#5', 'B5', 'C6'];
 let original: Buffer;
 let transformed: Buffer;
 let transformedPlayback: Buffer;
@@ -72,15 +73,19 @@ function karaokeJob(): JobDTO {
       ],
       reference: { status: 'partial', reason: 'UI fixture', provider: 'fixture', source_url: null, record_id: null,
         artist: null, title: null, album: null, duration_s: null, agreement: null, corrections: [],
-        original_segments: [], original_words: [], lines: [phrase('Before silver after', 3, 9),
+        original_segments: [], original_words: [], lines: [phrase('Before silver, after', 3, 9),
           phrase('Next chorus', 9.5, 12.5), phrase(longLine, 20, 30)] },
     },
     pitch: { version: 1, model: 'UI fixture, no inference', source_duration_s: 45, duration_s: 36,
       pitch_shift_semitones: 1.25, tempo_percent: 125, timestamp_reference: 'output', pitch_reference: 'output',
       word_alignment: 'UI fixture', words: words.map(word => ({ ...word, start_s: word.start_s / 1.25, end_s: word.end_s / 1.25 })),
       tracks: ['lead', 'backing'].map(label => ({ label, notes: label === 'lead'
-        ? leadPitches.map((note, index) => ({ start_s: 4 + index * 0.15, end_s: 4.15 + index * 0.15,
-          midi: 61 + index, frequency_hz: 440 * 2 ** ((61 + index - 69) / 12), confidence: 0.8, note, cents: 0, word_indices: [0] }))
+        ? [...leadPitches.map((note, index) => ({ start_s: 4 + index * 0.08, end_s: 4.08 + index * 0.08,
+          midi: 61 + index, frequency_hz: 440 * 2 ** ((61 + index - 69) / 12), confidence: 0.8, note, cents: 0, word_indices: [0] })),
+          ...['F#4', 'G#4', 'A#4'].map((note, index) => ({ start_s: 9.5 + index * 0.2, end_s: 9.7 + index * 0.2,
+            midi: 66 + index * 2, frequency_hz: 440, confidence: 0.8, note, cents: 0, word_indices: [1] })),
+          ...['C#5', 'D#5', 'F#5'].map((note, index) => ({ start_s: 11 + index * 0.2, end_s: 11.2 + index * 0.2,
+            midi: 73 + index * 2, frequency_hz: 554.4, confidence: 0.8, note, cents: 0, word_indices: [2] }))]
         : [{ start_s: 4, end_s: 6, midi: 64, frequency_hz: 329.6, confidence: 0.8, note: 'E4', cents: 0, word_indices: [0] }] })) },
   };
 }
@@ -108,7 +113,7 @@ async function mountFixture(page: Page) {
     return route.fulfill({ status: 404 });
   });
   await page.goto('/');
-  const view = page.getByLabel('Vocal pitch analysis', { exact: true });
+  const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(view).toBeVisible();
   const player = view.locator('audio:not([hidden])');
   const song = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' });
@@ -187,18 +192,59 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 
       // Original native clock: 5.625s / 1.25 = output4.5, a quarter through silver.
       await seekNative(player, 2.5);
-      await expect.poll(() => lyricText(current)).toBe('Before silver after');
+      await expect.poll(() => lyricText(current)).toBe('Before silver, after');
       await expect.poll(() => lyricText(next)).toBe('Next chorus');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
       await seekNative(player, 5.625);
       const silver = reader.getByText('silver', { exact: true });
-      const cell = silver.locator('..');
+      const cell = silver.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " timeline-karaoke-cell ")]');
       const pitch = cell.getByRole('group', { name: /^Pitches for silver:/ });
       await expect(pitch).toHaveText(leadPitches.join(' '));
-      expect(await pitch.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
-      await pitch.focus();
-      await pitch.press('ArrowRight');
-      await expect.poll(() => pitch.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+      const nextPitch = next.getByRole('group', { name: 'Pitches for Next: F#4 G#4 A#4' });
+      await expect(nextPitch).toBeVisible();
+      const chorusPitch = next.getByRole('group', { name: 'Pitches for chorus: C#5 D#5 F#5' });
+      await expect(chorusPitch).toBeVisible();
+      const [nextNotesBox, chorusNotesBox] = await Promise.all([nextPitch.boundingBox(), chorusPitch.boundingBox()]);
+      expect(nextNotesBox!.x + nextNotesBox!.width).toBeLessThanOrEqual(chorusNotesBox!.x + 1);
+      const layout = await current.evaluate(line => {
+        const cells = [...line.querySelectorAll<HTMLElement>('.timeline-karaoke-cell')];
+        const pitch = line.querySelector<HTMLElement>('.timeline-karaoke-pitches')!;
+        const word = pitch.parentElement!.querySelector<HTMLElement>('.timeline-karaoke-word')!;
+        const node = pitch.firstChild!;
+        const labels = node.textContent!.split(' ');
+        let offset = 0;
+        const notes = labels.map(label => {
+          const range = document.createRange();
+          range.setStart(node, offset);
+          range.setEnd(node, offset + label.length);
+          offset += label.length + 1;
+          return range.getBoundingClientRect().toJSON();
+        });
+        const punctuation = document.createRange();
+        punctuation.selectNodeContents(word.parentElement!);
+        punctuation.setStartAfter(word);
+        return { notes, pitch: pitch.getBoundingClientRect().toJSON(), word: word.getBoundingClientRect().toJSON(),
+          punctuation: punctuation.getBoundingClientRect().toJSON(), cells: cells.map(cell => cell.getBoundingClientRect().toJSON()),
+          viewport: innerWidth, document: document.documentElement.scrollWidth };
+      });
+      expect(layout.notes).toHaveLength(leadPitches.length);
+      expect(layout.document).toBeLessThanOrEqual(layout.viewport);
+      expect(Math.abs(layout.punctuation.left - layout.word.right)).toBeLessThanOrEqual(1);
+      for (const note of layout.notes) {
+        expect(note.left).toBeGreaterThanOrEqual(layout.pitch.left - 1);
+        expect(note.right).toBeLessThanOrEqual(layout.pitch.right + 1);
+        expect(note.bottom).toBeLessThanOrEqual(layout.word.top + 1);
+      }
+      for (let index = 1; index < layout.notes.length; index++) {
+        const previous = layout.notes[index - 1], note = layout.notes[index];
+        expect(note.top >= previous.bottom - 1 || note.left >= previous.right - 1).toBe(true);
+      }
+      for (let index = 1; index < layout.cells.length; index++) {
+        const previous = layout.cells[index - 1], cell = layout.cells[index];
+        expect(cell.top >= previous.bottom - 1 || cell.left >= previous.right - 1).toBe(true);
+      }
+      await reader.screenshot({ path: info.outputPath('crowded-pitches-after.png'), animations: 'disabled' });
+      await info.attach('crowded-pitch-geometry', { body: JSON.stringify(layout), contentType: 'application/json' });
       expect(await player.evaluate(audio => audio.paused)).toBe(true);
       const [pitchBox, wordBox, currentBox, nextBox] = await Promise.all([
         pitch.boundingBox(), silver.boundingBox(), current.boundingBox(), next.boundingBox(),
@@ -260,7 +306,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await info.attach('silver-three-quarter-fill', { body: laterPaint, contentType: 'image/png' });
 
       await seekNative(player, 8.75);
-      await expect.poll(() => lyricText(current)).toBe('Before silver after');
+      await expect.poll(() => lyricText(current)).toBe('Before silver, after');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
       const promoted = await next.elementHandle();
       const transition = await samplePlayback(player, 550);
@@ -298,7 +344,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(geometry.font).toBeGreaterThanOrEqual(16);
       await reader.screenshot({ path: info.outputPath('long-wrapped-karaoke.png'), animations: 'disabled' });
       await reader.focus();
-      await reader.press('End');
+      if (geometry.scrollHeight > geometry.clientHeight) await reader.press('End');
       await expect(reader).toBeFocused();
       await expect.poll(async () => {
         const [word, region] = await Promise.all([

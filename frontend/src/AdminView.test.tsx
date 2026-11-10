@@ -7,6 +7,9 @@ import AdminView from "./AdminView";
 vi.mock("./api", async (original) => ({
   ...await original<typeof api>(),
   adminUsers: vi.fn(),
+  adminUserActivity: vi.fn(),
+  grantInviteSlot: vi.fn(),
+  deleteInvite: vi.fn(),
   updateAdminUser: vi.fn(),
   revokeUserSessions: vi.fn(),
 }));
@@ -19,6 +22,11 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.adminUsers).mockResolvedValue([user]);
   vi.mocked(api.updateAdminUser).mockResolvedValue(user);
+  vi.mocked(api.grantInviteSlot).mockResolvedValue({ ...user, invite_limit: 3 });
+  vi.mocked(api.deleteInvite).mockResolvedValue(undefined);
+  vi.mocked(api.adminUserActivity).mockResolvedValue({
+    registered_at: null, last_login_at: null, last_activity_at: null, invite_used: 0, invites: [], jobs: [], searches: [],
+  });
   vi.mocked(api.revokeUserSessions).mockResolvedValue(undefined);
 });
 
@@ -85,5 +93,92 @@ describe("AdminView", () => {
     expect(screen.getByRole("button", { name: "Disable" })).toBeInTheDocument();
     expect(screen.queryByText("Account disabled.")).not.toBeInTheDocument();
     confirm.mockRestore();
+  });
+
+  it("grants a slot using the server result, with busy and error states", async () => {
+    const { promise, resolve: resolveGrant } = Promise.withResolvers<api.AdminUser>();
+    vi.mocked(api.grantInviteSlot).mockReturnValueOnce(promise)
+      .mockRejectedValueOnce(new Error("grant denied"));
+    render(() => <AdminView />);
+    await screen.findByText("person@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "Grant +1 invite" }));
+    expect(api.grantInviteSlot).toHaveBeenCalledWith("user-1");
+    expect(screen.getByRole("button", { name: "Grant +1 invite" })).toBeDisabled();
+    resolveGrant({ ...user, invite_limit: 7 });
+    expect(await screen.findByText("One invite slot granted.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Invite limit")).toHaveValue(7);
+    await userEvent.click(screen.getByRole("button", { name: "Grant +1 invite" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("grant denied");
+    expect(screen.getByLabelText("Invite limit")).toHaveValue(7);
+  });
+
+  it("shows an unlimited administrator without quota controls", async () => {
+    vi.mocked(api.adminUsers).mockResolvedValue([{ ...user, is_admin: true, invite_limit: null }]);
+    render(() => <AdminView />);
+    expect(await screen.findByText("Invite limit: Unlimited")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Grant +1 invite" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Invite limit")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disable" })).toBeInTheDocument();
+  });
+
+  it("loads real activity and only allows pending invitations to be revoked", async () => {
+    const activity: api.AdminUserActivity = {
+      registered_at: null, last_login_at: null, last_activity_at: 123, invite_used: 52,
+      invites: [
+        { id: "pending", status: "pending", recipient_email: "pending@example.com", created_at: 100, activated_at: null },
+        { id: "used", status: "activated", recipient_email: "used@example.com", created_at: 101, activated_at: 102 },
+      ],
+      jobs: [{ id: 42, title: "Song title", status: "done", created_at: 100, started_at: null, finished_at: 102 }],
+      searches: [{ id: "search-1", query: "search terms", status: "completed", created_at: 101 }],
+    };
+    vi.mocked(api.adminUserActivity).mockResolvedValueOnce(activity).mockResolvedValueOnce({ ...activity, invite_used: 51, invites: [] });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    render(() => <AdminView />);
+    await screen.findByText("person@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "View activity" }));
+    expect(await screen.findByText("Last login: Unknown")).toBeInTheDocument();
+    expect(screen.getByText("Invite slots used: 52 (pending and activated)")).toBeInTheDocument();
+    expect(screen.getByText("Registered: Unknown")).toBeInTheDocument();
+    expect(screen.getByText(/Job #42/)).toHaveTextContent("Song title");
+    expect(screen.getByText(/Search search-1/)).toHaveTextContent("search terms");
+    expect(screen.getByText(/Job #42/)).toHaveTextContent("Started: Unknown");
+    expect(screen.getByText(/Search search-1/)).toHaveTextContent("completed");
+    expect(screen.getAllByRole("button", { name: "Withdraw unused invitation" })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Withdraw unused invitation" }));
+    expect(api.deleteInvite).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Withdraw unused invitation" }));
+    expect(api.deleteInvite).toHaveBeenCalledWith("pending");
+    expect(await screen.findByText("No invites.")).toBeInTheDocument();
+    expect(api.adminUserActivity).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
+  it("reports revocation errors without removing the invitation", async () => {
+    vi.mocked(api.adminUserActivity).mockResolvedValue({
+      registered_at: null, last_login_at: null, last_activity_at: null, invite_used: 1,
+      invites: [{ id: "pending", status: "pending", recipient_email: null, created_at: 100, activated_at: null }],
+      jobs: [], searches: [],
+    });
+    vi.mocked(api.deleteInvite).mockRejectedValueOnce(new Error("revoke denied"));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(() => <AdminView />);
+    await screen.findByText("person@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "View activity" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Withdraw unused invitation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("revoke denied");
+    expect(screen.getByRole("button", { name: "Withdraw unused invitation" })).toBeEnabled();
+    expect(api.adminUserActivity).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  it("allows retrying a failed activity load", async () => {
+    vi.mocked(api.adminUserActivity).mockRejectedValueOnce(new Error("activity denied"));
+    render(() => <AdminView />);
+    await screen.findByText("person@example.com");
+    await userEvent.click(screen.getByRole("button", { name: "View activity" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("activity denied");
+    await userEvent.click(screen.getByRole("button", { name: "Retry activity" }));
+    expect(await screen.findByText("No jobs.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

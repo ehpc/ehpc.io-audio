@@ -42,7 +42,11 @@ def main() -> None:
         if not auth_store.revoke_invite(args.invite_id):
             parser.error("Invitation not found, revoked, or activated")
     elif args.command == "invite-limit":
-        if not auth_store.update_user(args.user_id, invite_limit=args.limit):
+        try:
+            user = auth_store.update_user(args.user_id, invite_limit=args.limit)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if not user:
             parser.error("Account not found")
     elif args.command == "disable":
         if not auth_store.update_user(args.user_id, disabled=True):

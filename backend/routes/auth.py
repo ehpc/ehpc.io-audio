@@ -170,9 +170,8 @@ async def issue(request: Request) -> dict:
 
 @router.delete("/auth/invites/{invite_id}", status_code=204)
 async def revoke(invite_id: str, request: Request) -> Response:
-    if not await asyncio.to_thread(
-        auth_store.revoke_invite, invite_id, principal(request).id
-    ):
+    admin(request)
+    if not await asyncio.to_thread(auth_store.revoke_invite, invite_id):
         raise HTTPException(404, "Invitation not found or already activated")
     return Response(status_code=204)
 
@@ -188,9 +187,12 @@ async def patch_user(
     user_id: str, body: UserUpdate, request: Request
 ) -> auth_store.UserDTO:
     admin(request)
-    user = await asyncio.to_thread(
-        auth_store.update_user, user_id, body.invite_limit, body.disabled
-    )
+    try:
+        user = await asyncio.to_thread(
+            auth_store.update_user, user_id, body.invite_limit, body.disabled
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
     if user is None:
         raise HTTPException(404, "Account not found")
     return user
@@ -202,3 +204,24 @@ async def revoke_sessions(user_id: str, request: Request) -> Response:
     if not await asyncio.to_thread(auth_store.revoke_user_sessions, user_id):
         raise HTTPException(404, "Account not found")
     return Response(status_code=204)
+
+
+@router.post("/admin/users/{user_id}/invite-slot")
+async def grant_slot(user_id: str, request: Request) -> auth_store.UserDTO:
+    admin(request)
+    try:
+        user = await asyncio.to_thread(auth_store.grant_invite_slot, user_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if user is None:
+        raise HTTPException(404, "Account not found")
+    return user
+
+
+@router.get("/admin/users/{user_id}/activity")
+async def activity_for_user(user_id: str, request: Request) -> auth_store.UserActivity:
+    admin(request)
+    result = await asyncio.to_thread(auth_store.user_activity, user_id)
+    if result is None:
+        raise HTTPException(404, "Account not found")
+    return result

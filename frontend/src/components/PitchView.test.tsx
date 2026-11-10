@@ -39,7 +39,8 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function scrollPlayer(source = job()) {
   const rendered = render(() => <PitchView job={source} />);
-  const audio = document.querySelector<HTMLAudioElement>("audio")!;
+  const audio = source.has_original && source.manifest?.some(item => item.label === "vocals")
+    ? chooseBackground("Just vocals") : document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
   const viewport = screen.getByRole("region", { name: "Scrollable vocal melody timeline" });
   const state = { paused: false };
   Object.defineProperties(audio, {
@@ -442,7 +443,7 @@ it("preserves numeric lyrics without appended counts while selecting every assoc
   expect(word).toHaveTextContent(/^99$/);
   expect(word.getAttribute("aria-label")?.match(/\d+/g)).toEqual(["99"]);
   fireEvent.click(word);
-  expect(document.querySelector("audio")!.currentTime).toBe(1);
+  expect(document.querySelector("audio")!.currentTime).toBe(1.25);
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
   expect(document.querySelector(".pitch-selection")!.textContent?.match(/\d+/g)).toEqual(["99"]);
   expect(screen.getByRole("tooltip")).toHaveTextContent(/^99$/);
@@ -461,12 +462,26 @@ it("updates karaoke pitches and piano highlights from the selected vocal track, 
   expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
 });
 
+it("keeps all vocal tracks' piano range while highlighting only the selected track", () => {
+  const source = job();
+  const low = { ...pitch.tracks[0].notes[0], midi: 36, note: "C2", frequency_hz: 65.4, word_indices: [] };
+  source.pitch = { ...pitch, tracks: [pitch.tracks[0], { label: "backing", notes: [low] }] };
+  const player = keyboardPlayer(source);
+  player.time(1.5);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  expect(screen.getByRole("button", { name: "Piano C2" })).toHaveAttribute("aria-pressed", "false");
+  expect(screen.getByRole("button", { name: "Piano C#4" })).toHaveAttribute("aria-pressed", "true");
+  fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "backing" } });
+  expect(screen.getByRole("button", { name: "Piano C2" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Piano C#4" })).toHaveAttribute("aria-pressed", "false");
+});
+
 it.each([["instruments", /Instruments/], ["drums", /Drums only/], ["drums-vocals", /Drums \+ Vocals/]])(
   "plays generated %s on the output clock without changing the analyzed voice", (label, name) => {
     const source = job();
     source.manifest!.push({ label: label as string, filename: `${label}.mp3`, download_name: `${label}.mp3`, duration_s: 70, size_bytes: 100 });
     render(() => <PitchView job={source} />);
-    const song = chooseBackground("Full song");
+    const song = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
     song.volume = 0.4;
     song.currentTime = 12.5;
     fireEvent.timeUpdate(song);
@@ -506,7 +521,7 @@ it("uses detected time/pitch geometry, linked melisma, zoom and real player seek
   expect(lowY - highY).toBe(48);
   fireEvent.click(notes[0]);
   const audio = document.querySelector("audio")!;
-  expect(audio.currentTime).toBe(1);
+  expect(audio.currentTime).toBe(1.25);
   expect(document.querySelector(".pitch-selection")).toHaveTextContent("+25 cents");
   fireEvent.click(screen.getByRole("button", { name: /^world,/ }));
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
@@ -620,7 +635,7 @@ it("retains unversioned word timing interactions without inventing a recognizer"
   expect(screen.getByText(/Recognition model unspecified/)).toBeVisible();
   expect(screen.getByText(/alignment model is unspecified/)).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: /^world,/ }));
-  expect(document.querySelector("audio")!.currentTime).toBe(1);
+  expect(document.querySelector("audio")!.currentTime).toBe(1.25);
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);
   expect(source.pitch!.words[0]).toEqual(pitch.words[0]);
 });
@@ -639,15 +654,15 @@ it("seeks from the ruler in output time across zoom and horizontal scroll, clamp
     clientX: -600 + 54 + 13.25 * 200,
   });
   const audio = document.querySelector("audio")!;
-  expect(audio.currentTime).toBeCloseTo(13.25);
+  expect(audio.currentTime).toBeCloseTo(16.5625);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "2650");
   fireEvent.click(ruler, { clientX: 30 });
-  expect(audio.currentTime).toBeCloseTo(13.25);
+  expect(audio.currentTime).toBeCloseTo(16.5625);
   fireEvent.click(ruler, { clientX: 100_000 });
-  expect(audio.currentTime).toBe(70);
+  expect(audio.currentTime).toBe(87.5);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "14000");
   fireEvent.keyDown(ruler, { key: "ArrowLeft" });
-  expect(audio.currentTime).toBe(69);
+  expect(audio.currentTime).toBe(86.25);
   expect(ruler).toHaveAttribute("aria-valuenow", "69");
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "13800");
 });
@@ -672,6 +687,29 @@ it("switches between full-song and private vocals while preserving output time i
   expect(song.currentTime).toBe(6.25);
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "500");
   expect(song.paused).toBe(true);
+});
+
+it("starts on the available full song and preserves a manually chosen backing across job updates", () => {
+  const [source, setSource] = createSignal(job());
+  render(() => <PitchView job={source()} />);
+  expect(screen.getByRole("button", { name: "Full song" })).toHaveAttribute("aria-pressed", "true");
+  const song = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
+  song.currentTime = 6.25;
+  fireEvent.timeUpdate(song);
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "5");
+  const vocals = chooseBackground("Just vocals");
+  expect(vocals.currentTime).toBe(5);
+  setSource({ ...source(), title: "Updated job" });
+  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  expect(document.querySelector("audio:not([hidden])")).toBe(vocals);
+});
+
+it("uses a real available backing when the full song is unavailable", () => {
+  const source = { ...job(), has_original: false, has_pitch_vocals: false,
+    manifest: [{ label: "drums-vocals", filename: "mix.mp3", download_name: "mix.mp3", duration_s: 70, size_bytes: 1 }] };
+  render(() => <PitchView job={source} />);
+  expect(screen.getByRole("button", { name: "Full song" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Drums \+ Vocals/ })).toHaveAttribute("aria-pressed", "true");
 });
 it("resets recovered reference and cursor when a different pitch job is mounted into the same view", () => {
   const first = job();

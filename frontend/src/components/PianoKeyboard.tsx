@@ -1,15 +1,16 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type Component } from "solid-js";
 import type { PitchNoteDTO } from "~/api";
 import { createPianoVoice, type PianoVoice } from "~/lib/pianoAudio";
 import { noteName } from "~/lib/pitchNotes";
+import { pianoLayout, PIANO_BLACK_WIDTH, PIANO_WHITE_WIDTH, type PianoLayout } from "~/lib/pianoLayout";
 
 interface PianoKeyboardProps {
   notes: PitchNoteDTO[];
+  rangeNotes: PitchNoteDTO[];
   position: number;
   playing: boolean;
 }
 
-const blackPitchClasses = new Set([1, 3, 6, 8, 10]);
 
 const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
   const [held, setHeld] = createSignal<Set<number>>(new Set());
@@ -22,27 +23,15 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
   let disposed = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let viewport!: HTMLDivElement;
-  const keys = createMemo(() => {
-    let low = 127;
-    let high = 0;
-    let found = false;
-    for (const note of props.notes) {
-      const midi = Math.round(note.midi);
-      if (!Number.isFinite(midi) || midi < 0 || midi > 127) continue;
-      found = true;
-      low = Math.min(low, midi);
-      high = Math.max(high, midi);
-    }
-    const first = found ? Math.min(108, Math.floor(low / 12) * 12) : 60;
-    const last = found ? Math.min(127, Math.max(first + 23, Math.floor(high / 12) * 12 + 11)) : 83;
-    let white = 0;
-    return Array.from({ length: last - first + 1 }, (_, i) => {
-      const midi = first + i;
-      const black = blackPitchClasses.has(midi % 12);
-      const left = black ? white * 40 - 13 : white++ * 40;
-      return { midi, black, left };
-    });
-  });
+  const [viewportWidth, setViewportWidth] = createSignal(560);
+  let pendingWidth: number | undefined;
+  // Preserve the rendered keys and their positions throughout a manual hold,
+  // even if the viewport or the song analysis changes before release.
+  const layout = createMemo<PianoLayout>(previous => held().size ? previous : pianoLayout(props.rangeNotes, viewportWidth()), pianoLayout(props.rangeNotes, 560));
+  createEffect(on([layout, viewportWidth], ([current, width], previous) => {
+    if (!viewport || tokens.size || (previous && width === previous[1] && current.left === previous[0].left && current.width === previous[0].width && current.center === previous[0].center)) return;
+    viewport.scrollLeft = Math.max(0, current.center - viewport.clientWidth / 2);
+  }));
   const active = createMemo(() => {
     if (!props.playing) return null;
     const notes = props.notes;
@@ -59,10 +48,12 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
   createEffect(() => {
     const midi = active();
     if (midi === null || held().size || !viewport) return;
-    const key = keys().find(item => item.midi === midi);
+    const current = layout();
+    const key = current.keys.find(item => item.midi === midi);
     if (!key) return;
-    const right = key.left + (key.black ? 26 : 40);
-    if (key.left < viewport.scrollLeft) viewport.scrollLeft = key.left;
+    const left = key.left - current.left;
+    const right = left + (key.black ? PIANO_BLACK_WIDTH : PIANO_WHITE_WIDTH);
+    if (left < viewport.scrollLeft) viewport.scrollLeft = left;
     else if (right > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = right - viewport.clientWidth;
   });
   const scheduleIdle = () => {
@@ -82,6 +73,7 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
       voices.delete(midi);
     }
     if (!tokens.size) scheduleIdle();
+    if (!tokens.size && pendingWidth !== undefined) { setViewportWidth(pendingWidth); pendingWidth = undefined; }
     refreshHeld();
   };
   const releaseAll = () => {
@@ -90,6 +82,7 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
     for (const voice of voices.values()) voice.release();
     voices.clear();
     scheduleIdle();
+    if (pendingWidth !== undefined) { setViewportWidth(pendingWidth); pendingWidth = undefined; }
     refreshHeld();
   };
   const press = (token: string, midi: number) => {
@@ -125,6 +118,15 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
   };
   const visibility = () => { if (document.hidden) releaseAll(); };
   onMount(() => {
+    const resize = (width: number) => {
+      if (width <= 0) return;
+      if (tokens.size) pendingWidth = width;
+      else setViewportWidth(width);
+    };
+    resize(viewport.clientWidth);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(entries => resize(entries[0].contentRect.width));
+    observer?.observe(viewport);
+    onCleanup(() => observer?.disconnect());
     window.addEventListener("blur", releaseAll);
     document.addEventListener("visibilitychange", visibility);
   });
@@ -140,10 +142,10 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
   return <section class="piano-keyboard" aria-label="Piano keyboard">
     <p>Play the piano · detected notes light up during playback</p>
     <div class="piano-scroll" ref={viewport}>
-      <div class="piano-keys" style={{ width: `${keys().filter(key => !key.black).length * 40}px` }}>
-        <For each={keys()}>{key => <button type="button"
+      <div class="piano-keys" style={{ width: `${layout().width}px`, "margin-inline": "auto", "--piano-white-width": `${PIANO_WHITE_WIDTH}px`, "--piano-black-width": `${PIANO_BLACK_WIDTH}px` }}>
+        <For each={layout().keys}>{key => <button type="button"
           classList={{ "piano-key": true, "piano-key-black": key.black, "piano-key-white": !key.black, "piano-key-active": held().has(key.midi) || active() === key.midi }}
-          style={{ left: `${key.left}px` }} aria-label={`Piano ${noteName(key.midi)}`}
+          style={{ left: `${key.left - layout().left}px` }} aria-label={`Piano ${noteName(key.midi)}`}
           aria-pressed={held().has(key.midi) || active() === key.midi}
           onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); press(`p${event.pointerId}`, key.midi); }}
           onPointerUp={event => release(`p${event.pointerId}`)}

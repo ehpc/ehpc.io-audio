@@ -327,11 +327,12 @@
 .timeline-karaoke { width: 100%; min-width: 0; box-sizing: border-box; height: 11em; padding: 10px; overflow-y: auto; overflow-x: hidden; font-size: clamp(1rem, 2.5vw, 1.25rem); border-radius: 6px; background: hsl(var(--muted)); }
 .timeline-karaoke:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
 .timeline-karaoke-line { margin: 0; min-height: 4em; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
-.timeline-karaoke-next { position: sticky; bottom: -10px; max-height: 4.8em; overflow: hidden; padding-top: 6px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); border-top: 1px solid hsl(var(--border)); }
-.timeline-karaoke-cell { display: inline-grid; position: relative; padding-top: 1.1em; max-width: 100%; vertical-align: bottom; white-space: normal; overflow-wrap: anywhere; }
-.timeline-karaoke-pitches { position: absolute; top: 0; left: 0; right: 0; overflow-x: auto; white-space: nowrap; color: hsl(var(--primary)); font-size: .7em; line-height: 1.35; font-weight: 600; }
+.timeline-karaoke-next { position: sticky; bottom: -10px; max-height: 4.8em; overflow-y: auto; padding-top: 6px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); border-top: 1px solid hsl(var(--border)); }
+.timeline-karaoke-cell { display: inline-grid; grid-template-columns: minmax(0, 1fr); width: max-content; max-width: 100%; vertical-align: bottom; white-space: normal; overflow-wrap: anywhere; }
+.timeline-karaoke-pitches { white-space: normal; overflow-wrap: normal; color: hsl(var(--primary)); font-size: .7em; line-height: 1.35; font-weight: 600; }
 .timeline-karaoke-pitches:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }
 .timeline-karaoke-hint, .timeline-karaoke-word[data-state="untimed"] { color: hsl(var(--muted-foreground)); }
+.timeline-karaoke-lyric { justify-self: start; max-width: 100%; }
 .timeline-karaoke-word { display: inline; }
 .timeline-karaoke-word[data-state="complete"] { color: hsl(var(--primary)); }
 .timeline-karaoke-word[data-state="active"] { background: linear-gradient(to right, hsl(var(--primary)) var(--karaoke-progress), hsl(var(--foreground)) var(--karaoke-progress)); background-clip: text; -webkit-background-clip: text; color: transparent; text-decoration: underline; text-decoration-color: hsl(var(--primary)); text-underline-offset: .2em; }
@@ -343,8 +344,8 @@
 .piano-keys { position: relative; height: 112px; }
 .piano-key { position: absolute; padding: 0; touch-action: pan-x; }
 .piano-key:focus-visible { outline: 3px solid hsl(var(--primary)); outline-offset: -3px; z-index: 2; }
-.piano-key-white { width: 40px; height: 110px; background: #fff; border: 1px solid #777; color: #222; display: flex; align-items: end; justify-content: center; }
-.piano-key-black { width: 26px; height: 70px; background: #222; border: 1px solid #111; color: white; z-index: 1; }
+.piano-key-white { width: var(--piano-white-width); height: 110px; background: #fff; border: 1px solid #777; color: #222; display: flex; align-items: end; justify-content: center; }
+.piano-key-black { width: var(--piano-black-width); height: 70px; background: #222; border: 1px solid #111; color: white; z-index: 1; }
 .piano-key-active { background: #8dc9ff; color: #142332; }
 .piano-error { color: hsl(var(--destructive)); overflow-wrap: anywhere; }
 @media (max-width: 700px) {

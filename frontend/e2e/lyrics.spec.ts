@@ -120,19 +120,18 @@ test('real speech lyrics render and download in Results and History on the origi
 
   await page.reload();
   const history = page.locator('section').filter({ has: page.getByRole('heading', { name: 'History', exact: true }) });
-  const historyCard = (id: number) => history.locator('.rounded-lg').filter({ has: page.locator(`a[href="/api/jobs/${id}/original"]`) });
-  const lyricsOnlyHistoryTranscript = historyCard(lyricsOnlyId).getByLabel('Lyrics transcript');
-  const transformedHistoryTranscript = historyCard(transformedId).getByLabel('Lyrics transcript');
-  await expect(lyricsOnlyHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
-  await expect(transformedHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
-  await lyricsOnlyHistoryTranscript.getByText('View lyrics', { exact: true }).click();
-  await expect(lyricsOnlyHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toBeVisible();
-  await expect(lyricsOnlyHistoryTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
-  await expect(historyCard(transformedId).locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
-  const lyricsOnlyHistoryLink = history.locator(`a[href="/api/jobs/${lyricsOnlyId}/lyrics/download"]`);
-  await expect(lyricsOnlyHistoryLink).toHaveCount(1);
+  const historyCard = (tempo: number) => history.locator('.rounded-lg').filter({ hasText: 'jfk' }).filter({ hasText: new RegExp(`Tempo:\\s*${tempo}% of original`) }).first();
+  await expect(historyCard(100).getByLabel('Lyrics transcript')).toHaveCount(0);
+  await expect(historyCard(120).getByLabel('Lyrics transcript')).toHaveCount(0);
+  await expect(historyCard(120).locator('a[href*="/results/"]')).toHaveCount(0);
+  await historyCard(120).getByRole('button', { name: 'View results', exact: true }).click();
+  await expect(page.locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
+  await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
+  await historyCard(100).getByRole('button', { name: 'View results', exact: true }).click();
+  await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toBeVisible();
+  await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
   const historyDownloadPromise = page.waitForEvent('download');
-  await lyricsOnlyHistoryLink.click();
+  await resultTranscript.getByRole('link', { name: 'Download timestamped TXT' }).click();
   const historyDownload = await historyDownloadPromise;
   expect(historyDownload.suggestedFilename()).toBe('jfk - lyrics.txt');
   const historyDownloadPath = await historyDownload.path();
@@ -168,6 +167,7 @@ test('real speech lyrics render and download in Results and History on the origi
     },
   }, null, 2), 'utf8');
   await info.attach('lyrics-proof', { path: proofPath, contentType: 'application/json' });
-  await expect(historyCard(transformedId).locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
+  await historyCard(120).getByRole('button', { name: 'View results', exact: true }).click();
+  await expect(page.locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
 });

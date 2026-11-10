@@ -1,12 +1,25 @@
 # Invite-only access: implementation and deployment
 
-The invite-only email-OTP implementation and configuration are implemented and
-tested locally. **They are not deployed or activated.** Existing production
-remains on its previous release. The already-active send-only mail service is separate
-from the application deployment. Drawing a symbol and passkeys are not part of
-this design.
+Invite-only access is deployed at `audio.ehpc.io` from application commit
+`c527bb43509759c217e62e07311e5a393f9ce9cf`, image digest
+`sha256:c72d57a6b3762490cb8027ca51eff2e765223c84642175e8aa84cb20f27fbcef`,
+and VPS configuration commit `f3e36c2ef36ff4ca3a6367ede3623127a2ccbf34`.
+Drawing a symbol and passkeys are not part of this design.
 
 ## Account and invitation behavior
+
+**Source changes awaiting deployment:** administrators have unlimited invitation
+slots (`invite_limit: null`); regular accounts retain their configurable finite
+allowance, defaulting to three. Only administrators may revoke unused invitations
+or disable accounts and revoke sessions. Revoking an invitation never disables
+an activated account; activated invitations cannot be revoked. Administrators can
+grant a regular user one additional slot atomically. The admin-only People view
+reports invitation usage and recent jobs and song searches, including available
+titles and queries, plus registration, last sign-in and deliberate-activity times.
+Unknown historical values remain unknown; existing session activity is migrated
+from its recorded timestamp, not from migration time. These new policy and
+activity changes are **not yet deployed**; the deployment record above describes
+the earlier implementation.
 
 Registration requires a valid single-use invitation and email verification;
 login requires a registered email and OTP. OTPs expire after ten minutes and
@@ -16,9 +29,10 @@ verification hashes are stored. The configured administrator is
 `ehpc@ehpc.io`; bootstrap uses an operator-created seed invitation followed by
 the same email OTP flow, never first-visitor-wins.
 
-Each member defaults to three invitation slots. Pending and activated invites
-both occupy a slot; revoking a pending invite frees its slot. Lowering a limit
-does not delete existing accounts or invites. Disabling an issuer prevents its
+Regular accounts default to three invitation slots. Pending and activated invites
+both occupy a slot; only an administrator may withdraw a pending invite, freeing
+its slot. Lowering a limit does not delete existing accounts or invites.
+Disabling an issuer prevents its
 pending invites from starting **or completing** signup; already activated
 members are unaffected. A disabled account cannot use its sessions. Enabling
 an account does not revive revoked sessions; the user must log in again.
@@ -90,12 +104,12 @@ node's observed pod subnet, not an unconditional trust grant: it is safe only
 with the gateway-only ingress NetworkPolicy enforced, no broader policy, and
 restricted permission to create gateway-labelled pods. The gateway overwrites
 `X-Real-IP`, while the app ignores incoming `X-Forwarded-For`; Uvicorn must
-preserve the raw peer. An isolated equivalent Canal policy probe allowed the
-gateway, denied a nonmatching pod, and kept kubelet readiness healthy; it did
-not apply the policy to the real audio pod. The default service account could
-not create or patch pods. Recheck the current subnet, permissions and effective
-policy, gateway traffic and node health probes at rollout. Until the actual
-audio ingress boundary is verified, **production rollout remains blocked**.
+preserve the raw peer. The deployed audio ingress policy was applied, and the
+cutover helper reached its public check only after the private gateway-to-pod,
+nonmatching-pod denial, socket-connect and preservation checks. After guarded
+recovery, public health returned 200 and an unauthenticated jobs request 401.
+Recheck the current subnet, gateway labels, pod-creation and relabel permissions,
+effective policy, traffic and node health probes for future rollouts.
 
 The active IPv4-only mail system submits through the restricted Unix socket as
 `no-reply@auth.ehpc.io` with envelope sender `bounce@auth.ehpc.io`. It is not a
@@ -136,8 +150,16 @@ anonymous database over it: reconcile new work and use a reviewed forward fix.
 
 ## Release boundary
 
-The live release must not be changed until the final source, secret provisioning,
-trusted gateway/client-IP policy, tests, deployment plan and rollback/forward-fix
-procedure are reviewed. Local tests and the controlled mail delivery above are
-not evidence that invite-only authentication is deployed. Image pin, existing
-secrets, PVC, historical rows, files and caches must be preserved at cutover.
+The active Nix system uses the reviewed configuration; the audio auth Secret has
+both expected key names and the host kubeconfig is mode `0640` (`root:kube`).
+Public desktop and mobile sign-in/register UI checks passed without submitting
+a form. A seed invitation was created privately, but the first administrator's
+email-OTP login and private production karaoke have not yet been exercised. The
+release CI's 66 browser passes are not a substitute for those production checks.
+
+For future cutovers, verify the ready EndpointSlice target **and** the actual
+NGINX audio upstream before public checks: endpoint readiness alone does not
+prove the gateway has reconciled. Do not mask a failed public check with retries.
+Preserve the image pin, secrets, PVC,
+historical rows, files and caches. Never expose an anonymous rollback or restore
+an old database over newly accepted work.

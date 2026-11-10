@@ -52,14 +52,17 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
 
   await page.reload();
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  const historyLink = history.locator(`a[href='/api/jobs/${id}/results/song']`);
+  const historyCard = history.locator('.rounded-lg').filter({ hasText: 'tone-fixture' }).filter({ hasText: '2.5 semitones' }).first();
+  await expect(historyCard.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
+  await historyCard.getByRole('button', { name: 'View results', exact: true }).click();
+  const historyLink = result.locator(`a[href='/api/jobs/${id}/results/song']`);
   await expect(historyLink).toBeVisible();
   const restored = await downloadTrack(historyLink, 'history');
   expect(restored.filename).toBe(expectedName);
   const historyMetadata = await probe(restored.path, 'history-ffprobe.json');
   expect(historyMetadata.format.tags.title).toBe(restored.filename.slice(0, -4));
   expect(restored.bytes.equals(generated.bytes)).toBe(true);
-  const historyOriginal = await downloadTrack(history.locator(`a[href='/api/jobs/${id}/original']`), 'history-original');
+  const historyOriginal = await downloadTrack(result.locator(`a[href='/api/jobs/${id}/original']`), 'history-original');
   expect(historyOriginal.bytes.equals(original.bytes)).toBe(true);
   await page.screenshot({ path: info.outputPath('history.png'), fullPage: true });
   const proof = {

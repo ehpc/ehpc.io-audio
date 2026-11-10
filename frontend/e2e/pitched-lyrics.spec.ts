@@ -44,7 +44,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   const view = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
   const text = view.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true });
   await expect(view).toBeVisible();
-  await expect(results.getByLabel('Vocal pitch analysis', { exact: true })).toHaveCount(0);
+  await expect(results.getByRole('region', { name: 'Karaoke with pitches', exact: true })).toHaveCount(0);
   await expect(results.getByLabel('Lyrics transcript', { exact: true })).toHaveCount(0);
   const proofs = [];
   for (const [index, track] of job!.pitched_lyrics!.entries()) {
@@ -111,8 +111,11 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(durationProof.first_word_output_s).toBeLessThan(durationProof.transformed_s);
   await page.reload();
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  const historyCard = history.locator('.rounded-lg').filter({ has: page.locator(`a[href="/api/jobs/${id}/original"]`) });
-  expect(await historyCard.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true }).textContent()).toBe(job!.pitched_lyrics![0].text);
+  const historyCard = history.locator('.rounded-lg').filter({ hasText: 'auld-lang-syne-full' }).filter({ hasText: '125%' }).first();
+  await expect(historyCard.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true })).toHaveCount(0);
+  await historyCard.getByRole('button', { name: 'View results', exact: true }).click();
+  await expect(results.locator(`a[href="/api/jobs/${id}/original"]`)).toBeVisible();
+  await expect(results.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true })).toHaveText(job!.pitched_lyrics![0].text);
   const mobile = await browser.newContext({ storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const phone = await mobile.newPage();
   await phone.goto(process.env.E2E_BASE_URL!);

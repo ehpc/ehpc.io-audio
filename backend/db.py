@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS song_searches (
     query_key TEXT,
     successful_at REAL,
     pending_query TEXT,
-    claimed_at REAL
+    claimed_at REAL,
+    activity_query TEXT
 );
 """
 
@@ -99,6 +100,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE song_searches ADD COLUMN pending_query TEXT")
     if "claimed_at" not in search_columns:
         conn.execute("ALTER TABLE song_searches ADD COLUMN claimed_at REAL")
+    if "activity_query" not in search_columns:
+        conn.execute("ALTER TABLE song_searches ADD COLUMN activity_query TEXT")
+        conn.execute("UPDATE song_searches SET activity_query=pending_query")
     if search_columns["modal_call_id"]["notnull"]:
         # SQLite cannot relax NOT NULL in place. Preserve historical IDs and raw
         # payloads, including expired NULL-result rows; new local work has no call ID.
@@ -115,9 +119,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO song_searches "
             "(rowid, id, session_id, modal_call_id, result_json, created_at, "
-            "query_key, successful_at, pending_query, claimed_at) "
+            "query_key, successful_at, pending_query, claimed_at, activity_query) "
             "SELECT rowid, id, session_id, modal_call_id, result_json, created_at, "
-            "query_key, successful_at, pending_query, claimed_at "
+            "query_key, successful_at, pending_query, claimed_at, activity_query "
             "FROM song_searches_before_local"
         )
         conn.execute("DROP TABLE song_searches_before_local")
@@ -203,6 +207,7 @@ def create_song_search(
     query_key: str,
     *,
     pending_query: str | None = None,
+    activity_query: str | None = None,
     result: dict | None = None,
     successful_at: float | None = None,
 ) -> None:
@@ -213,7 +218,8 @@ def create_song_search(
         conn.execute(
             "INSERT INTO song_searches "
             "(id, session_id, created_at, query_key, pending_query, "
-            "result_json, successful_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "result_json, successful_at, activity_query) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 search_id,
                 session_id,
@@ -222,6 +228,7 @@ def create_song_search(
                 pending_query,
                 json.dumps(result) if result is not None else None,
                 successful_at,
+                activity_query if activity_query is not None else pending_query,
             ),
         )
 

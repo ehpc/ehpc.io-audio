@@ -2,6 +2,12 @@ export interface PianoVoice {
   release(at?: number): void;
   dispose(): void;
 }
+const ATTACK_SECONDS = 0.012;
+const DECAY_SECONDS = 0.32;
+const PEAK_GAIN = 0.065;
+const SUSTAIN_GAIN = 0.024;
+const RELEASE_SECONDS = 0.12;
+
 
 // Harmonic oscillators and a decaying envelope give a piano-like (not sampled) tone.
 // OfflineAudioContext is accepted so tests can render the actual instrument.
@@ -9,8 +15,8 @@ export function createPianoVoice(context: BaseAudioContext, midi: number, destin
   const now = context.currentTime;
   const gain = context.createGain();
   gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(0.065, now + 0.012);
-  gain.gain.exponentialRampToValueAtTime(0.024, now + 0.32);
+  gain.gain.linearRampToValueAtTime(PEAK_GAIN, now + ATTACK_SECONDS);
+  gain.gain.exponentialRampToValueAtTime(SUSTAIN_GAIN, now + DECAY_SECONDS);
   gain.connect(destination);
   const frequency = 440 * 2 ** ((midi - 69) / 12);
   const partials = [1, 2, 3].map((harmonic, index) => {
@@ -41,9 +47,18 @@ export function createPianoVoice(context: BaseAudioContext, midi: number, destin
     release(at = context.currentTime) {
       if (released || disposed) return;
       released = true;
-      gain.gain.cancelAndHoldAtTime(at);
-      gain.gain.linearRampToValueAtTime(0, at + 0.12);
-      for (const { oscillator } of partials) oscillator.stop(at + 0.13);
+      const elapsed = Math.max(0, at - now);
+      const level = elapsed < ATTACK_SECONDS
+        ? PEAK_GAIN * elapsed / ATTACK_SECONDS
+        : elapsed < DECAY_SECONDS
+          ? PEAK_GAIN * (SUSTAIN_GAIN / PEAK_GAIN) ** ((elapsed - ATTACK_SECONDS) / (DECAY_SECONDS - ATTACK_SECONDS))
+          : SUSTAIN_GAIN;
+      gain.gain.cancelScheduledValues(at);
+      if (elapsed > 0 && elapsed < ATTACK_SECONDS) gain.gain.linearRampToValueAtTime(level, at);
+      else if (elapsed < DECAY_SECONDS && elapsed >= ATTACK_SECONDS) gain.gain.exponentialRampToValueAtTime(level, at);
+      else gain.gain.setValueAtTime(level, at);
+      gain.gain.linearRampToValueAtTime(0, at + RELEASE_SECONDS);
+      for (const { oscillator } of partials) oscillator.stop(at + RELEASE_SECONDS + 0.01);
     },
     dispose() {
       if (disposed) return;

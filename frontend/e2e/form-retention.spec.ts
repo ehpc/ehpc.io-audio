@@ -147,12 +147,11 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
       await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();
       const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-      const songHistoryName = new RegExp('^' + 'Full song (pitch -1.25 st, tempo 119.5%)'.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*Source key: C major$');
-      const mixHistoryName = new RegExp('^' + `${mixName} (pitch -1.25 st, tempo 119.5%)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*Source key: C major$');
-      await expect(history.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveAccessibleName(songHistoryName);
-      await expect(history.locator(`a[href='/api/jobs/${id}/results/mix-1']`)).toHaveAccessibleName(mixHistoryName);
-      await expect(history.locator(`a[href='/api/jobs/${id}/results/song']`)).toBeVisible();
-      await expect(history.locator(`a[href='/api/jobs/${id}/results/mix-1']`)).toBeVisible();
+      await expect(history.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
+      await expect(history.locator(`a[href='/api/jobs/${id}/results/mix-1']`)).toHaveCount(0);
+      await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+      await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
+      await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();
       const afterDone = await formState(page);
       expect(afterDone).toEqual(beforeSubmit);
       expect(job.options.pitch_semitones).toBe(-1.25);

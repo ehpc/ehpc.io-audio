@@ -241,8 +241,14 @@ discovery artifacts during the CPU-worker cutover instead of paying for them aga
 The original source remains downloadable and unchanged by processing, preserving
 the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
 workflow. A completed job with no generated audio has an empty result manifest;
-its original download remains available in Results and History. Lyrics are a
-separate optional text output and do not create an audio stem.
+its original download remains available in Results when the job is open. Lyrics
+are a separate optional text output and do not create an audio stem.
+
+In the current source (not yet deployed), expanded results show **Karaoke with
+pitches**, **Lyrics with pitches**, then **Lyrics**. Completed History entries
+remain compact, showing title, status, date, key, adjustments, output count and
+an action to open Results; pitch JSON remains available when present. Open the
+job to see lyrics and individual audio downloads.
 
 Each generated MP3 embeds a `Title` tag identical to its canonical download
 filename without the `.mp3` extension. This title includes the output stem and
@@ -307,7 +313,7 @@ authorization does not grant additional rights under the model licenses.
 | Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), timestamped lyrics, and included `vocals`, `instruments`, `drums`, `bass`, `other-instruments`, and `drums-vocals` downloads |
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
-| Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, also shown in Results/History (output audio clock) |
+| Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, shown when the job is open (output audio clock) |
 | Extract instruments | `instruments` |
 | Remove crowd noise from vocals | `vocals-decrowded` |
 | Remove crowd noise from instrumental | `instruments-decrowded` |
@@ -651,13 +657,16 @@ toggle playback. Space also works in the lyric reader when text is selected, but
 not while typing in an input. It does not clear a browsing pause. Focused notes
 and word buttons retain their selection actions, as do other controls.
 
-Vocal pitch analysis also includes a compact scrollable piano below the audio
-player. Detected notes illuminate on the selected vocal track's output clock
-only while it is playing; detection does not produce automatic piano sound.
-Press and hold keys with a pointer, touch, Space or Enter for an independent
-synthesized piano-like tone. It sustains while held and fades briefly on release,
-alongside the selected backing player. The instrument uses browser Web Audio
-rather than sampled piano, suspends when idle, and reports unavailable audio.
+In the current source (not yet deployed), vocal pitch analysis includes a piano
+below the audio player. Its initial range centers the minimum and maximum notes
+across all analyzed vocal tracks and fills the available viewport with extra keys;
+every pitch remains reachable by scrolling. Detected notes illuminate only for
+the selected vocal track on its output clock while it is playing. Press and hold
+keys with a pointer, touch, Space or Enter for an independent synthesized
+piano-like tone; the view remains stable during a held note, which sustains and
+fades briefly on release. Detection does not produce automatic piano sound.
+The instrument uses browser Web Audio rather than samples, suspends when idle,
+and reports unavailable audio.
 
 With **Follow playback** enabled, the timeline advances when the playhead passes
 about 75% of the visible note area, excluding the sticky note axis, leaving room
@@ -678,8 +687,10 @@ Natural progression slides the next line upward; seeks jump directly, and
 reduced-motion preferences suppress animation. Known words fill progressively
 using published timings and the same output clock; untimed words remain neutral.
 An optional **Pitches** row shows only unambiguously linked notes from the
-selected vocal track above each word. Long pitch sequences remain horizontally
-scrollable and accessible; no syllable timings or note links are invented.
+selected vocal track above each word. Each word reserves room for its linked
+notes; word and punctuation groups wrap together, and long note sequences wrap
+within their group. The next line can be scrolled when needed; no syllable
+timings or note links are invented.
 Pitch-only or ASR-gap words can appear as short individual cues.
 
 **Background audio** is independent of the detected **Vocal stem** selector.
@@ -695,8 +706,8 @@ Full song still uses the unchanged original at original speed, mapped to the
 output clock; nonzero pitch also produces the transformed full-song reference.
 A cleaned instrumental is not silently substituted for the instrumental output.
 Other exported detected vocal
-stems remain available. The initial reference retains the matching exported
-stem when one exists. Accessible background buttons preserve the output-clock
+stems remain available. The default reference is **Full song**, preserving the
+appropriate output-clock mapping. Accessible background buttons preserve the output-clock
 position, playback state and volume. During a switch the existing source keeps
 playing until the replacement is ready and aligned; a failed replacement leaves
 the old source playing. A newer selection or external player takeover prevents
@@ -748,9 +759,9 @@ Reference reconciliation happens before these links are made. Provider-only,
 uncorroborated words do not acquire word links, and the complete unprompted
 recognition remains in provenance. Empty voiced tracks stay honestly empty.
 
-**Download pitch JSON** is available from Results and History through the
-session-protected `/api/jobs/{id}/pitch` endpoint. The same canonical payload
-appears as `pitch` in job detail/history/SSE. Version 1 includes model,
+**Download pitch JSON** is available from Results and, when available, History
+through the session-protected `/api/jobs/{id}/pitch` endpoint. The same canonical
+payload appears as `pitch` in job detail/history/SSE. Version 1 includes model,
 source/output durations, requested pitch/tempo, explicit output timestamp/pitch
 references, and per-stem `tracks`. Each note has `start_s`, `end_s`, fractional
 `midi`, `frequency_hz`, `note`, residual `cents`, `confidence`, and `word_indices`
@@ -790,7 +801,7 @@ recognizer identities are current. Old whole-job RPCs are not compatibility shim
   The original is analyzed once using Mixxx's libkeyfinder; the output key is
   derived from the pitch offset, preserving major/minor mode. Fractional
   offsets include residual cents. Tempo alone does not change the key.
-- Every derived stem card in Results and download chip in History also shows
+- Every derived stem card in Results, including when opened from History, shows
   **Source key: C major** when found, using the job's original analysis rather
   than reanalyzing stems or labeling the transposed output as the source.
   Undetermined keys have no per-stem badge.
@@ -920,6 +931,14 @@ If you hit that `ImportError` before setting this, just recreate the venv:
 `rm -rf .venv && uv sync`.
 
 ### Run the app
+
+The source includes **not-yet-deployed** account-policy changes: administrators
+have unlimited invitation slots and alone may revoke unused invitations or disable
+accounts; regular users have a configurable allowance of three by default.
+Administrators can grant one more slot and inspect a member's recent activity,
+including available job titles and search queries. Historical timestamps or
+queries that were not recorded remain unknown. See
+[ACCESS_PLAN.md](ACCESS_PLAN.md) for the deployed baseline and rollout details.
 
 The server requires its two authentication secrets and origin. Without an SMTP
 socket, OTP delivery fails and sign-in cannot complete. For local-only
@@ -1215,9 +1234,9 @@ the lead/instrument mix). They run without GPU work using
 The metadata case uploads the deterministic local tonal fixture through the UI,
 waits for native key analysis, and applies fractional pitch and tempo changes to
 the full song with no extraction/GPU work. It downloads the actual generated MP3
-from Results and, after reloading, History; FFprobe checks that the embedded
-Title equals Chromium's suggested filename without `.mp3`, including the source
-name, stem, source key, pitch, and tempo. Both generated downloads must be
+from Results and again after reopening the job from History; FFprobe checks that
+the embedded Title equals Chromium's suggested filename without `.mp3`, including
+the source name, stem, source key, pitch, and tempo. Both generated downloads must be
 byte-identical, and both original downloads must preserve the uploaded bytes.
 Chromium/FFmpeg decoding also checks the transformed duration and pitch. Run this
 case without Modal credentials or network audio fixtures:
@@ -1286,10 +1305,11 @@ and selection/Results/History PNGs under `frontend/test-results/`.
   readable text, every desktop group and the right rail, mobile tab/keyboard
   navigation, option and pitch/tempo persistence, real source/key preview and
   errors, Advanced/action clearance, shortened keyboard viewports, and
-  unobstructed Results/History downloads and audio playback. The all-enabled
-  processing case additionally captures all 21 selected outputs at all seven widths
-  and checks that source-key chips and download names stay within the viewport;
-  its pitched full-song output is shown in the output preview. A native-scale
+  unobstructed Results downloads and playback, including jobs opened from
+  History. The all-enabled processing case additionally captures all 21 selected
+  outputs at all seven widths and checks that source-key chips and download names
+  stay within the viewport; its pitched full-song output is shown in the output
+  preview. A native-scale
   pitched-song card crop shows the source label and download name. All cases use
   the real backend and native audio tools, with no mocked boundaries.
 
@@ -1740,8 +1760,8 @@ MIME restriction; changing the picker or backend alone cannot remove it.
 
 ## Known limitations
 
-- No login/auth beyond the anonymous per-browser cookie — anyone with the URL
-  can submit jobs. Job history and downloads are scoped to that signed cookie.
+- Access uses invite-only email OTP; see [ACCESS_PLAN.md](ACCESS_PLAN.md) for
+  the deployed baseline and account-policy changes still in source.
 - No automatic cleanup of old uploads/results — `/data` grows unbounded.
 - Single-pod only, as noted above.
 

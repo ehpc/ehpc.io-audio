@@ -30,16 +30,16 @@ const ProfileView: Component<{ profile: AuthProfile; refresh: () => Promise<void
   };
 
   const revoke = async (id: string) => {
-    if (busy() || !window.confirm("Revoke this pending invite?")) return;
+    if (busy() || !window.confirm("Withdraw this unused invitation? This does not disable an account.")) return;
     setBusy(id);
     setError("");
     setNotice("");
     try {
       await deleteInvite(id);
       await props.refresh();
-      setNotice("Invite revoked.");
+      setNotice("Invitation withdrawn.");
     } catch (err) {
-      setError(`Could not revoke invite or refresh profile: ${err instanceof Error ? err.message : "Please try again."}`);
+      setError(`Could not withdraw invitation or refresh profile: ${err instanceof Error ? err.message : "Please try again."}`);
     } finally {
       setBusy(null);
     }
@@ -65,9 +65,11 @@ const ProfileView: Component<{ profile: AuthProfile; refresh: () => Promise<void
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 class="font-medium">Invitations</h3>
-          <p class="text-sm text-muted-foreground">{occupied()} of {props.profile.invite_limit} invite slots used</p>
+          <Show when={props.profile.invite_limit === null} fallback={<p class="text-sm text-muted-foreground">{occupied()} of {props.profile.invite_limit} invite slots used · {Math.max(0, (props.profile.invite_limit ?? 0) - occupied())} remaining</p>}>
+            <p class="text-sm text-muted-foreground">Unlimited invitations · {occupied()} used</p>
+          </Show>
         </div>
-        <Button type="button" disabled={busy() !== null || occupied() >= props.profile.invite_limit} onClick={create}>
+        <Button type="button" disabled={busy() !== null || (props.profile.invite_limit !== null && occupied() >= props.profile.invite_limit)} onClick={create}>
           {busy() === "create" ? "Creating..." : "Create invite"}
         </Button>
       </div>
@@ -93,9 +95,9 @@ const ProfileView: Component<{ profile: AuthProfile; refresh: () => Promise<void
                   <Show when={invite.activated_at}>{(activatedAt) => (
                     <p class="text-sm text-muted-foreground">Activated: {formatTimestamp(activatedAt())}</p>
                   )}</Show>
-                  <Show when={invite.status === "pending"}>
-                    <Button type="button" size="sm" variant="destructive" disabled={busy() !== null} onClick={() => revoke(invite.id)}>
-                      {busy() === invite.id ? "Revoking..." : "Revoke"}
+                  <Show when={props.profile.is_admin && invite.status === "pending"}>
+                    <Button type="button" size="sm" variant="destructive" class="min-h-11" disabled={busy() !== null} onClick={() => revoke(invite.id)}>
+                      {busy() === invite.id ? "Withdrawing..." : "Withdraw unused invitation"}
                     </Button>
                   </Show>
                 </CardContent>

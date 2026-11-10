@@ -1,7 +1,11 @@
 import { render, screen } from "@solidjs/testing-library";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import type { JobDTO } from "~/api";
 import ResultsView from "./ResultsView";
+
+beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+});
 
 it("keeps stem keys tied to the source and renders lyric markup as text", () => {
   const job: JobDTO = {

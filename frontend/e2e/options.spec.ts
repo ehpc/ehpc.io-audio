@@ -183,10 +183,10 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   expect(job.original_key).toBe(originalKey);
   expect(job.output_key).toBe(transposeKey(originalKey, options.pitch_semitones));
   const links = page.locator(`a[download][href^='/api/jobs/${job.id}/']`).filter({ visible: true });
-  // Results and History each expose exactly one link for every public track.
-  expect(await links.count()).toBe((item.labels.length + 1) * 2);
+  // Compact history has no download chips; the opened result exposes every track.
+  expect(await links.count()).toBe(item.labels.length + 1);
   expect(await links.evaluateAll(anchors => anchors.map(anchor => anchor.getAttribute('href')).sort())).toEqual(
-    ['original', ...item.labels.map(label => `results/${label}`)].flatMap(path => [`/api/jobs/${job.id}/${path}`, `/api/jobs/${job.id}/${path}`]).sort(),
+    ['original', ...item.labels.map(label => `results/${label}`)].map(path => `/api/jobs/${job.id}/${path}`).sort(),
   );
   const files: Record<string, string> = {};
   const audio: Record<string, unknown> = {};
@@ -219,8 +219,7 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     expect(served.status()).toBe(200);
     expect(decodeURIComponent(served.headers()['content-disposition'])).toContain(stem.download_name);
     const stemLinks = page.locator(`a[href='/api/jobs/${job.id}/results/${stem.label}']`);
-    await expect(stemLinks).toHaveCount(2);
-    await expect(stemLinks.nth(1)).toContainText(`Source key: ${originalKey}`);
+    await expect(stemLinks).toHaveCount(1);
     const card = stemLinks.first().locator('../..');
     if (mix) await expect(card.getByText(mix.name, { exact: true })).toBeVisible();
     await expect(card.getByText(`Source key: ${originalKey}`, { exact: true })).toBeVisible();
@@ -355,7 +354,8 @@ for (const item of cases) {
     if (item.name === 'identity-original-only') {
       await page.reload();
       const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-      await expect(history.locator(`a[href='/api/jobs/${id}/original']`)).toBeVisible();
+      await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+      await expect(page.locator(`a[href='/api/jobs/${id}/original']`)).toBeVisible();
     }
     if (item.name === 'identity-original-only' || item.name === 'all-booleans-enabled') {
       const stranger = await browser.newContext();
@@ -432,9 +432,10 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   expect(original.headers()['content-disposition']).toContain('silent-fixture%20-%20original.wav');
   await page.reload();
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  const historyStem = history.locator(`a[href='/api/jobs/${id}/results/song']`);
+  await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+  const historyStem = page.locator(`a[href='/api/jobs/${id}/results/song']`);
   await expect(historyStem).toHaveCount(1);
-  await expect(historyStem).not.toContainText('Source key:');
+  await expect(historyStem.locator('../..')).not.toContainText('Source key:');
   await expect(historyStem).toHaveAttribute('download', 'silent-fixture - song - pitch+2st.mp3');
   await page.screenshot({ path: info.outputPath('undetermined-source-key.png'), fullPage: true });
 });

@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import type { JobDTO, PitchNoteDTO } from "~/api";
-import { currentKaraokeLine, karaokeLines, karaokeWordState, type KaraokeLine } from "~/lib/karaoke";
+import { currentKaraokeLine, karaokeLines, karaokeWordState, type KaraokeLine, type KaraokePart, type KaraokeWord } from "~/lib/karaoke";
 import { Button } from "~/components/button";
 
 interface TimelineKaraokeProps {
@@ -12,6 +12,28 @@ interface TimelineKaraokeProps {
   seeking?: boolean;
   seekRevision?: number;
   onKeyDown?: (event: KeyboardEvent) => void;
+}
+
+interface DisplayWord {
+  word: KaraokeWord;
+  suffix: string;
+}
+
+// Keep directly adjacent punctuation beside its word, rather than at the
+// far edge of a cell widened by a long note sequence.
+function displayParts(parts: KaraokePart[]): (string | DisplayWord)[] {
+  const result: (string | DisplayWord)[] = [];
+  for (const part of parts) {
+    if (typeof part !== "string") {
+      result.push({ word: part, suffix: "" });
+      continue;
+    }
+    const previous = result.at(-1);
+    const suffix = typeof previous === "object" ? /^\S+/u.exec(part)?.[0] ?? "" : "";
+    if (suffix && typeof previous === "object") previous.suffix = suffix;
+    if (part.length > suffix.length) result.push(part.slice(suffix.length));
+  }
+  return result;
 }
 
 export default function TimelineKaraoke(props: TimelineKaraokeProps) {
@@ -73,21 +95,21 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
       }>
         <For each={visibleLines()}>{line =>
           <p class="timeline-karaoke-line" classList={{ "timeline-karaoke-next": line !== current(), "timeline-karaoke-slide": line === current() && sliding() }}
-            role="group" aria-label={line === current() ? "Current lyrics" : "Next lyrics"}>
-            <For each={line.parts}>{part => {
+            role="group" aria-label={line === current() ? "Current lyrics" : "Next lyrics"} tabIndex={line === current() ? undefined : 0}>
+            <For each={displayParts(line.parts)}>{part => {
               if (typeof part === "string") return part;
-              const state = createMemo(() => karaokeWordState(part.timing, props.position));
-              const labels = () => part.pitchIndex === undefined ? undefined : pitches().get(part.pitchIndex);
+              const state = createMemo(() => karaokeWordState(part.word.timing, props.position));
+              const labels = () => part.word.pitchIndex === undefined ? undefined : pitches().get(part.word.pitchIndex);
               return <span class="timeline-karaoke-cell">
                 <Show when={showPitches() && labels()?.length}>
                   <span class="timeline-karaoke-pitches" role="group" tabIndex={0}
-                    aria-label={`Pitches for ${part.text}: ${labels()!.join(" ")}`}>{labels()!.join(" ")}</span>
+                    aria-label={`Pitches for ${part.word.text}: ${labels()!.join(" ")}`}>{labels()!.join(" ")}</span>
                 </Show>
-                <span class="timeline-karaoke-word"
+                <span class="timeline-karaoke-lyric"><span class="timeline-karaoke-word"
                   data-state={state().state}
                   aria-current={line === current() && state().state === "active" ? "true" : undefined}
                   style={{ "--karaoke-progress": `${state().progress * 100}%` }}
-                >{part.text}</span>
+                >{part.word.text}</span>{part.suffix}</span>
               </span>;
             }}</For>
           </p>

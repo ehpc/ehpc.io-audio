@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import json
 import secrets
 import sqlite3
 import time
@@ -59,7 +60,7 @@ class UserDTO(TypedDict):
     id: str
     email: str
     is_admin: bool
-    invite_limit: int
+    invite_limit: int | None
     disabled: bool
 
 
@@ -76,13 +77,61 @@ class ProfileDTO(TypedDict):
     id: str
     email: str
     is_admin: bool
-    invite_limit: int
+    invite_limit: int | None
     invites: list[InviteDTO]
+
+
+class ActivityInvite(TypedDict):
+    id: str
+    status: Literal["pending", "activated", "revoked"]
+    recipient_email: str | None
+    created_at: int
+    activated_at: int | None
+
+
+class ActivityJob(TypedDict):
+    id: int
+    status: str
+    title: str | None
+    created_at: int
+    started_at: int | None
+    finished_at: int | None
+
+
+class ActivitySearch(TypedDict):
+    id: str
+    status: Literal["pending", "completed", "failed", "expired"]
+    query: str | None
+    created_at: int
+
+
+class UserActivity(TypedDict):
+    invite_used: int
+    registered_at: int | None
+    last_login_at: int | None
+    last_activity_at: int | None
+    invites: list[ActivityInvite]
+    jobs: list[ActivityJob]
+    searches: list[ActivitySearch]
 
 
 def initialize() -> None:
     with db._session() as conn:
         conn.executescript(SCHEMA)
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(auth_users)")}
+        if "last_login_at" not in columns:
+            conn.execute("ALTER TABLE auth_users ADD COLUMN last_login_at INTEGER")
+        if "last_activity_at" not in columns:
+            conn.execute("ALTER TABLE auth_users ADD COLUMN last_activity_at INTEGER")
+        conn.execute(
+            "UPDATE auth_users SET last_activity_at=("
+            "SELECT MAX(last_activity) FROM auth_sessions "
+            "WHERE user_id=auth_users.id) WHERE last_activity_at IS NULL"
+        )
+        conn.execute(
+            "UPDATE auth_users SET is_admin=1 WHERE lower(email)=? AND is_admin=0",
+            (config.AUTH_ADMIN_EMAIL.strip().lower(),),
+        )
 
 
 def _hash(value: str) -> str:
@@ -104,7 +153,7 @@ def _user(row: sqlite3.Row) -> UserDTO:
         "id": row["id"],
         "email": row["email"],
         "is_admin": bool(row["is_admin"]),
-        "invite_limit": row["invite_limit"],
+        "invite_limit": None if row["is_admin"] else row["invite_limit"],
         "disabled": bool(row["disabled"]),
     }
 
@@ -124,7 +173,7 @@ def create_invite(owner_id: str | None) -> tuple[str, str]:
                 "SELECT count(*) FROM auth_invites WHERE owner_id=? AND revoked=0",
                 (owner_id,),
             ).fetchone()[0]
-            if used >= user["invite_limit"]:
+            if not user["is_admin"] and used >= user["invite_limit"]:
                 raise ValueError("Invitation allowance reached")
         conn.execute(
             "INSERT INTO auth_invites (id,verifier,owner_id,created_at) "
@@ -134,18 +183,17 @@ def create_invite(owner_id: str | None) -> tuple[str, str]:
     return invite_id, code
 
 
-def revoke_invite(invite_id: str, owner_id: str | None = None) -> bool:
+def revoke_invite(invite_id: str) -> bool:
     with db._session() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        sql = (
-            "UPDATE auth_invites SET revoked=1 WHERE id=? AND revoked=0 "
-            "AND recipient_id IS NULL"
+        return (
+            conn.execute(
+                "UPDATE auth_invites SET revoked=1 WHERE id=? AND revoked=0 "
+                "AND recipient_id IS NULL",
+                (invite_id,),
+            ).rowcount
+            == 1
         )
-        args = [invite_id]
-        if owner_id is not None:
-            sql += " AND owner_id=?"
-            args.append(owner_id)
-        return conn.execute(sql, args).rowcount == 1
 
 
 def profile(user_id: str) -> ProfileDTO | None:
@@ -165,7 +213,7 @@ def profile(user_id: str) -> ProfileDTO | None:
             id=row["id"],
             email=row["email"],
             is_admin=bool(row["is_admin"]),
-            invite_limit=row["invite_limit"],
+            invite_limit=None if row["is_admin"] else row["invite_limit"],
             invites=[
                 InviteDTO(
                     id=i["id"],
@@ -309,7 +357,7 @@ def verify(email: str, code: str, invite: str | None) -> tuple[str, Principal] |
             ):
                 return None
             user_id = "acct:" + secrets.token_hex(16)
-            is_admin = email == config.AUTH_ADMIN_EMAIL
+            is_admin = email == config.AUTH_ADMIN_EMAIL.strip().lower()
             conn.execute(
                 "INSERT INTO auth_users(id,email,is_admin) VALUES (?,?,?)",
                 (user_id, email, int(is_admin)),
@@ -327,6 +375,9 @@ def verify(email: str, code: str, invite: str | None) -> tuple[str, Principal] |
                 return None
             principal = Principal(user["id"], user["email"], bool(user["is_admin"]))
         conn.execute("DELETE FROM auth_challenges WHERE id=?", (challenge["id"],))
+        conn.execute(
+            "UPDATE auth_users SET last_login_at=? WHERE id=?", (now, principal.id)
+        )
         token = secrets.token_urlsafe(32)
         conn.execute(
             "INSERT INTO auth_sessions VALUES (?,?,?)",
@@ -352,6 +403,9 @@ def authenticate(token: str, *, activity: bool = False) -> Principal | None:
                 "UPDATE auth_sessions SET last_activity=? WHERE verifier=?",
                 (now, _hash(token)),
             )
+            conn.execute(
+                "UPDATE auth_users SET last_activity_at=? WHERE id=?", (now, row["id"])
+            )
         return Principal(row["id"], row["email"], bool(row["is_admin"]))
 
 
@@ -372,6 +426,13 @@ def update_user(
 ) -> UserDTO | None:
     with db._session() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT * FROM auth_users WHERE id=?", (user_id,)
+        ).fetchone()
+        if current is None:
+            return None
+        if invite_limit is not None and current["is_admin"]:
+            raise ValueError("Administrators have unlimited invitations")
         if invite_limit is not None:
             if invite_limit < 0:
                 raise ValueError("Invalid invitation limit")
@@ -387,6 +448,112 @@ def update_user(
                 conn.execute("DELETE FROM auth_sessions WHERE user_id=?", (user_id,))
         row = conn.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
         return _user(row) if row else None
+
+
+def _search_status(
+    row: sqlite3.Row,
+) -> Literal["pending", "completed", "failed", "expired"]:
+    if row["result_json"] is None:
+        return "pending" if row["pending_query"] is not None else "expired"
+    try:
+        result = json.loads(row["result_json"])
+    except (TypeError, ValueError):
+        return "failed"
+    if isinstance(result, dict) and (
+        result.get("status") == "failed" or "http_error" in result
+    ):
+        return "failed"
+    return "completed"
+
+
+def grant_invite_slot(user_id: str) -> UserDTO | None:
+    with db._session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+        if row is None:
+            return None
+        if row["is_admin"]:
+            raise ValueError("Administrators have unlimited invitations")
+        conn.execute(
+            "UPDATE auth_users SET invite_limit=invite_limit+1 WHERE id=?", (user_id,)
+        )
+        row = conn.execute("SELECT * FROM auth_users WHERE id=?", (user_id,)).fetchone()
+        assert row is not None
+        return _user(row)
+
+
+def user_activity(user_id: str) -> UserActivity | None:
+    with db._session() as conn:
+        user = conn.execute(
+            "SELECT * FROM auth_users WHERE id=?", (user_id,)
+        ).fetchone()
+        if user is None:
+            return None
+        invites = conn.execute(
+            "SELECT i.*,u.email recipient_email FROM auth_invites i "
+            "LEFT JOIN auth_users u ON u.id=i.recipient_id WHERE i.owner_id=? "
+            "ORDER BY i.created_at DESC LIMIT 50",
+            (user_id,),
+        ).fetchall()
+        jobs = conn.execute(
+            "SELECT id,status,title,created_at,started_at,finished_at FROM jobs "
+            "WHERE session_id=? ORDER BY id DESC LIMIT 50",
+            (user_id,),
+        ).fetchall()
+        searches = conn.execute(
+            "SELECT id,created_at,pending_query,result_json,activity_query "
+            "FROM song_searches "
+            "WHERE session_id=? ORDER BY created_at DESC LIMIT 50",
+            (user_id,),
+        ).fetchall()
+        registration = conn.execute(
+            "SELECT MIN(activated_at) FROM auth_invites WHERE recipient_id=?",
+            (user_id,),
+        ).fetchone()[0]
+        invite_used = conn.execute(
+            "SELECT count(*) FROM auth_invites WHERE owner_id=? AND revoked=0",
+            (user_id,),
+        ).fetchone()[0]
+        return UserActivity(
+            invite_used=invite_used,
+            registered_at=registration,
+            last_login_at=user["last_login_at"],
+            last_activity_at=user["last_activity_at"],
+            invites=[
+                ActivityInvite(
+                    id=i["id"],
+                    status="revoked"
+                    if i["revoked"]
+                    else "activated"
+                    if i["recipient_id"]
+                    else "pending",
+                    recipient_email=i["recipient_email"],
+                    created_at=i["created_at"],
+                    activated_at=i["activated_at"],
+                )
+                for i in invites
+            ],
+            jobs=[
+                ActivityJob(
+                    id=j["id"],
+                    status=j["status"],
+                    title=j["title"],
+                    created_at=j["created_at"],
+                    started_at=j["started_at"],
+                    finished_at=j["finished_at"],
+                )
+                for j in jobs
+            ],
+            searches=[
+                ActivitySearch(
+                    id=s["id"],
+                    query=s["activity_query"],
+                    created_at=s["created_at"],
+                    status=_search_status(s),
+                )
+                for s in searches
+            ],
+        )
 
 
 def revoke_user_sessions(user_id: str) -> bool:

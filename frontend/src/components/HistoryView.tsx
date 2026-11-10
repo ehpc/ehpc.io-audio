@@ -1,12 +1,9 @@
 import { createSignal, For, Show, type Component } from "solid-js";
 import type { JobDTO, JobStatus } from "~/api";
-import { jobLabel, originalUrl, pitchDownloadUrl, resultUrl, retryJob } from "~/api";
-import { displayOutputLabel, manifestOutputLabel } from "~/lib/expectedStems";
+import { jobLabel, pitchDownloadUrl, retryJob } from "~/api";
 import AudioMetadata from "~/components/AudioMetadata";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
-import TranscriptView from "~/components/TranscriptView";
-import PitchedLyricsView from "~/components/PitchedLyricsView";
 
 const STATUS_STYLES: Record<JobStatus, string> = {
   queued: "bg-muted text-muted-foreground",
@@ -107,51 +104,22 @@ const HistoryView: Component<{
                   </div>
                   <AudioMetadata job={job} />
 
-                  <Show when={job.status === "done" && (job.has_original || (job.manifest?.length ?? 0) > 0)}>
-                    <div class="flex flex-wrap gap-1.5 border-t border-border pt-2">
-                      <Show when={job.has_original}>
-                        <a
-                          href={originalUrl(job.id)}
-                          download=""
-                          onClick={(event) => event.stopPropagation()}
-                          class="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-foreground hover:bg-accent hover:underline"
-                        >
-                          {displayOutputLabel("original", job.options)}
-                        </a>
-                      </Show>
-                      <For each={job.manifest ?? []}>
-                        {(stem) => (
-                          <a
-                            href={resultUrl(job.id, stem.label)}
-                            download={stem.download_name}
-                            title={stem.download_name}
-                            onClick={(event) => event.stopPropagation()}
-                            class="rounded-full bg-muted px-2 py-0.5 text-xs capitalize text-foreground hover:bg-accent hover:underline"
-                          >
-                            {manifestOutputLabel(stem, job.options)}
-                            <Show when={job.original_key}>
-                              <span class="ml-1.5 normal-case">Source key: {job.original_key}</span>
-                            </Show>
-                          </a>
-                        )}
-                      </For>
-                    </div>
+                  <Show when={job.status === "done" && (job.manifest?.length ?? 0) > 0}>
+                    <p class="text-xs text-muted-foreground">
+                      {job.manifest!.length} audio {job.manifest!.length === 1 ? "output" : "outputs"}
+                    </p>
                   </Show>
-                  <Show when={job.status === "done" && job.options.extract_lyrics && job.transcript}>
-                    <TranscriptView job={job} compact />
-                  </Show>
-                  <Show when={job.status === "done" && job.pitched_lyrics?.length}>
-                    <div onClick={event => event.stopPropagation()}>
-                      <PitchedLyricsView job={job} />
-                    </div>
-                  </Show>
-                  <Show when={job.status === "done" && job.options.detect_pitch && job.pitch}>
+                  <Show when={job.status === "done"}>
                     <div class="flex flex-wrap items-center gap-3 border-t border-border pt-2 text-sm">
                       <button type="button" class="font-medium text-primary hover:underline"
-                        onClick={() => props.onSelect(job)}>View vocal pitch timeline</button>
-                      <a href={pitchDownloadUrl(job.id)} download=""
-                        class="font-medium text-primary hover:underline"
-                        onClick={(event) => event.stopPropagation()}>Download pitch JSON</a>
+                        onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
+                        {job.options.detect_pitch && job.pitch ? "View Karaoke with pitches" : "View results"}
+                      </button>
+                      <Show when={job.options.detect_pitch && job.pitch}>
+                        <a href={pitchDownloadUrl(job.id)} download=""
+                          class="font-medium text-primary hover:underline"
+                          onClick={(event) => event.stopPropagation()}>Download pitch JSON</a>
+                      </Show>
                     </div>
                   </Show>
 

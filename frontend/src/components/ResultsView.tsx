@@ -1,4 +1,4 @@
-import { For, Show, type Component } from "solid-js";
+import { For, onCleanup, Show, type Component } from "solid-js";
 import type { JobDTO, StemManifestEntry } from "~/api";
 import { jobLabel, originalUrl, playbackUrl, resultUrl } from "~/api";
 import { displayOutputLabel, manifestOutputLabel } from "~/lib/expectedStems";
@@ -23,9 +23,11 @@ function formatDuration(seconds: number): string {
 
 const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => {
   const stems = (): StemManifestEntry[] => props.job.manifest ?? [];
+  let container!: HTMLDivElement;
+  onCleanup(() => container.querySelectorAll("audio").forEach(audio => audio.pause()));
 
   return (
-    <div class="space-y-6">
+    <div ref={container} class="space-y-6">
       <div class="space-y-1">
         <h2 class="text-lg font-semibold">Results</h2>
         <p class="text-sm text-muted-foreground">{jobLabel(props.job)}</p>
@@ -33,6 +35,27 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
       </div>
 
       <div class="space-y-4">
+        <Show when={props.job.options.detect_pitch && props.job.pitch}>
+          <Card>
+            <CardContent class="min-w-0 p-4">
+              <PitchView job={props.job} />
+            </CardContent>
+          </Card>
+        </Show>
+        <Show when={props.job.pitched_lyrics?.length}>
+          <Card>
+            <CardContent class="min-w-0 p-4">
+              <PitchedLyricsView job={props.job} />
+            </CardContent>
+          </Card>
+        </Show>
+        <Show when={props.job.options.extract_lyrics && props.job.transcript}>
+          <Card>
+            <CardContent class="p-4">
+              <TranscriptView job={props.job} />
+            </CardContent>
+          </Card>
+        </Show>
         <Show when={props.job.has_original}>
           <Card>
             <CardHeader>
@@ -88,27 +111,6 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => 
             </Card>
           )}
         </For>
-        <Show when={props.job.options.detect_pitch && props.job.pitch}>
-          <Card>
-            <CardContent class="min-w-0 p-4">
-              <PitchView job={props.job} />
-            </CardContent>
-          </Card>
-        </Show>
-        <Show when={props.job.pitched_lyrics?.length}>
-          <Card>
-            <CardContent class="min-w-0 p-4">
-              <PitchedLyricsView job={props.job} />
-            </CardContent>
-          </Card>
-        </Show>
-        <Show when={props.job.options.extract_lyrics && props.job.transcript}>
-          <Card>
-            <CardContent class="p-4">
-              <TranscriptView job={props.job} />
-            </CardContent>
-          </Card>
-        </Show>
       </div>
 
       <Button variant="outline" onClick={props.onReset}>

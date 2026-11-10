@@ -248,6 +248,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   });
   const track = createMemo(() => analysis().tracks.find(item => item.label === trackLabel()) ?? analysis().tracks[0]);
   const notes = () => track()?.notes ?? [];
+  const pianoRangeNotes = createMemo(() => analysis().tracks.flatMap(item => item.notes));
   const rows = createMemo(() => {
     const values = notes().map(note => Math.round(note.midi));
     const low = values.length ? Math.min(...values) - 2 : 48;
@@ -270,8 +271,11 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     && item.label !== "song" && item.label !== "instruments" && item.label !== "drums" && item.label !== "drums-vocals" && hasOutput(item.label));
   const initialTrack = track()?.label;
   const [reference, setReference] = createSignal(
-    initialTrack && hasOutput(initialTrack) && (initialTrack !== "vocals" || hasVocals())
-      ? initialTrack : hasSong() ? "song" : hasVocals() ? "vocals" : "song",
+    hasSong() ? "song"
+      : initialTrack && hasOutput(initialTrack) && (initialTrack !== "vocals" || hasVocals())
+        ? initialTrack : hasVocals() ? "vocals"
+          : hasOutput("drums-vocals") ? "drums-vocals" : hasOutput("instruments") ? "instruments"
+            : hasOutput("drums") ? "drums" : otherReferences()[0]?.label ?? "song",
   );
   const sourceClock = (label = reference()) => label === "song" && !hasOutput("song");
   const referenceUrl = (label = reference()) => {
@@ -515,9 +519,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
 
   return (
-    <section class="pitch-view" aria-label="Vocal pitch analysis">
+    <section class="pitch-view" aria-label="Karaoke with pitches">
       <div class="pitch-heading">
-        <h3 class="text-base font-semibold">Vocal pitch timeline</h3>
+        <h3 class="text-base font-semibold">Karaoke with pitches</h3>
         <a href={pitchDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download pitch JSON</a>
       </div>
       <p class="text-sm text-muted-foreground">Time → · musical pitch ↑ · output audio clock and pitch. Notes are detected on original vocal stems, then projected by {analysis().pitch_shift_semitones >= 0 ? "+" : ""}{analysis().pitch_shift_semitones} semitones and {analysis().tempo_percent}% tempo; not re-measured after processing.</p>
@@ -740,7 +744,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
               } else if (event.currentTarget === slots[index]) prepareReference(index);
             }} />
         }</Show>}</For>
-        <PianoKeyboard notes={notes()} position={position()} playing={!nativePaused()} />
+        <PianoKeyboard notes={notes()} rangeNotes={pianoRangeNotes()} position={position()} playing={!nativePaused()} />
       </footer>
     </section>
   );
