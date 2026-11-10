@@ -244,7 +244,7 @@ workflow. A completed job with no generated audio has an empty result manifest;
 its original download remains available in Results when the job is open. Lyrics
 are a separate optional text output and do not create an audio stem.
 
-In the current source (not yet deployed), expanded results show **Karaoke with
+In this source, expanded results show **Karaoke with
 pitches**, **Lyrics with pitches**, then **Lyrics**. Completed History entries
 remain compact, showing title, status, date, key, adjustments, output count and
 an action to open Results; pitch JSON remains available when present. Open the
@@ -657,7 +657,7 @@ toggle playback. Space also works in the lyric reader when text is selected, but
 not while typing in an input. It does not clear a browsing pause. Focused notes
 and word buttons retain their selection actions, as do other controls.
 
-In the current source (not yet deployed), vocal pitch analysis includes a piano
+In this source, vocal pitch analysis includes a piano
 below the audio player. Its initial range centers the minimum and maximum notes
 across all analyzed vocal tracks and fills the available viewport with extra keys;
 every pitch remains reachable by scrolling. Detected notes illuminate only for
@@ -932,13 +932,22 @@ If you hit that `ImportError` before setting this, just recreate the venv:
 
 ### Run the app
 
-The source includes **not-yet-deployed** account-policy changes: administrators
-have unlimited invitation slots and alone may revoke unused invitations or disable
-accounts; regular users have a configurable allowance of three by default.
+The source's account policy gives administrators unlimited invitation slots and
+alone allows them to revoke unused invitations or disable accounts; regular users
+have a configurable allowance of three by default.
 Administrators can grant one more slot and inspect a member's recent activity,
 including available job titles and search queries. Historical timestamps or
 queries that were not recorded remain unknown. See
-[ACCESS_PLAN.md](ACCESS_PLAN.md) for the deployed baseline and rollout details.
+[ACCESS_PLAN.md](ACCESS_PLAN.md) for historical deployment notes.
+
+On 2026-11-09, production application commit
+`c527bb43509759c217e62e07311e5a393f9ce9cf`, image digest
+`sha256:c72d57a6b3762490cb8027ca51eff2e765223c84642175e8aa84cb20f27fbcef`,
+and VPS configuration commit `f3e36c2ef36ff4ca3a6367ede3623127a2ccbf34`
+were verified with public health 200 and anonymous jobs access 401. This is a
+historical observation, not a claim about the release currently running. For
+the current image pin and rollout status, check the VPS's canonical
+`nixos/audio-deployment.yaml` and running deployment.
 
 The server requires its two authentication secrets and origin. Without an SMTP
 socket, OTP delivery fails and sign-in cannot complete. For local-only
@@ -1761,7 +1770,7 @@ MIME restriction; changing the picker or backend alone cannot remove it.
 ## Known limitations
 
 - Access uses invite-only email OTP; see [ACCESS_PLAN.md](ACCESS_PLAN.md) for
-  the deployed baseline and account-policy changes still in source.
+  historical deployment and account-policy notes.
 - No automatic cleanup of old uploads/results — `/data` grows unbounded.
 - Single-pod only, as noted above.
 

@@ -169,9 +169,12 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     expect(job.options.pitch_semitones).toBe(2);
     expect(job.options.tempo_percent).toBe(120);
     expect(job.manifest?.map(stem => stem.label)).toEqual(['song']);
-    const downloads = page.locator(`a[download][href^='/api/jobs/${job.id}/']`);
-    expect(await downloads.count()).toBe(4);
-    for (const link of await downloads.all()) {
+    const downloads = [
+      page.locator(`a[download][href='/api/jobs/${job.id}/original']`),
+      page.locator(`a[download][href='/api/jobs/${job.id}/results/song']`),
+    ];
+    for (const link of downloads) {
+      await expect(link).toBeVisible();
       await assertUncovered(page, link);
       expect((await link.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     }

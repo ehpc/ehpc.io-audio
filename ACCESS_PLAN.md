@@ -1,15 +1,17 @@
 # Invite-only access: implementation and deployment
 
-Invite-only access is deployed at `audio.ehpc.io` from application commit
+On 2026-11-09, the verified `audio.ehpc.io` deployment used application commit
 `c527bb43509759c217e62e07311e5a393f9ce9cf`, image digest
 `sha256:c72d57a6b3762490cb8027ca51eff2e765223c84642175e8aa84cb20f27fbcef`,
-and VPS configuration commit `f3e36c2ef36ff4ca3a6367ede3623127a2ccbf34`.
+and VPS configuration commit `f3e36c2ef36ff4ca3a6367ede3623127a2ccbf34`. This is
+a historical snapshot; the running VPS image and runtime are authoritative for
+current deployment status.
 Drawing a symbol and passkeys are not part of this design.
 
 ## Account and invitation behavior
 
-**Source changes awaiting deployment:** administrators have unlimited invitation
-slots (`invite_limit: null`); regular accounts retain their configurable finite
+The source implements unlimited invitation slots for administrators
+(`invite_limit: null`); regular accounts retain their configurable finite
 allowance, defaulting to three. Only administrators may revoke unused invitations
 or disable accounts and revoke sessions. Revoking an invitation never disables
 an activated account; activated invitations cannot be revoked. Administrators can
@@ -17,9 +19,7 @@ grant a regular user one additional slot atomically. The admin-only People view
 reports invitation usage and recent jobs and song searches, including available
 titles and queries, plus registration, last sign-in and deliberate-activity times.
 Unknown historical values remain unknown; existing session activity is migrated
-from its recorded timestamp, not from migration time. These new policy and
-activity changes are **not yet deployed**; the deployment record above describes
-the earlier implementation.
+from its recorded timestamp, not from migration time.
 
 Registration requires a valid single-use invitation and email verification;
 login requires a registered email and OTP. OTPs expire after ten minutes and
