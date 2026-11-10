@@ -243,6 +243,16 @@ def pitch_vocals_path(job: JobRecord) -> Path | None:
     return private if private.is_file() else None
 
 
+def pitched_lyrics_available(job: JobRecord) -> bool:
+    """Saved karaoke data and explicitly requested pitched text share exports."""
+    return (
+        job.status == JobStatus.DONE
+        and (job.options.detect_pitch or job.options.extract_pitched_lyrics)
+        and job.transcript is not None
+        and job.pitch_json is not None
+    )
+
+
 def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
     pitch = pitch_from_json(job.pitch_json) if job.pitch_json else None
     title = header_title(job.title)
@@ -290,7 +300,7 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
             pitched_lyrics_tracks(
                 job.transcript, pitch, title=title, output_key=output_key
             )
-            if job.options.extract_pitched_lyrics
+            if pitched_lyrics_available(job)
             and job.transcript is not None
             and pitch is not None
             else None

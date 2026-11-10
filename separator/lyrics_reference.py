@@ -660,7 +660,26 @@ def plan_reference(
         line_anchors.append(anchors)
         offset += count
     groups: list[list[int]] = []
-    explicit_stanzas = len({line.group for line in lines}) > 1
+
+    def context_start(
+        indices: list[int], anchors: list[TranscriptWord]
+    ) -> float | None:
+        provider_start = lines[indices[0]].provider_start_s
+        if review.provider_timing_status == "validated" and provider_start is not None:
+            start = max(0.0, provider_start - 1.5)
+            return min(start, anchors[0].start_s) if anchors else start
+        strong = next(
+            (
+                anchor
+                for anchor in anchors
+                if anchor.alignment_score is None or anchor.alignment_score >= 0.03
+            ),
+            None,
+        )
+        if strong is None:
+            return None
+        return max(0.0, min(strong.start_s - 2, anchors[0].start_s))
+
     for index, line in enumerate(lines):
         anchors = line_anchors[index]
         previous_anchors = [
@@ -668,15 +687,16 @@ def plan_reference(
             for previous in (groups[-1] if groups else [])
             for anchor in line_anchors[previous]
         ]
+        start = context_start(groups[-1], previous_anchors) if groups else None
         split = (
             not groups
             or line.group != lines[groups[-1][-1]].group
             or (
-                not explicit_stanzas
-                and anchors
+                anchors
                 and previous_anchors
                 and anchors[-1].end_s - previous_anchors[0].start_s > 26
             )
+            or (anchors and start is not None and anchors[-1].end_s > start + 30)
         )
         if split:
             groups.append([])
@@ -694,19 +714,16 @@ def plan_reference(
         ]
         if not strong:
             continue
-        provider_start = lines[indices[0]].provider_start_s
-        start = max(
-            0,
-            provider_start - 1.5
-            if review.provider_timing_status == "validated"
-            and provider_start is not None
-            else strong[0].start_s - 2,
-        )
+        start = context_start(indices, anchors)
+        assert start is not None  # A strong anchor was required above.
+        end = min(duration_s, start + 30)
+        if any(anchor.start_s < start or anchor.end_s > end for anchor in anchors):
+            continue
         phrases.append(
             ReferencePhrase(
                 indices,
                 start,
-                min(duration_s, start + 30),
+                end,
                 "\n".join(lines[index].text for index in indices),
                 [" ".join(variants[index]) for index in indices],
             )
@@ -722,11 +739,103 @@ def plan_reference(
     ), phrases
 
 
+def reuse_exact_asr_candidates(
+    transcript: Transcript,
+    review: ReferenceReview,
+    aligned: dict[int, list[TranscriptWord]],
+    evidence_words: list[TranscriptWord],
+) -> tuple[dict[int, list[TranscriptWord]], set[int]]:
+    """Reuse uniquely matched published ASR spans, without inventing times.
+
+    Validated provider bounds identify the occurrence, not the word timestamps.
+    Existing acoustic candidates, including disputed ones, are never replaced.
+    """
+    if review.provider_timing_status != "validated":
+        return aligned, set()
+    result = dict(aligned)
+    reused: set[int] = set()
+    for index, line in enumerate(review.lines):
+        if (
+            index in aligned
+            or line.provider_start_s is None
+            or line.provider_end_s is None
+        ):
+            continue
+        expected = tokens(line.text)
+        if not expected:
+            continue
+        local = [
+            word
+            for word in evidence_words
+            if line.provider_start_s <= word.start_s
+            and word.end_s <= line.provider_end_s
+        ]
+        # Count every raw lexical occurrence first, including words too weak to
+        # publish. An uncertain repetition still makes the occurrence ambiguous.
+        matches = [
+            local[start : start + len(expected)]
+            for start in range(len(local) - len(expected) + 1)
+            if all(
+                tokens(word.text) == [token]
+                for word, token in zip(
+                    local[start : start + len(expected)], expected, strict=True
+                )
+            )
+        ]
+        if len(matches) != 1:
+            continue
+        candidate = matches[0]
+        if not any(
+            transcript.words[start : start + len(candidate)] == candidate
+            for start in range(len(transcript.words) - len(candidate) + 1)
+        ):
+            continue
+        if (
+            any(
+                word.alignment_score is None
+                or not isfinite(word.alignment_score)
+                or word.alignment_score < 0.03
+                or not isfinite(word.start_s)
+                or not isfinite(word.end_s)
+                or word.start_s < 0
+                or word.end_s <= word.start_s
+                for word in candidate
+            )
+            or sum(word.alignment_score or 0 for word in candidate) / len(candidate)
+            < 0.04
+        ):
+            continue
+        if any(right.start_s < left.end_s for left, right in pairwise(candidate)):
+            continue
+        if any(
+            other
+            and (
+                (other_index < index and other[-1].end_s > candidate[0].start_s)
+                or (other_index > index and candidate[-1].end_s > other[0].start_s)
+            )
+            for other_index, other in result.items()
+        ):
+            continue
+        # The accepted ASR sequence must not hide a weak/omitted acoustic word
+        # within its interval, even if it was not published itself.
+        overlapping = [
+            word
+            for word in evidence_words
+            if word.start_s < candidate[-1].end_s and word.end_s > candidate[0].start_s
+        ]
+        if overlapping == candidate:
+            result[index] = candidate
+            reused.add(index)
+    return result, reused
+
+
 def apply_reference(
     transcript: Transcript,
     review: ReferenceReview,
     aligned: dict[int, list[TranscriptWord]],
     acoustic_evidence: dict[int, AcousticEvidence] | None = None,
+    *,
+    asr_reused: set[int] | None = None,
 ) -> Transcript:
     """Publish only locally corroborated timings; retain ASR-only extras/adlibs."""
     lines = []
@@ -848,7 +957,11 @@ def apply_reference(
         for word_index, word in enumerate(candidate):
             if word_index in published_indices:
                 positions.append(CanonicalWordPosition(len(words), index, word_index))
-                words.append(replace(word, origin="reference-aligned"))
+                words.append(
+                    word
+                    if asr_reused and index in asr_reused
+                    else replace(word, origin="reference-aligned")
+                )
         previous_end = end
         lines.append(
             replace(
@@ -860,13 +973,19 @@ def apply_reference(
                 unconfirmed_words=unconfirmed,
                 recognized_variant=" ".join(local) if local != expected else None,
                 reason=(
-                    "Reference-aligned after a positive whole-context acoustic "
-                    "comparison against the preserved independent ASR variant. "
-                    "Scores are not calibrated lyric correctness."
-                    if acoustically_resolved and local != expected
-                    else "Reference-aligned phrase with independent lexical "
-                    "support; not proof of every canonical word. Uncorroborated "
-                    "words have no published word timestamps."
+                    "Exact unprompted ASR words and their existing acoustic "
+                    "timestamps matched uniquely within validated provider bounds; "
+                    "the provider did not supply the word timings."
+                    if asr_reused and index in asr_reused
+                    else (
+                        "Reference-aligned after a positive whole-context acoustic "
+                        "comparison against the preserved independent ASR variant. "
+                        "Scores are not calibrated lyric correctness."
+                        if acoustically_resolved and local != expected
+                        else "Reference-aligned phrase with independent lexical "
+                        "support; not proof of every canonical word. Uncorroborated "
+                        "words have no published word timestamps."
+                    )
                 ),
             )
         )

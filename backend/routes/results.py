@@ -18,6 +18,7 @@ from backend.models import (
     lyrics_filename,
     original_filename,
     pitch_vocals_path,
+    pitched_lyrics_available,
     pitched_lyrics_filename,
 )
 from backend.pitch_reference import persist_pitch_vocals
@@ -260,7 +261,7 @@ async def download_pitched_lyrics(
     format: Literal["txt", "odt"] = "txt",
 ) -> Response:
     job = await _lyrics_job(job_id, session_id)
-    if not job.options.extract_pitched_lyrics or job.pitch_json is None:
+    if not pitched_lyrics_available(job) or job.pitch_json is None:
         raise HTTPException(404, "pitched lyrics not found")
     analysis = pitch_from_json(job.pitch_json)
     track = next((item for item in analysis.tracks if item.label == label), None)

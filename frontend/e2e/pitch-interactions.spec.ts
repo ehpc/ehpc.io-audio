@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator } from '@playwright/test';
 import { test } from './auth-fixture';
@@ -631,8 +631,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await page.getByRole('spinbutton', { name: 'Tempo (% of original)' }).fill('125');
       if (viewport.width <= 700) await activate(page.getByRole('tab', { name: 'Outputs', exact: true }));
       await page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true }).check();
-      await page.getByRole('checkbox', { name: 'Lyrics with pitches', exact: true }).check();
-      for (const name of ['Extract vocals', 'Extract lyrics', 'Extract instruments', 'Split drums, bass & other instruments']) {
+      for (const name of ['Extract vocals', 'Extract lyrics', 'Lyrics with pitches', 'Extract instruments', 'Split drums, bass & other instruments']) {
         const dependency = page.getByRole('checkbox', { name, exact: true });
         await expect(dependency).toBeChecked();
         await expect(dependency).toBeDisabled();
@@ -685,6 +684,38 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const transcript = results.getByRole('region', { name: 'Lyrics transcript', exact: true });
       await expect(pitchedLyrics).toBeVisible();
       await expect(transcript).toBeVisible();
+      const track = completed.pitched_lyrics![0];
+      const linkedNote = completed.pitch!.tracks[0].notes.find(note => note.word_indices.length > 0)!;
+      const linkedWord = completed.pitch!.words[linkedNote.word_indices[0]].text;
+      const lines = track.text.split('\n');
+      const wordLine = lines.findIndex(line => line.includes(linkedWord));
+      expect(wordLine).toBeGreaterThan(0);
+      expect(lines[wordLine - 1]).toContain(linkedNote.note);
+      expect(track.text).toContain('auld-lang-syne-full');
+      const txtPending = page.waitForEvent('download');
+      await activate(pitchedLyrics.getByRole('link', { name: 'Download lyrics with pitches TXT', exact: true }));
+      const txt = await txtPending;
+      expect(await readFile((await txt.path())!)).toEqual(Buffer.from(track.text, 'utf8'));
+      const odtPending = page.waitForEvent('download');
+      await activate(pitchedLyrics.getByRole('link', { name: 'Download lyrics with pitches ODT', exact: true }));
+      const odt = await odtPending;
+      const inspectOdt = String.raw`
+import json,sys,zipfile
+from xml.etree import ElementTree as ET
+from separator.pitched_lyrics_odt import MIME_TYPE,NS
+from tests.pitched_lyrics_odt_fixture import odf_text
+with zipfile.ZipFile(sys.argv[1]) as archive:
+ assert archive.infolist()[0].filename=='mimetype'
+ assert archive.infolist()[0].compress_type==zipfile.ZIP_STORED
+ assert archive.read('mimetype').decode()==MIME_TYPE
+ body=ET.fromstring(archive.read('content.xml'))
+ paragraphs=body.findall('office:body/office:text/text:p',NS)
+ print(json.dumps(''.join(odf_text(p)+('\n\n' if p.find('text:line-break',NS) is not None else '\n') for p in paragraphs)))
+`;
+      const odtText = JSON.parse(execFileSync('uv', ['run', 'python', '-c', inspectOdt, (await odt.path())!], {
+        cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8',
+      }));
+      expect(odtText).toBe(track.text);
       const karaokeBox = (await view.boundingBox())!;
       const pitchedBox = (await pitchedLyrics.boundingBox())!;
       const transcriptBox = (await transcript.boundingBox())!;
@@ -704,6 +735,15 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const initialResponse = await page.request.get(initialSource, { headers: { Range: 'bytes=0-255' } });
       expect(initialResponse.status()).toBe(206);
       expect(initialResponse.headers()['content-type']).toContain('audio/mp4');
+      const listening = await page.request.get(initialSource);
+      expect(listening.status()).toBe(200);
+      const listeningPath = info.outputPath('full-song-listening.mp4');
+      await writeFile(listeningPath, await listening.body());
+      const listeningMetadata = JSON.parse(execFileSync('ffprobe', [
+        '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name,profile',
+        '-of', 'json', listeningPath,
+      ], { encoding: 'utf8', timeout: 10_000 }));
+      expect(listeningMetadata.streams[0]).toMatchObject({ codec_name: 'aac', profile: 'LC' });
       await activate(view.getByRole('button', { name: 'Forward 5 seconds', exact: true }));
       let outputTime = 5;
       const playbackProof = [];
@@ -778,7 +818,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await info.attach('complete-karaoke-backgrounds', {
         body: Buffer.from(JSON.stringify({
           viewport, options: queued.options, publicLabels: completed.manifest?.map(stem => stem.label),
-          playback: playbackProof, downloads, originalFilename: original.suggestedFilename(),
+          playback: playbackProof, listeningMetadata, downloads, originalFilename: original.suggestedFilename(),
           boundary: 'Known synthetic stems replace neural inference only; real form/HTTP/DSP/native-media/download consumers.',
         })), contentType: 'application/json',
       });

@@ -31,6 +31,7 @@ from separator.lyrics_reference import (
     plan_reference,
     reference_lines,
     reference_review_from_dict,
+    reuse_exact_asr_candidates,
 )
 
 METADATA = ReferenceMetadata(
@@ -581,3 +582,182 @@ def test_unreferenced_txt_head_falls_back_to_title_and_marks_untimed_rows() -> N
     assert "[??:??] Raw words" in text
     assert "[Alignment unavailable: Insufficient acoustic evidence]" in text
     assert transcript_export_text(transcript) == text.removeprefix("Upload.wav\n")
+
+
+def test_explicit_long_stanzas_split_without_losing_anchored_source_times():
+    texts = [
+        "amber lanterns shine",
+        "silver branches sway",
+        "quiet gardens sleep",
+        "gentle breezes whisper",
+        "morning birds awaken",
+        "distant rivers wander",
+    ]
+    starts = [6, 16, 26, 36, 48, 58]
+    anchors = [
+        word
+        for start, text in zip(starts, texts, strict=True)
+        for word in words(text, start + 0.3)
+    ]
+    original = Transcript(words=anchors)
+    lines = [
+        ReferenceLine(
+            text,
+            group=0 if index < 4 else 1,
+            provider_start_s=start,
+            provider_end_s=starts[index + 1] if index + 1 < len(starts) else 75,
+        )
+        for index, (text, start) in enumerate(zip(texts, starts, strict=True))
+    ]
+    candidate = ReferenceReview(
+        "matched", "Exact recording", lines=lines, provider_timing_status="candidate"
+    )
+    planned, phrases = plan_reference(original, candidate, 80, anchors)
+    assert planned.provider_timing_status == "validated"
+    assert [i for phrase in phrases for i in phrase.line_indices] == list(range(6))
+    assert len(phrases) == 3
+    for phrase in phrases:
+        assert 0 < phrase.end_s - phrase.start_s <= 30
+        assert len({lines[index].group for index in phrase.line_indices}) == 1
+        for index in phrase.line_indices:
+            assert all(
+                phrase.start_s <= word.start_s < word.end_s <= phrase.end_s
+                for word in anchors[index * 3 : index * 3 + 3]
+            )
+    # The stanza boundary stays distinct even when the surrounding windows overlap.
+    assert phrases[1].line_indices == [3]
+    assert phrases[2].line_indices == [4, 5]
+
+
+def test_overlong_single_line_stays_untimed_instead_of_clipped():
+    original = Transcript(
+        words=[
+            TranscriptWord(1, 2, "amber", alignment_score=0.8),
+            TranscriptWord(16, 17, "lanterns", alignment_score=0.8),
+            TranscriptWord(32, 33, "shine", alignment_score=0.8),
+        ]
+    )
+    candidate = review("amber lanterns shine")
+    planned, phrases = plan_reference(original, candidate, 60, original.words)
+    assert phrases == []
+    result = apply_reference(original, planned, {})
+    assert result.reference is not None
+    assert result.reference.lines[0].status == "unconfirmed"
+    assert result.reference.lines[0].start_s is None
+    assert "[??:??] amber lanterns shine" in transcript_export_text(result)
+
+
+def test_reuse_only_unique_acoustic_asr_spans_and_preserve_conflicts():
+    lines = [
+        ReferenceLine("amber lanterns", provider_start_s=10, provider_end_s=15),
+        ReferenceLine("silver branches", provider_start_s=20, provider_end_s=25),
+        ReferenceLine("quiet gardens", provider_start_s=30, provider_end_s=35),
+        ReferenceLine("quiet gardens", provider_start_s=40, provider_end_s=45),
+        ReferenceLine("never heard", provider_start_s=50, provider_end_s=55),
+    ]
+    first = words("amber lanterns", 10.4)
+    disputed = words("silver branches", 20.4)
+    repeated = words("quiet gardens", 30.4) + words("quiet gardens", 40.4)
+    original = Transcript(words=first + disputed + repeated)
+    review = ReferenceReview(
+        "matched", "Exact recording", lines=lines, provider_timing_status="validated"
+    )
+    forced_conflict = words("silver branches", 21)
+    candidates, reused = reuse_exact_asr_candidates(
+        original, review, {1: forced_conflict}, original.words
+    )
+    assert reused == {0, 2, 3}
+    assert candidates[1] == forced_conflict
+    assert 4 not in candidates
+    result = apply_reference(original, review, candidates, {}, asr_reused=reused)
+    assert result.reference is not None
+    assert result.reference.lines[0].start_s == first[0].start_s
+    assert result.reference.lines[2].start_s == repeated[0].start_s
+    assert result.reference.lines[3].start_s == repeated[2].start_s
+    assert result.reference.lines[4].start_s is None
+    assert result.words[0].origin == "asr"
+    assert result.reference.lines[0].canonical_log_score is None
+    assert result.reference.lines[0].acoustic_log_odds is None
+    assert (
+        "provider did not supply the word timings" in result.reference.lines[0].reason
+    )
+    assert "[??:??] never heard" in transcript_export_text(result)
+
+    # Duplicate occurrences in one provider interval are ambiguous, not a match.
+    duplicate = first + words("amber lanterns", 13)
+    ambiguous = Transcript(words=duplicate)
+    none, reused = reuse_exact_asr_candidates(
+        ambiguous, replace(review, lines=lines[:1]), {}, duplicate
+    )
+    assert none == {} and reused == set()
+    # A second occurrence is still ambiguous if one of its acoustic words is
+    # too weak to appear in the published ASR transcript.
+    weak_repeat = words("amber lanterns", 13)
+    weak_repeat[0] = replace(weak_repeat[0], alignment_score=0.01)
+    raw = [*first, *weak_repeat]
+    published = Transcript(words=[*first, weak_repeat[1]])
+    none, reused = reuse_exact_asr_candidates(
+        published, replace(review, lines=lines[:1]), {}, raw
+    )
+    assert none == {} and reused == set()
+    # Weak hidden acoustic words inside an otherwise exact published match are
+    # not discarded to turn contradictory audio into a unique reference match.
+    interruption = TranscriptWord(11, 11.2, "other", alignment_score=0.01)
+    raw = sorted([*first, interruption], key=lambda word: word.start_s)
+    none, reused = reuse_exact_asr_candidates(
+        Transcript(words=first), replace(review, lines=lines[:1]), {}, raw
+    )
+    assert none == {} and reused == set()
+    rejected = replace(review, provider_timing_status="rejected")
+    assert reuse_exact_asr_candidates(original, rejected, {}, original.words) == (
+        {},
+        set(),
+    )
+
+
+def test_reused_span_never_overlaps_existing_neighbor_candidate():
+    original = Transcript(words=words("amber lanterns", 10.4))
+    review = ReferenceReview(
+        "matched",
+        "Exact recording",
+        lines=[
+            ReferenceLine("amber lanterns", provider_start_s=10, provider_end_s=15),
+            ReferenceLine("silver branches", provider_start_s=15, provider_end_s=20),
+        ],
+        provider_timing_status="validated",
+    )
+    existing = words("silver branches", 11.5)
+    candidates, reused = reuse_exact_asr_candidates(
+        original, review, {1: existing}, original.words
+    )
+    assert reused == set()
+    assert candidates == {1: existing}
+    evidence = {
+        1: AcousticEvidence(-0.1, -0.2, "silver branches", 100, "other", 10, 15)
+    }
+    result = apply_reference(original, review, candidates, evidence)
+    assert result.reference is not None
+    assert result.reference.lines[0].status == "unconfirmed"
+    assert result.reference.lines[1].status == "aligned"
+    assert result.reference.lines[1].start_s == 11.5
+
+
+@pytest.mark.parametrize(
+    "field,value", [("alignment_score", float("nan")), ("end_s", 10.4)]
+)
+def test_invalid_reused_raw_acoustic_word_cannot_be_published(field, value):
+    candidate = words("amber lanterns", 10.4)
+    # Simulate an invalid deserialized/raw object bypassing dataclass construction.
+    object.__setattr__(candidate[0], field, value)
+    original = Transcript(words=candidate)
+    review = ReferenceReview(
+        "matched",
+        "Exact recording",
+        lines=[ReferenceLine("amber lanterns", provider_start_s=10, provider_end_s=15)],
+        provider_timing_status="validated",
+    )
+    aligned, reused = reuse_exact_asr_candidates(original, review, {}, candidate)
+    assert aligned == {} and reused == set()
+    result = apply_reference(original, review, {})
+    assert result.reference is not None
+    assert result.reference.lines[0].status == "unconfirmed"

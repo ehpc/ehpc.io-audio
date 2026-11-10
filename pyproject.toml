@@ -6,6 +6,9 @@ requires-python = ">=3.15,<3.16"
 dependencies = [
     "modal>=1.6.2",
     "mutagen>=1.48.1",
+    "numpy>=2",
+    "soundfile>=0.13.1",
+    "soxr>=1",
     "fastapi",
     "uvicorn[standard]",
     "python-multipart",
@@ -58,7 +61,6 @@ markers = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    "numpy>=2",
     "pytest>=8",
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.3",

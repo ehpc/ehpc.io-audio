@@ -313,23 +313,18 @@ describe("SubmitForm", () => {
     expect(screen.queryByText("vocals", { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByText("instruments", { exact: true })).not.toBeInTheDocument();
   });
-  it("previews one pitched TXT per vocal target without selecting internal analysis outputs", async () => {
+  it("previews pitched lyric targets without selecting internal analysis outputs", async () => {
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.click(screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true }));
     expect(screen.getByText("Tracks and files you'll get (2)")).toBeInTheDocument();
-    expect(screen.getByText("Lyrics with pitches: vocals (TXT)")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true })).not.toBeChecked();
     expect(screen.queryByText("Lyrics (timestamped TXT)")).toBeNull();
     expect(screen.queryByText("Karaoke with pitches + JSON")).toBeNull();
     await userEvent.click(screen.getByRole("checkbox", { name: "Split lead & backing vocals", exact: true }));
     expect(screen.getByText("Tracks and files you'll get (5)")).toBeInTheDocument();
-    expect(screen.getByText("Lyrics with pitches: lead (TXT)")).toBeInTheDocument();
-    expect(screen.getByText("Lyrics with pitches: backing (TXT)")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("checkbox", { name: "Dereverb (remove reverb)", exact: true }));
     expect(screen.getByText("Tracks and files you'll get (9)")).toBeInTheDocument();
-    expect(screen.getByText("Lyrics with pitches: lead-dry (TXT)")).toBeInTheDocument();
-    expect(screen.getByText("Lyrics with pitches: backing-dry (TXT)")).toBeInTheDocument();
   });
 
   it("includes and locks karaoke outputs in both preview and an immutable submitted request", async () => {
@@ -343,8 +338,9 @@ describe("SubmitForm", () => {
     const lyrics = screen.getByRole("checkbox", { name: "Extract lyrics", exact: true });
     const instruments = screen.getByRole("checkbox", { name: "Extract instruments", exact: true });
     const drums = screen.getByRole("checkbox", { name: "Split drums, bass & other instruments", exact: true });
+    const pitched = screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true });
     await userEvent.click(karaoke);
-    for (const included of [vocals, lyrics, instruments, drums]) {
+    for (const included of [vocals, lyrics, pitched, instruments, drums]) {
       expect(included).toBeChecked();
       expect(included).toBeDisabled();
       await userEvent.click(included);
@@ -356,18 +352,19 @@ describe("SubmitForm", () => {
       expect(screen.getByText(label, { exact: true })).toBeInTheDocument();
     }
     expect(screen.getByText("Drums + Vocals", { exact: true })).toBeInTheDocument();
-    for (const name of ["Lyrics with pitches", "Split by gender (male/female)", "Split lead & backing vocals"]) {
+    for (const name of ["Split by gender (male/female)", "Split lead & backing vocals"]) {
       expect(screen.getByRole("checkbox", { name, exact: true })).not.toBeChecked();
       expect(screen.getByRole("checkbox", { name, exact: true })).toBeEnabled();
     }
     await userEvent.click(submitButton());
     expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({ detect_pitch: true, extract_vocals: true, extract_lyrics: true,
-        extract_instruments: true, extract_pitched_lyrics: false, drums: true, genders: false, mixes: [] }),
+        extract_instruments: true, extract_pitched_lyrics: true, drums: true, genders: false, mixes: [] }),
     }));
     await userEvent.click(karaoke);
     expect(vocals).not.toBeChecked();
     expect(lyrics).not.toBeChecked();
+    expect(pitched).not.toBeChecked();
     expect(instruments).not.toBeChecked();
     expect(drums).not.toBeChecked();
     expect(screen.queryByText("Drums + Vocals", { exact: true })).toBeNull();
@@ -395,6 +392,8 @@ describe("SubmitForm", () => {
       await userEvent.click(karaoke);
       await userEvent.click(screen.getByRole("button", { name: "Upload audio", exact: true }));
       await userEvent.click(screen.getByRole("button", { name: "From URL", exact: true }));
+      expect(pitchedText).toBeChecked();
+      expect(pitchedText).toBeDisabled();
       expect(vocals).toBeDisabled();
       expect(lyrics).toBeDisabled();
       await userEvent.click(karaoke);
@@ -413,6 +412,27 @@ describe("SubmitForm", () => {
       }));
     },
   );
+
+  it.each([false, true])("restores the prior pitched-lyrics selection (%s) after karaoke", async (wanted) => {
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 45, status: "queued", position: 1 });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
+    const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
+    const pitched = screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true });
+    if (wanted) await userEvent.click(pitched);
+    await userEvent.click(karaoke);
+    expect(pitched).toBeChecked();
+    expect(pitched).toBeDisabled();
+    await userEvent.click(pitched);
+    expect(pitched).toBeChecked();
+    await userEvent.click(karaoke);
+    expect(pitched).toBeEnabled();
+    expect((pitched as HTMLInputElement).checked).toBe(wanted);
+    fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/source" } });
+    await userEvent.click(submitButton());
+    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({ detect_pitch: false, extract_pitched_lyrics: wanted }),
+    }));
+  });
 
   it.each([[false, false], [true, false], [false, true], [true, true]])(
     "restores public instruments=%s and drums=%s independently after karaoke, without inserting mixes",

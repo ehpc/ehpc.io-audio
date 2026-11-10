@@ -83,7 +83,7 @@ def _predict_decoded(source: Path, cache: Path) -> dict:
     """Return full-context predictions without source-clock section assembly."""
     # Heavy dependencies must never be imported by the web process or separator.
     os.environ["HF_HOME"] = str(cache / "huggingface")
-    import soundfile as sf  # ty: ignore[unresolved-import]
+    import soundfile as sf
     from huggingface_hub import snapshot_download  # ty: ignore[unresolved-import]
     from transformers import AutoModel  # ty: ignore[unresolved-import]
 

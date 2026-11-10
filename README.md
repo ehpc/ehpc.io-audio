@@ -242,13 +242,18 @@ The original source remains downloadable and unchanged by processing, preserving
 the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
 workflow. A completed job with no generated audio has an empty result manifest;
 its original download remains available in Results when the job is open. Lyrics
-are a separate optional text output and do not create an audio stem.
+are a separate optional text output and do not create an audio stem. Selecting
+**Karaoke with pitches** also includes and locks **Lyrics with pitches** (TXT and
+ODT); disabling it restores the previous independent preference.
 
 In this source, expanded results show **Karaoke with
 pitches**, **Lyrics with pitches**, then **Lyrics**. Completed History entries
 remain compact, showing title, status, date, key, adjustments, output count and
 an action to open Results; pitch JSON remains available when present. Open the
 job to see lyrics and individual audio downloads.
+Existing completed karaoke jobs with both saved transcript and pitch data expose
+their derived TXT and ODT downloads in Results without reprocessing. Pitch-only
+jobs without saved lyrics do not offer these downloads.
 
 Each generated MP3 embeds a `Title` tag identical to its canonical download
 filename without the `.mp3` extension. This title includes the output stem and
@@ -258,20 +263,24 @@ original download is never retagged; its bytes remain unchanged.
 
 Native players use owner-protected **listening** requests (`?playback=1`) while
 download links keep their original URLs and bytes. Standalone MP3 audio at
-16 kHz or higher is packet-copied into a seek-indexed MP4 container, without
-re-encoding, for accurate partially buffered playback. This applies to original
-audio, generated outputs and the timeline's private vocal reference. All original
-decoded samples and headroom are preserved; the container may retain trailing
-MP3 encoder padding without an onset offset.
+16 kHz or higher is privately re-encoded as 256 kbps AAC-LC in a faststart,
+seek-indexed MP4 container, with edit-list timing and sample timescale preserving
+the source clock. This conversion applies only to private listening copies of
+original audio, generated outputs and the timeline's private vocal reference.
+It is lossy, not packet-copying or bit/headroom-preserving, and may alter peaks,
+including creating over-full-scale peaks.
 
 Listening copies are prepared locally on demand and cached by source content,
-FFmpeg/FFprobe binary revisions and the listening-algorithm version. Eligible
+FFmpeg/FFprobe binary revisions and the listening-algorithm version. The v2
+playback-cache change invalidates only listening-copy entries; it does not
+regenerate other cached source, key, stem, lyrics or analysis data. Eligible
 preparation failures are visible errors, not silent fallback to the inaccurate
-raw stream. MP3 below 16 kHz and other input formats retain their existing native
-bytes/MIME behavior. Downloads, embedded download titles, analysis inputs,
-pitch/lyric timestamps and tempo-clock mappings are unchanged; this is not a
-transcription or alignment-model correction. Physical Safari/iOS playback remains
-unverified.
+raw stream. MP3 below 16 kHz and other input formats retain their existing
+behavior. Original and generated downloads, embedded download titles, analysis
+inputs, pitch/lyric timestamps and tempo-clock mappings are unchanged; this is
+not a transcription or alignment-model correction. Linux WebKit and Chromium
+playback and seeking were verified; physical iPhone/AVFoundation playback
+remains untested.
 
 When **Extract lyrics** is selected, the worker looks up an exact-version lyric
 reference from credible music metadata, independently recognizes the full source
@@ -281,6 +290,26 @@ metadata or a provider outage uses the new unprompted recognizer without a
 reference. This is **reference-aligned candidate text, not verified lyrics**:
 conflicting variants, unconfirmed lines and unsupported word timings remain
 explicit. See [reference-first lyrics](#reference-first-lyrics-and-audio-alignment).
+
+Reference stanzas are partitioned into alignment contexts of at most 30 seconds,
+each covering its anchors. Reuse of a published ASR word span requires validated
+provider bounds, an exact unambiguous span, and no existing disputed candidate
+or weak-word conflict; reused timings are not presented as fresh CTC measurements.
+The reference policy changes only the final reference-transcript cache key;
+changed CTC contexts get distinct stage keys. Unchanged raw ASR/MMS, key, stem,
+download and pitch caches remain reusable.
+For legacy records missing PCM metadata, CPU decoding must reproduce the exact
+MMS baseline identity and validate its producer provenance before recording
+metadata; otherwise processing fails closed, without rerunning raw ASR/MMS.
+
+In one My Way replay, accepted line onsets increased from 24/37 to 36/37 and
+canonical words from 154 to 235, retaining all 24 prior lines and 154 prior word
+positions; the largest prior onset shift was 53.4 ms. Twelve newly accepted
+lines' onsets differed from unprompted-ASR first anchors by a median 5.3 ms and
+maximum 105.4 ms; these are not human annotations or accuracy guarantees. One
+line remains unconfirmed. Existing saved transcript and pitch indices are not
+rewritten; a new run rebuilds lyrics and word associations while reusing raw
+pitch data.
 Internal vocal prerequisites do not become selected audio outputs, and ordinary
 download-only remains the no-GPU default.
 
@@ -310,7 +339,7 @@ authorization does not grant additional rights under the model licenses.
 
 | Selection | Output label or file |
 |---|---|
-| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), timestamped lyrics, and included `vocals`, `instruments`, `drums`, `bass`, `other-instruments`, and `drums-vocals` downloads |
+| Karaoke with pitches | Musical-note karaoke timeline and pitch JSON (output audio clock), timestamped lyrics with pitched TXT/ODT downloads, and included `vocals`, `instruments`, `drums`, `bass`, `other-instruments`, and `drums-vocals` downloads |
 | Extract vocals | `vocals` |
 | Extract lyrics | Timestamped TXT and lyrics/provenance JSON (original audio clock) |
 | Lyrics with pitches | Aligned pitch-over-word TXT/ODT per vocal stem, shown when the job is open (output audio clock) |
@@ -664,9 +693,12 @@ every pitch remains reachable by scrolling. Detected notes illuminate only for
 the selected vocal track on its output clock while it is playing. Press and hold
 keys with a pointer, touch, Space or Enter for an independent synthesized
 piano-like tone; the view remains stable during a held note, which sustains and
-fades briefly on release. Detection does not produce automatic piano sound.
-The instrument uses browser Web Audio rather than samples, suspends when idle,
-and reports unavailable audio.
+fades briefly on release. An icon-labelled vertical **Piano volume** control to
+the right of the keyboard adjusts only these manually played tones, including
+notes currently held; zero is silent and does not affect the song or backing
+track. Detection does not produce automatic piano sound. The instrument uses
+browser Web Audio rather than samples, suspends when idle, and reports
+unavailable audio.
 
 With **Follow playback** enabled, the timeline advances when the playhead passes
 about 75% of the visible note area, excluding the sticky note axis, leaving room
@@ -860,12 +892,11 @@ a proprietary application containing them.
   `MODAL_TOKEN_SECRET`). `modal` is a project dependency (installed via
   `make init`), not a global command, so it's always invoked through `uv run`.
 
-`uv sync --frozen` includes the development group: pytest, Ruff, ty and NumPy
-for independent numerical-oracle tests of the moved pitch postprocessing.
-NumPy is **dev-only**, not a new VPS inference dependency. The production CPU
-graph uses standard-library arrays and the native media tools above; do not
-install Torch, Qwen, MMS, CREPE or SongFormer on the VPS. Production installs
-continue to exclude the development group.
+`uv sync --frozen` includes the development tools pytest, Ruff and ty. NumPy is
+also used by independent numerical-oracle tests of the moved pitch
+postprocessing. Production CPU audio decoding and assembly use NumPy, SoundFile
+and soxr; they do not install Torch, Qwen, MMS, CREPE or SongFormer on the VPS.
+Production installs continue to exclude the development group.
 
 ### Using Nix
 

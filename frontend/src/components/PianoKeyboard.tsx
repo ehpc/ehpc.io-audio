@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show, type Component } from "solid-js";
 import type { PitchNoteDTO } from "~/api";
-import { createPianoVoice, type PianoVoice } from "~/lib/pianoAudio";
+import { createPianoOutput, createPianoVoice, setPianoVolume, type PianoVoice } from "~/lib/pianoAudio";
 import { noteName } from "~/lib/pitchNotes";
 import { pianoLayout, PIANO_BLACK_WIDTH, PIANO_WHITE_WIDTH, type PianoLayout } from "~/lib/pianoLayout";
 
@@ -15,11 +15,13 @@ interface PianoKeyboardProps {
 const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
   const [held, setHeld] = createSignal<Set<number>>(new Set());
   const [error, setError] = createSignal("");
+  const [volume, setVolume] = createSignal(100);
   const tokens = new Map<string, number>();
   let generation = 0;
   const voices = new Map<number, PianoVoice>();
   const liveVoices = new Set<PianoVoice>();
   let context: AudioContext | undefined;
+  let output: GainNode | undefined;
   let disposed = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let viewport!: HTMLDivElement;
@@ -95,6 +97,8 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
     try {
       if (!context || context.state === "closed") {
         if (!window.AudioContext) throw new Error("Web Audio is not supported in this browser.");
+        output?.disconnect();
+        output = undefined;
         context = new window.AudioContext();
       }
       const instrument = context;
@@ -106,7 +110,8 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
         }
         if (instrument.state !== "running") throw new Error("Audio could not start.");
         let voice: PianoVoice;
-        voice = createPianoVoice(instrument, midi, instrument.destination, () => liveVoices.delete(voice));
+        output ??= createPianoOutput(instrument, volume() / 100);
+        voice = createPianoVoice(instrument, midi, output, () => liveVoices.delete(voice));
         liveVoices.add(voice);
         voices.set(midi, voice);
         setError("");
@@ -135,12 +140,14 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
     releaseAll();
     if (idleTimer !== undefined) clearTimeout(idleTimer);
     for (const voice of liveVoices) voice.dispose();
+    output?.disconnect();
     if (context && context.state !== "closed") void context.close().catch(() => {});
     window.removeEventListener("blur", releaseAll);
     document.removeEventListener("visibilitychange", visibility);
   });
   return <section class="piano-keyboard" aria-label="Piano keyboard">
     <p>Play the piano · detected notes light up during playback</p>
+    <div class="piano-controls">
     <div class="piano-scroll" ref={viewport}>
       <div class="piano-keys" style={{ width: `${layout().width}px`, "margin-inline": "auto", "--piano-white-width": `${PIANO_WHITE_WIDTH}px`, "--piano-black-width": `${PIANO_BLACK_WIDTH}px` }}>
         <For each={layout().keys}>{key => <button type="button"
@@ -156,6 +163,19 @@ const PianoKeyboard: Component<PianoKeyboardProps> = (props) => {
           onBlur={() => { release(`k${key.midi}: `); release(`k${key.midi}:Enter`); }}
         >{!key.black && noteName(key.midi)}</button>}</For>
       </div>
+    </div>
+    <label class="piano-volume">
+      <input type="range" min="0" max="100" step="1" value={volume()} aria-label="Piano volume"
+        aria-valuetext={`${volume()}%`}
+        onInput={event => {
+          const value = event.currentTarget.valueAsNumber;
+          setVolume(value);
+          if (output) setPianoVolume(output, value / 100);
+        }} />
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path d="M3 9v6h4l5 4V5L7 9H3zM16 9a4 4 0 0 1 0 6M19 6a8 8 0 0 1 0 12" />
+      </svg>
+    </label>
     </div>
     <Show when={error()}><p class="piano-error" role="alert">{error()}</p></Show>
   </section>;

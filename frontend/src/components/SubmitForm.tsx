@@ -44,6 +44,7 @@ const PROCESSING_OPTIONS: OptionDescriptor[] = [
 const KARAOKE_INCLUDED_OPTIONS: Partial<Record<BooleanOptionKey, string>> = {
   extract_vocals: "Full vocals are included with Karaoke with pitches for the vocal listening reference.",
   extract_lyrics: "Lyrics are included with Karaoke with pitches for timed word highlighting.",
+  extract_pitched_lyrics: "Lyrics with pitches are included with Karaoke with pitches for TXT and ODT downloads.",
   extract_instruments: "Instruments are included with Karaoke with pitches for an instrumental backing track and download.",
   drums: "Drum separation is included with Karaoke with pitches for the drums-only and Drums + Vocals backing tracks. Drums, bass and other instruments are all available as downloads.",
 };
@@ -453,10 +454,10 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
           </div>
           <p class="workspace-helper"><strong>Needed stems are extracted automatically.</strong> Only your selected mixes and outputs are downloaded, plus the unchanged original.</p>
           <Show when={options().detect_pitch}>
-            <p class="workspace-helper">Karaoke includes vocals, lyrics, instruments and drum separation so all four backing choices are available. Drums, bass and other instruments are separate downloads. Vocal splits, cleanup and mixes remain optional.</p>
+            <p class="workspace-helper">Karaoke includes vocals, lyrics, lyrics with pitches, instruments and drum separation so all four backing choices are available. Drums, bass and other instruments are separate downloads. Vocal splits, cleanup and mixes remain optional.</p>
           </Show>
           <Show when={options().extract_pitched_lyrics}>
-            <p class="workspace-helper">Pitch-over-word TXT for each selected vocal stem, or full vocals internally if none selected. This text-only option does not add audio exports or select karaoke.</p>
+            <p class="workspace-helper">Pitch-over-word lyrics for each selected vocal stem, or full vocals internally if none selected, are available as TXT and ODT. This text option does not add audio exports.</p>
           </Show>
         </section>
         <aside class="adjustment-rail" aria-label="Adjustments and output preview">
@@ -533,7 +534,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
               <Show when={options().extract_lyrics}><span>Lyrics (timestamped TXT)</span></Show>
               <Show when={options().detect_pitch}><span>Karaoke with pitches + JSON</span></Show>
               <For each={options().extract_pitched_lyrics ? expectedPitchStems(options()) : []}>
-                {label => <span>Lyrics with pitches: {label} (TXT)</span>}
+                {label => <span>Lyrics with pitches: {label} (TXT/ODT)</span>}
               </For>
             </div>
             <p class="workspace-helper">Your original is included, unchanged.</p>

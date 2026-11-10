@@ -1,7 +1,11 @@
 """Source-clock cache dependencies exercised through finite CPU inference."""
 
+import io
+import json
+import wave
+from array import array
 from collections import Counter
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 from audio_samples import mp3_measurements, tone_wav
@@ -10,7 +14,13 @@ from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 from separator import processing
 from separator.artifact_cache import cache_key, digest
 from separator.inference import InferenceRequest
-from separator.lyrics import Transcript, TranscriptWord
+from separator.lyrics import (
+    RecognitionChunk,
+    Transcript,
+    TranscriptWord,
+    recognition_transcript,
+)
+from separator.lyrics_reference import ReferenceReview
 from separator.options import MixSpec, SeparationOptions
 from separator.pitch import pitch_from_json
 from separator.producer_manifest import save_manifest
@@ -283,3 +293,90 @@ def test_baseline_alignment_tracks_decoded_pcm_not_container_or_asr_version(tmp_
     changed = processing.transcribe_source(tone_wav((330,), 4), context, None)
     assert changed.words == first.words
     assert calls[-2:] == ["recognition", "alignment"]
+
+
+@pytest.mark.parametrize("scenario", ["matching", "wrong-pcm", "wrong-producer"])
+def test_legacy_asr_migrates_only_when_real_pcm_matches_baseline(tmp_path, scenario):
+    # Independently known PCM16 values yield exact float32 sample values.
+    samples = array("h", [0, 4096, 0, -4096]) * (4 * 16000 // 4)
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(samples.tobytes())
+    source = stream.getvalue()
+    pcm = array("f", (value / 32768 for value in samples))
+    identity = [16000, "f", [len(pcm)], digest(memoryview(pcm))]
+    manifest = fixture_manifest(tmp_path / "producer")
+    root = tmp_path / "cache"
+    old_manifest = manifest
+    if scenario == "wrong-producer":
+        old_manifest = replace(
+            manifest,
+            asr=replace(
+                manifest.asr,
+                alignment_packages={
+                    **manifest.asr.alignment_packages,
+                    "torchaudio": "different-producer",
+                },
+            ),
+        )
+    root.mkdir()
+    save_manifest(root / "legacy-producer-manifest.json", old_manifest)
+    chunk = RecognitionChunk(0, 4, 0, 4, "amber", "English")
+    word = TranscriptWord(1, 1.5, "amber", alignment_score=0.8)
+    transcript = recognition_transcript(
+        [chunk],
+        [[word]],
+        str(manifest.versions["QWEN_MODEL"]),
+        str(manifest.versions["ALIGNMENT_MODEL"]),
+        0.03,
+    )
+    raw = json.dumps([asdict(chunk)]).encode()
+    raw_key = cache_key(
+        manifest.versions["ASR"],
+        manifest.versions["QWEN_REVISION"],
+        digest(source),
+        manifest.asr.ffmpeg,
+        dict(manifest.asr.packages),
+    )
+    recognition_path = root / "qwen-asr" / "results" / "recognition" / f"{raw_key}.bin"
+    recognition_path.parent.mkdir(parents=True)
+    recognition_path.write_bytes(raw)
+    stored_identity = identity if scenario != "wrong-pcm" else [*identity[:3], "0" * 64]
+    baseline_key = cache_key(
+        manifest.versions["ALIGNMENT"],
+        manifest.versions["ALIGNMENT_MODEL"],
+        stored_identity,
+        digest(raw),
+        dict(manifest.asr.alignment_packages),
+    )
+    baseline_path = (
+        root / "qwen-asr" / "results" / "recognition-alignment" / f"{baseline_key}.bin"
+    )
+    baseline_path.parent.mkdir(parents=True)
+    baseline_path.write_text(
+        json.dumps({"transcript": asdict(transcript), "evidence": [asdict(word)]})
+    )
+
+    def no_inference(*args):
+        raise AssertionError("Legacy verification must not rerun either model")
+
+    context = processing.ProcessingContext(root, manifest, no_inference)
+    review = ReferenceReview("skipped", "No reference")
+    info_path = root / "recognition-info" / f"{raw_key}.json"
+    if scenario == "matching":
+        result = processing._transcribe_source(source, context, review, {})
+        assert result.words == [word]
+        assert result.recognition_chunks == [chunk]
+        assert json.loads(info_path.read_text()) == {
+            "duration_s": 4.0,
+            "pcm_identity": identity,
+        }
+        # The next consumer uses verified cached metadata, never a model call.
+        assert processing._transcribe_source(source, context, review, {}) == result
+    else:
+        with pytest.raises(RuntimeError):
+            processing._transcribe_source(source, context, review, {})
+        assert not info_path.exists()

@@ -111,3 +111,48 @@ for (const width of [1440, 390]) {
     await foreign.close();
   });
 }
+
+test('historical karaoke exposes saved pitched lyrics without reprocessing', async ({ page, browser }, info) => {
+  expect(process.env.QUEUE_CONCURRENCY).toBe('0');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/');
+  const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
+  const response = await page.request.post('/api/jobs', {
+    headers: { Origin: process.env.E2E_BASE_URL! },
+    multipart: {
+      file: { name: 'historical-karaoke.wav', mimeType: 'audio/wav', buffer: source },
+      detect_pitch: 'true', extract_lyrics: 'true',
+    },
+  });
+  expect(response.ok()).toBe(true);
+  const id = (await response.json()).id as number;
+  execFileSync('uv', ['run', 'python', '-c', publish, String(id)], {
+    cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+  });
+  await page.reload();
+  const job = await (await page.request.get(`/api/jobs/${id}`)).json() as JobDTO;
+  expect(job.options.extract_pitched_lyrics).toBe(false);
+  const view = page.getByRole('region', { name: 'Lyrics with pitches', exact: true }).first();
+  await expect(view).toBeVisible();
+  const track = job.pitched_lyrics![0];
+  const txtPending = page.waitForEvent('download');
+  await view.getByRole('link', { name: 'Download lyrics with pitches TXT', exact: true }).click();
+  const txt = await txtPending;
+  expect(await readFile((await txt.path())!, 'utf8')).toBe(track.text);
+  const odtPending = page.waitForEvent('download');
+  await view.getByRole('link', { name: 'Download lyrics with pitches ODT', exact: true }).click();
+  const odt = await odtPending;
+  const path = info.outputPath('historical.odt');
+  await odt.saveAs(path);
+  const decoded = JSON.parse(execFileSync('uv', ['run', 'python', '-c', inspect, path], {
+    cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8',
+  }));
+  expect(decoded.text).toBe(track.text);
+  const foreign = await browser.newContext();
+  await authenticateOutsider(foreign);
+  const outsider = await foreign.newPage();
+  await outsider.goto(process.env.E2E_BASE_URL!);
+  expect((await outsider.request.get(`/api/jobs/${id}/pitched-lyrics/${track.label}/download`)).status()).toBe(404);
+  expect((await outsider.request.get(`/api/jobs/${id}/pitched-lyrics/${track.label}/download?format=odt`)).status()).toBe(404);
+  await foreign.close();
+});

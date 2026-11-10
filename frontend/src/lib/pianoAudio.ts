@@ -8,6 +8,25 @@ const PEAK_GAIN = 0.065;
 const SUSTAIN_GAIN = 0.024;
 const RELEASE_SECONDS = 0.12;
 
+// One output per instrument controls every voice without changing its envelope.
+export function createPianoOutput(context: BaseAudioContext, volume: number): GainNode {
+  const output = context.createGain();
+  output.gain.value = volume;
+  output.connect(context.destination);
+  return output;
+}
+
+export function setPianoVolume(output: GainNode, volume: number, at = output.context.currentTime): void {
+  if (output.context.state !== "running" && at === output.context.currentTime) {
+    output.gain.cancelScheduledValues(at);
+    output.gain.setValueAtTime(volume, at);
+    return;
+  }
+  output.gain.cancelScheduledValues(at);
+  output.gain.setTargetAtTime(volume, at, 0.005);
+  output.gain.setValueAtTime(volume, at + 0.05);
+}
+
 
 // Harmonic oscillators and a decaying envelope give a piano-like (not sampled) tone.
 // OfflineAudioContext is accepted so tests can render the actual instrument.

@@ -16,8 +16,14 @@ from backend import config, db, inference, modal_client, playback, queue
 from backend.models import ResultManifestEntry
 from backend.routes import results
 from separator import cache_versions
+from separator.artifact_cache import cache_key
 from separator.pitch import PitchAnalysis, PitchTrack, pitch_to_json
-from tests.audio_samples import decode_audio, ffmpeg_tone, frequency_amplitude
+from tests.audio_samples import (
+    active_bounds,
+    decode_audio,
+    ffmpeg_tone,
+    frequency_amplitude,
+)
 
 pytestmark = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
@@ -25,11 +31,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _mp3(tmp_path: Path, rate: int = 48000, frequency: float = 440) -> Path:
+def _mp3(
+    tmp_path: Path, rate: int = 48000, frequency: float = 440, amplitude: float = 0.9
+) -> Path:
     wav = ffmpeg_tone(
         tmp_path / f"tone-{rate}-{frequency}.wav",
         (frequency, 660),
-        amplitude=1.2,
+        amplitude=amplitude,
         duration_s=0.8,
         sample_rate=rate,
     )
@@ -72,54 +80,6 @@ def _pcm(path: Path) -> bytes:
         check=True,
         capture_output=True,
     ).stdout
-
-
-def _encoded_frames(path: Path) -> bytes:
-    return subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-i",
-            str(path),
-            "-map",
-            "0:a:0",
-            "-c:a",
-            "copy",
-            "-f",
-            "data",
-            "pipe:1",
-        ],
-        check=True,
-        capture_output=True,
-    ).stdout
-
-
-def _discard_padding(source: Path) -> int:
-    value = json.loads(
-        subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "a:0",
-                "-show_packets",
-                "-show_entries",
-                "packet_side_data=discard_padding",
-                "-of",
-                "json",
-                str(source),
-            ],
-            check=True,
-            capture_output=True,
-        ).stdout
-    )
-    return sum(
-        side.get("discard_padding", 0)
-        for packet in value["packets"]
-        for side in packet.get("side_data_list", [])
-    )
 
 
 def _job(
@@ -173,14 +133,15 @@ def _no_models(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(results, "recover_vocals", forbidden)
 
 
+@pytest.mark.parametrize("amplitude", [0.5, 0.9])
 @pytest.mark.parametrize(
     ("endpoint", "rate"),
     [("original", 48000), ("results/vocals", 44100), ("pitch-reference/vocals", 16000)],
 )
 def test_listening_consumption_preserves_signal_and_downloads(
-    client: TestClient, tmp_path: Path, endpoint: str, rate: int
+    client: TestClient, tmp_path: Path, endpoint: str, rate: int, amplitude: float
 ) -> None:
-    source = _mp3(tmp_path, rate)
+    source = _mp3(tmp_path, rate, amplitude=amplitude)
     # Actual format, not extension or upload MIME, determines eligibility.
     job_id = _job(
         client,
@@ -198,22 +159,44 @@ def test_listening_consumption_preserves_signal_and_downloads(
     assert response.headers["content-type"] == "audio/mp4"
     assert response.headers["content-disposition"] == "inline"
     consumed = decode_audio(response.content)
+    assert consumed.codec == "aac"
     assert consumed.sample_rate == rate
     assert len(consumed.channels) == 2
-    assert consumed.peak > 1.0  # Float decoder headroom must not be clipped.
-    assert frequency_amplitude(consumed, 440) == pytest.approx(1.2, abs=0.03)
-    assert frequency_amplitude(consumed, 660, channel=1) == pytest.approx(1.2, abs=0.03)
-    indexed = tmp_path / "consumed.mp4"
-    indexed.write_bytes(response.content)
-    source_pcm, indexed_pcm = _pcm(source), _pcm(indexed)
-    assert indexed_pcm[: len(source_pcm)] == source_pcm
-    assert len(indexed_pcm) - len(source_pcm) == _discard_padding(source) * 2 * 4
-    assert _encoded_frames(indexed) == _encoded_frames(source)
+    assert consumed.duration_s == pytest.approx(0.8, abs=0.08)
+    assert frequency_amplitude(consumed, 440) == pytest.approx(amplitude, abs=0.03)
+    assert frequency_amplitude(consumed, 660, channel=1) == pytest.approx(
+        amplitude, abs=0.03
+    )
+    assert frequency_amplitude(consumed, 660) < 0.03
+    assert frequency_amplitude(consumed, 440, channel=1) < 0.03
+    assert frequency_amplitude(consumed, 880) < amplitude * 0.03
+    assert frequency_amplitude(consumed, 1320, channel=1) < amplitude * 0.03
+    start, end = active_bounds(consumed)
+    assert start <= 0.03
+    assert end == pytest.approx(0.8, abs=0.08)
     assert db.get_job(job_id) == before
     assert cache_versions.file_revision(original) == original_hash
     assert cache_versions.file_revision(public) == public_hash
     download = client.get(f"/api/jobs/{job_id}/original")
     assert hashlib.sha256(download.content).hexdigest() == original_hash
+    assert frequency_amplitude(decode_audio(download.content), 440) == pytest.approx(
+        amplitude, abs=0.03
+    )
+
+
+def test_loud_original_download_remains_unchanged_by_lossy_listening(
+    client: TestClient, tmp_path: Path
+) -> None:
+    source = _mp3(tmp_path, amplitude=1.2)
+    original_bytes = source.read_bytes()
+    job_id = _job(client, source)
+    listening = client.get(f"/api/jobs/{job_id}/original?playback=1")
+    assert listening.status_code == 200
+    decoded = decode_audio(listening.content)
+    assert decoded.codec == "aac"
+    assert decoded.duration_s == pytest.approx(0.8, abs=0.08)
+    download = client.get(f"/api/jobs/{job_id}/original")
+    assert download.content == original_bytes
     assert frequency_amplitude(decode_audio(download.content), 440) == pytest.approx(
         1.2, abs=0.03
     )
@@ -224,7 +207,7 @@ def test_out_of_scope_audio_still_plays_without_level_or_clock_changes(
     client: TestClient, tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if kind == "mpeg25":
-        source = _mp3(tmp_path, 8000)
+        source = _mp3(tmp_path, 8000, amplitude=1.2)
     else:
         source = ffmpeg_tone(
             tmp_path / "input.wav", (440, 660), amplitude=0.6, duration_s=0.8
@@ -288,10 +271,14 @@ def test_owner_checked_before_cache_and_missing_private_audio_never_recovers(
     endpoints = ["original", "results/vocals", "pitch-reference/vocals"]
     for endpoint in endpoints:
         result = client.get(f"/api/jobs/{job_id}/{endpoint}?playback=1")
-        assert frequency_amplitude(decode_audio(result.content), 440) > 1
+        assert frequency_amplitude(decode_audio(result.content), 440) == pytest.approx(
+            0.9, abs=0.03
+        )
     (config.RESULTS_DIR / str(job_id) / "vocals.mp3").unlink()
     private = client.get(f"/api/jobs/{job_id}/pitch-reference/vocals?playback=1")
-    assert frequency_amplitude(decode_audio(private.content), 440) > 1
+    assert frequency_amplitude(decode_audio(private.content), 440) == pytest.approx(
+        0.9, abs=0.03
+    )
 
     def forbidden_cache(*args):
         pytest.fail("Unauthorized/missing sources must not reach the playback cache")
@@ -321,7 +308,7 @@ def test_cached_head_and_ranges_reconstruct_native_audio_without_native_work(
     length = len(first.content)
 
     def no_more_native(*args):
-        pytest.fail("A valid listening cache hit must not probe or mux")
+        pytest.fail("A valid listening cache hit must not probe or transcode")
 
     monkeypatch.setattr(playback, "_run", no_more_native)
     head = client.head(url)
@@ -338,8 +325,7 @@ def test_cached_head_and_ranges_reconstruct_native_audio_without_native_work(
     assert first_half.content == first.content[:cut]
     assert last_half.content == first.content[cut:]
     consumed = decode_audio(first_half.content + last_half.content)
-    assert frequency_amplitude(consumed, 440) == pytest.approx(1.2, abs=0.03)
-    assert consumed.peak > 1.0
+    assert frequency_amplitude(consumed, 440) == pytest.approx(0.9, abs=0.03)
     invalid = client.get(url, headers={"Range": f"bytes={length}-"})
     assert invalid.status_code == 416
 
@@ -372,7 +358,9 @@ def test_corrupt_cache_is_rebuilt_before_audio_consumption(
     next(root.glob("*.json")).write_text('{"checksum":"damaged"}')
     repaired = client.get(url)
     assert "ffmpeg" in calls
-    assert frequency_amplitude(decode_audio(repaired.content), 440) > 1
+    assert frequency_amplitude(decode_audio(repaired.content), 440) == pytest.approx(
+        0.9, abs=0.03
+    )
     assert not list(root.glob(".pending-*"))
 
 
@@ -404,7 +392,9 @@ def test_eligible_producer_errors_are_visible_without_fallback_or_publication(
     assert not list(root.glob("*.mp4")) and not list(root.glob("*.json"))
     assert not list(root.glob(".pending-*"))
     original = client.get(f"/api/jobs/{job_id}/original")
-    assert frequency_amplitude(decode_audio(original.content), 440) > 1
+    assert frequency_amplitude(decode_audio(original.content), 440) == pytest.approx(
+        0.9, abs=0.03
+    )
 
 
 @pytest.mark.parametrize("change", ["source", "producer", "binary"])
@@ -443,18 +433,64 @@ def test_cache_invalidation_runs_real_producer_and_preserves_new_audio(
     assert second is not None
     assert native_calls.count("ffmpeg") == 1
     consumed = decode_audio(second.read_bytes())
-    assert frequency_amplitude(consumed, 880 if change == "source" else 440) > 1
-    assert _pcm(second).startswith(_pcm(source))
+    assert frequency_amplitude(
+        consumed, 880 if change == "source" else 440
+    ) == pytest.approx(0.9, abs=0.03)
     native_calls.clear()
     hit = playback.listening_path(source, root)
     assert hit is not None
     assert not native_calls
-    assert (
-        frequency_amplitude(
-            decode_audio(hit.read_bytes()), 880 if change == "source" else 440
-        )
-        > 1
+    assert frequency_amplitude(
+        decode_audio(hit.read_bytes()), 880 if change == "source" else 440
+    ) == pytest.approx(0.9, abs=0.03)
+
+
+def test_old_packet_copy_cache_is_not_served_as_aac(tmp_path: Path) -> None:
+    source = _mp3(tmp_path)
+    root = tmp_path / "cache"
+    root.mkdir()
+    old_key = cache_key(
+        "standalone-mp3-ge16k-mp4-copy-faststart-elst-sample-timescale-v1",
+        cache_versions.file_revision(source),
+        cache_versions.binary_revision("ffmpeg"),
+        cache_versions.binary_revision("ffprobe"),
     )
+    old_file = root / f"{old_key}.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-use_editlist",
+            "1",
+            "-movie_timescale",
+            "48000",
+            str(old_file),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    old_bytes = old_file.read_bytes()
+    old_value = {
+        "audio": playback._probe(source),
+        "output_sha256": cache_versions.file_revision(old_file),
+    }
+    (root / f"{old_key}.json").write_text(
+        json.dumps({"value": old_value, "checksum": cache_key(old_value)})
+    )
+    new_file = playback.listening_path(source, root)
+    assert new_file is not None and new_file != old_file
+    assert decode_audio(old_bytes).codec == "mp3"
+    assert decode_audio(new_file.read_bytes()).codec == "aac"
+    assert old_file.read_bytes() == old_bytes
 
 
 def test_concurrent_processes_publish_one_real_indexed_file(tmp_path: Path) -> None:
@@ -494,8 +530,9 @@ assert playback.listening_path(source,root).is_file()
                 process.wait()
     assert trace.read_text().splitlines() == ["producer"]
     indexed = next(root.glob("*.mp4"))
-    assert _pcm(indexed).startswith(_pcm(source))
-    assert frequency_amplitude(decode_audio(indexed.read_bytes()), 440) > 1
+    assert frequency_amplitude(
+        decode_audio(indexed.read_bytes()), 440
+    ) == pytest.approx(0.9, abs=0.03)
     assert not list(root.glob(".pending-*"))
 
 

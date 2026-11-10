@@ -22,6 +22,19 @@ it("highlights rounded detected notes only while playing and within the half-ope
   expect(key).toHaveAttribute("aria-pressed", "false");
 });
 
+it("adjusts the accessible piano control without creating audio", () => {
+  const constructor = vi.fn();
+  vi.stubGlobal("AudioContext", constructor);
+  render(() => <PianoKeyboard notes={[note]} rangeNotes={[note]} position={0} playing={false} />);
+  const slider = screen.getByRole("slider", { name: "Piano volume" });
+  fireEvent.input(slider, { target: { value: "0" } });
+  expect(slider).toHaveAttribute("aria-valuetext", "0%");
+  expect(constructor).not.toHaveBeenCalled();
+  fireEvent.input(slider, { target: { value: "65" } });
+  expect(slider).toHaveAttribute("aria-valuetext", "65%");
+});
+
+
 it("cancels a pending audio resume on release, and suppresses held space repeat", async () => {
   vi.useFakeTimers();
   let resume!: () => void;

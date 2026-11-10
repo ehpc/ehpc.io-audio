@@ -9,7 +9,7 @@ from xml.etree import ElementTree as ET
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import db
+from backend import db, queue
 from separator.lyrics import Transcript, TranscriptSegment, TranscriptWord
 from separator.lyrics_reference import ReferenceLine, ReferenceReview
 from separator.pitch import (
@@ -279,6 +279,76 @@ def test_private_http_odt_uses_stored_job_current_layout_and_stem(
     job = db.get_job(job_id)
     assert job is not None
     assert job.transcript == transcript and job.pitch_json == pitch_to_json(analysis)
+
+
+def test_historical_karaoke_exports_saved_analysis_without_reprocessing(
+    client: TestClient, other_client: TestClient, monkeypatch
+) -> None:
+    def no_processing(*_args, **_kwargs):
+        raise AssertionError("reading saved lyrics must not process the source")
+
+    monkeypatch.setattr(queue, "process_source", no_processing)
+    transcript, analysis = document_fixture(1)
+    response = client.post(
+        "/api/jobs",
+        data={
+            "url": "https://example.org/synthetic",
+            "detect_pitch": "true",
+            "extract_lyrics": "true",
+        },
+    )
+    job_id = response.json()["id"]
+    db.mark_done(job_id, [], transcript, pitch_to_json(analysis))
+    db.set_title(job_id, "Synthetic [proof]")
+    db.set_original_key(job_id, "C major")
+    saved = db.get_job(job_id)
+    payload = client.get(f"/api/jobs/{job_id}").json()
+    assert payload["options"]["extract_pitched_lyrics"] is False
+    track = next(t for t in payload["pitched_lyrics"] if t["label"] == "lead")
+    path = f"/api/jobs/{job_id}/pitched-lyrics/lead/download"
+    txt = client.get(path)
+    odt = client.get(path, params={"format": "odt"})
+    assert txt.status_code == odt.status_code == 200
+    assert txt.content.decode("utf-8") == track["text"]
+    assert odt.headers["content-type"] == MIME_TYPE
+    with zipfile.ZipFile(io.BytesIO(odt.content)) as archive:
+        body = ET.fromstring(archive.read("content.xml"))
+    paragraphs = body.findall("office:body/office:text/text:p", NS)
+    odt_text = "".join(
+        odf_text(p) + ("\n\n" if p.find("text:line-break", NS) is not None else "\n")
+        for p in paragraphs
+    )
+    assert odt_text == track["text"]
+    assert "Synthetic [proof]" in odt_text and "C major" in odt_text
+    assert "C4 D4" in odt_text and "光" in odt_text
+    assert re.search(r"\[\d+:\d{2}\]", odt_text)
+    assert other_client.get(path).status_code == 404
+    assert other_client.get(path, params={"format": "odt"}).status_code == 404
+    assert client.get(path.replace("lead", "absent")).status_code == 404
+    assert db.get_job(job_id) == saved
+
+
+@pytest.mark.parametrize("missing", ["transcript", "pitch"])
+def test_karaoke_exports_require_both_saved_inputs(
+    client: TestClient, missing: str
+) -> None:
+    transcript, analysis = document_fixture(1)
+    response = client.post(
+        "/api/jobs",
+        data={"url": "https://example.org/synthetic", "detect_pitch": "true"},
+    )
+    job_id = response.json()["id"]
+    db.mark_done(
+        job_id,
+        [],
+        None if missing == "transcript" else transcript,
+        None if missing == "pitch" else pitch_to_json(analysis),
+    )
+    payload = client.get(f"/api/jobs/{job_id}").json()
+    assert payload["pitched_lyrics"] is None
+    path = f"/api/jobs/{job_id}/pitched-lyrics/lead/download"
+    assert client.get(path).status_code == 404
+    assert client.get(path, params={"format": "odt"}).status_code == 404
 
 
 @pytest.mark.parametrize("oversized", [False, True])

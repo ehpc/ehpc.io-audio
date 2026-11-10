@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect } from '@playwright/test';
+import { expect, firefox, type Page } from '@playwright/test';
 import { transform } from 'esbuild';
 import { test } from './auth-fixture';
 
@@ -33,7 +33,26 @@ for (const width of [390, 1440]) {
       Object.defineProperty(window, '__pianoContexts', { value: contexts });
       const NativeAudioContext = window.AudioContext;
       window.AudioContext = class extends NativeAudioContext {
-        constructor() { super(); contexts.push(this); }
+        private monitor: AnalyserNode;
+        constructor() {
+          super();
+          contexts.push(this);
+          this.monitor = this.createAnalyser();
+          this.monitor.fftSize = 2048;
+          const silence = super.createGain();
+          silence.gain.value = 0;
+          this.monitor.connect(silence).connect(this.destination);
+          Object.defineProperty(window, '__pianoMonitor', { value: this.monitor, configurable: true });
+        }
+        createGain(): GainNode {
+          const gain = super.createGain();
+          const connect = gain.connect.bind(gain);
+          gain.connect = ((destination: AudioNode, ...ports: number[]) => {
+            if (destination === this.destination && this.monitor) connect(this.monitor);
+            return Reflect.apply(connect, gain, [destination, ...ports]);
+          }) as typeof gain.connect;
+          return gain;
+        }
       };
     });
     await page.goto('/');
@@ -59,6 +78,16 @@ for (const width of [390, 1440]) {
       await page.screenshot({ path: `${process.env.E2E_PIANO_SCREENSHOTS}/wide-${width}.png` });
     }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const volume = piano.getByRole('slider', { name: 'Piano volume' });
+    const sliderBounds = (await volume.boundingBox())!;
+    const scrollBounds = (await piano.locator('.piano-scroll').boundingBox())!;
+    expect(sliderBounds.x).toBeGreaterThanOrEqual(scrollBounds.x + scrollBounds.width);
+    expect(sliderBounds.height).toBeGreaterThan(sliderBounds.width);
+    const audio = page.getByRole('region', { name: 'Karaoke with pitches', exact: true }).locator('audio:not([hidden])');
+    await audio.evaluate((element: HTMLAudioElement) => { element.volume = 0.37; });
+    await volume.fill('70');
+    expect(await page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts.length)).toBe(0);
+    await volume.fill('0');
     const key = piano.getByRole('button', { name: 'Piano C4', exact: true });
     await key.scrollIntoViewIfNeeded();
     const box = (await key.boundingBox())!;
@@ -66,9 +95,47 @@ for (const width of [390, 1440]) {
     await page.mouse.down();
     await expect(key).toHaveAttribute('aria-pressed', 'true');
     await expect.poll(() => page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[0]?.state)).toBe('running');
+    const level = () => page.evaluate(() => {
+      const analyser = (window as unknown as { __pianoMonitor: AnalyserNode }).__pianoMonitor;
+      const samples = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(samples);
+      return Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+    });
+    await expect.poll(level).toBeLessThan(0.0001);
+    await volume.focus();
+    await page.keyboard.press('ArrowUp');
+    await expect(volume).toHaveValue('1');
+    await page.keyboard.press('ArrowDown');
+    await expect(volume).toHaveValue('0');
+    await page.keyboard.press('End');
+    await expect(volume).toHaveValue('100');
+    await expect.poll(level).toBeGreaterThan(0.002);
+    await page.keyboard.press('Home');
+    await expect(key).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(level).toBeLessThan(0.0001);
+    await volume.focus();
+    await page.keyboard.press('End');
+    await expect(volume).toHaveValue('100');
+    await expect.poll(level).toBeGreaterThan(0.002);
+    expect(await audio.evaluate((element: HTMLAudioElement) => element.volume)).toBeCloseTo(0.37);
     await page.mouse.up();
     await expect(key).toHaveAttribute('aria-pressed', 'false');
     await expect.poll(() => page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[0]?.state)).toBe('suspended');
+    await volume.focus();
+    await page.keyboard.press('Home');
+    expect(await page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[0].state)).toBe('suspended');
+    await key.scrollIntoViewIfNeeded();
+    const again = (await key.boundingBox())!;
+    await page.mouse.move(again.x + again.width / 2, again.y + again.height - 8);
+    await page.mouse.down();
+    await expect(key).toHaveAttribute('aria-pressed', 'true');
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[0]?.state)).toBe('running');
+    await expect.poll(level).toBeLessThan(0.0001);
+    await volume.focus();
+    await page.keyboard.press('End');
+    await expect.poll(level).toBeGreaterThan(0.002);
+    await page.mouse.up();
+    await expect(key).toHaveAttribute('aria-pressed', 'false');
     if (width === 390) {
       await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height - 8);
       await expect(key).toHaveAttribute('aria-pressed', 'false');
@@ -89,7 +156,6 @@ for (const width of [390, 1440]) {
     await expect(key).toHaveAttribute('aria-pressed', 'true');
     await page.keyboard.up('Space');
     await expect(key).toHaveAttribute('aria-pressed', 'false');
-    const audio = page.getByRole('region', { name: 'Karaoke with pitches', exact: true }).locator('audio:not([hidden])');
     await audio.evaluate(async (element: HTMLAudioElement) => { element.currentTime = 1.2; await element.play(); });
     await expect(key).toHaveAttribute('aria-pressed', 'true');
     await audio.evaluate((element: HTMLAudioElement) => element.pause());
@@ -117,13 +183,26 @@ for (const width of [390, 1440]) {
     }
     await audio.evaluate((element: HTMLAudioElement) => element.pause());
     if (width === 1440) {
+      await page.evaluate(async () => { await (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[0].close(); });
+      await volume.fill('0');
+      await high.scrollIntoViewIfNeeded();
+      const highBox = (await high.boundingBox())!;
+      await page.mouse.move(highBox.x + highBox.width / 2, highBox.y + highBox.height - 8);
+      await page.mouse.down();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[1]?.state)).toBe('running');
+      await expect.poll(level).toBeLessThan(0.0001);
+      await volume.focus();
+      await page.keyboard.press('End');
+      await expect.poll(level).toBeGreaterThan(0.002);
+      await page.mouse.up();
+      await expect(high).toHaveAttribute('aria-pressed', 'false');
       await high.focus();
       await page.keyboard.down('Space');
       await expect(high).toHaveAttribute('aria-pressed', 'true');
       await page.getByRole('button', { name: 'Start another job' }).click();
-      await expect.poll(() => page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[0]?.state)).toBe('closed');
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts[1]?.state)).toBe('closed');
     }
-    expect(await page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts.length)).toBe(1);
+    expect(await page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts.length)).toBe(width === 1440 ? 2 : 1);
   });
 }
 
@@ -274,5 +353,55 @@ test('real audio sustains long holds and damps promptly after short and fast rel
   for (const result of results.holds) {
     expect(result.tail).toBeGreaterThan(0.0001);
     expect(result.silent).toBeLessThan(0.00001);
+  }
+});
+
+async function verifyPianoVolumeAudio(page: Page) {
+  const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/src/lib/pianoAudio.ts'), 'utf8');
+  const compiled = await transform(source, { loader: 'ts', format: 'iife', globalName: 'PianoAudio' });
+  await page.addScriptTag({ content: compiled.code });
+  const result = await page.evaluate(async () => {
+    interface PianoAudioModule {
+      createPianoOutput(context: BaseAudioContext, volume: number): GainNode;
+      setPianoVolume(output: GainNode, volume: number, at: number): void;
+      createPianoVoice(context: BaseAudioContext, midi: number, output: AudioNode): { release(at: number): void };
+    }
+    const piano = (window as unknown as { PianoAudio: PianoAudioModule }).PianoAudio;
+    const context = new OfflineAudioContext(1, 96000, 48000);
+    const output = piano.createPianoOutput(context, 1);
+    piano.createPianoVoice(context, 60, output).release(1.5);
+    piano.createPianoVoice(context, 64, output).release(1.5);
+    piano.setPianoVolume(output, 0, 0.5);
+    piano.setPianoVolume(output, 1, 0.505);
+    piano.setPianoVolume(output, 0, 0.65);
+    piano.setPianoVolume(output, 1, 1);
+    const samples = (await context.startRendering()).getChannelData(0);
+    const rms = (start: number, end: number) => {
+      let sum = 0;
+      for (let i = start * 48000; i < end * 48000; i++) sum += samples[i] ** 2;
+      return Math.sqrt(sum / ((end - start) * 48000));
+    };
+    let maxStep = 0;
+    for (let i = 24000; i < 24960; i++) maxStep = Math.max(maxStep, Math.abs(samples[i] - samples[i - 1]));
+    return { before: rms(0.35, 0.45), muted: rms(0.75, 0.9), restored: rms(1.2, 1.4), released: rms(1.8, 1.9), peak: Math.max(...samples), maxStep };
+  });
+  expect(result.before).toBeGreaterThan(0.003);
+  expect(result.muted).toBeLessThan(0.00001);
+  expect(result.restored).toBeGreaterThan(0.003);
+  expect(result.released).toBeLessThan(0.00001);
+  expect(result.peak).toBeLessThan(0.2);
+  expect(result.maxStep).toBeLessThan(0.01);
+}
+
+test('real output gain mutes and restores held voices without changing release', async ({ page }) => {
+  await verifyPianoVolumeAudio(page);
+});
+
+test('Firefox renders piano volume changes without unsupported automation', async () => {
+  const browser = await firefox.launch();
+  try {
+    await verifyPianoVolumeAudio(await browser.newPage());
+  } finally {
+    await browser.close();
   }
 });

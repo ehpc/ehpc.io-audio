@@ -73,9 +73,8 @@ def _probe(source: Path) -> AudioFormat:
 
 
 def _eligible(audio: AudioFormat) -> bool:
-    # MPEG-2.5 is not supported by the standard MP4 muxer. Keep its existing
-    # playback behavior, just as for non-MP3 containers; never retry a failed mux
-    # by serving the inaccurate MP3 representation instead.
+    # Preserve the existing behavior for low-rate MP3 and non-MP3 inputs.
+    # Eligible conversion errors remain visible instead of serving a raw fallback.
     return (
         audio["container"] == "mp3"
         and audio["codec"] == "mp3"
@@ -111,7 +110,7 @@ def listening_path(source: Path, root: Path) -> Path | None:
     """Return a private indexed copy, or None for unchanged format behavior.
 
     Call only after the route's ownership and source-availability checks, in a
-    worker thread: hashing, the process lock, probing and muxing are blocking.
+    worker thread: hashing, the process lock, probing and encoding are blocking.
     The tiny checksummed manifest also caches *ineligible* format decisions, so
     subsequent Range requests do not repeatedly spawn native processes.
     """
@@ -155,7 +154,9 @@ def listening_path(source: Path, root: Path) -> Path | None:
                         "-map",
                         "0:a:0",
                         "-c:a",
-                        "copy",
+                        "aac",
+                        "-b:a",
+                        "256k",
                         "-map_metadata",
                         "-1",
                         "-movflags",
@@ -172,7 +173,7 @@ def listening_path(source: Path, root: Path) -> Path | None:
                 produced = _probe(temporary)
                 if (
                     "mp4" not in produced["container"].split(",")
-                    or produced["codec"] != "mp3"
+                    or produced["codec"] != "aac"
                     or produced["sample_rate"] != audio["sample_rate"]
                 ):
                     raise RuntimeError("Invalid indexed listening audio")

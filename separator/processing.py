@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import cast
 
 from separator import cache_versions
-from separator.artifact_cache import cache_key, cached_bytes, digest, sync_file
+from separator.artifact_cache import (
+    atomic_write,
+    cache_key,
+    cached_bytes,
+    digest,
+    locked,
+    sync_file,
+)
 from separator.inference import InferenceRequest, JSONValue, Operation
 from separator.lyrics import (
     RecognitionChunk,
@@ -27,6 +34,7 @@ from separator.lyrics_reference import (
     apply_reference,
     lookup_reference,
     plan_reference,
+    reuse_exact_asr_candidates,
 )
 from separator.options import SeparationOptions
 from separator.pitch import (
@@ -310,6 +318,84 @@ def _baseline_result(data: bytes, pcm: list, chunk_count: int) -> dict:
     return value
 
 
+def _legacy_recognition_info(
+    source: bytes,
+    raw: bytes,
+    raw_key: str,
+    context: ProcessingContext,
+) -> dict:
+    """Verify decoded PCM against the original baseline key before migration."""
+    path = context.root / "recognition-info" / f"{raw_key}.json"
+    with locked(path.with_suffix(".lock")):
+        if path.is_file():
+            return json.loads(path.read_bytes())
+        # These CPU-only dependencies reproduce librosa's soundfile/soxr
+        # 16-kHz mono decoding. A different result cannot pass the legacy key.
+        import numpy as np  # noqa: PLC0415
+        import soundfile as sf  # noqa: PLC0415
+        import soxr  # noqa: PLC0415
+
+        audio, sample_rate = sf.read(io.BytesIO(source), dtype="float32")
+        if audio.ndim == 2:
+            audio = np.mean(audio, axis=1, dtype=np.float32)
+        if sample_rate != cache_versions.ASR_SAMPLE_RATE:
+            sample_count = math.ceil(
+                len(audio) * cache_versions.ASR_SAMPLE_RATE / sample_rate
+            )
+            audio = soxr.resample(
+                audio, sample_rate, cache_versions.ASR_SAMPLE_RATE, quality="HQ"
+            )
+            if len(audio) < sample_count:
+                audio = np.pad(audio, (0, sample_count - len(audio)))
+            audio = audio[:sample_count]
+        pcm = memoryview(audio)
+        identity = [
+            cache_versions.ASR_SAMPLE_RATE,
+            pcm.format,
+            [len(audio)],
+            digest(pcm),
+        ]
+        chunks = json.loads(raw)
+        info = {
+            "duration_s": len(audio) / cache_versions.ASR_SAMPLE_RATE,
+            "pcm_identity": identity,
+        }
+        _recognition_result(_json({**info, "chunks": chunks}))
+        manifest = context.manifest
+        baseline_key = cache_key(
+            manifest.versions["ALIGNMENT"],
+            manifest.versions["ALIGNMENT_MODEL"],
+            identity,
+            digest(json.dumps(chunks).encode()),
+            dict(manifest.asr.alignment_packages),
+        )
+        baseline = _legacy_path(
+            context.root,
+            manifest,
+            "alignment",
+            context.root
+            / "qwen-asr"
+            / "results"
+            / "recognition-alignment"
+            / f"{baseline_key}.bin",
+        )
+        if baseline is None:
+            raise RuntimeError(
+                "Legacy recognition PCM does not match a verified cached baseline"
+            )
+        value = _baseline_result(baseline.read_bytes(), identity, len(chunks))
+        if "transcript" in value:
+            baseline_transcript = transcript_from_json(json.dumps(value["transcript"]))
+            if [
+                asdict(chunk) for chunk in baseline_transcript.recognition_chunks
+            ] != chunks:
+                raise ValueError(
+                    "Legacy baseline recognition does not match its source"
+                )
+        atomic_write(path, _json(info))
+        return info
+
+
 def _reference_result(data: bytes) -> dict:
     value = json.loads(data)
     for words in value["aligned_lines"].values():
@@ -358,6 +444,7 @@ def transcribe_source(
         context.manifest.operation_identity("alignment"),
         digest(source),
         reference_identity,
+        *([cache_versions.REFERENCE_POLICY] if review.lines else []),
     )
     data = cached_bytes(
         context.root / "transcripts",
@@ -385,7 +472,8 @@ def _transcribe_source(
     )
     legacy = context.root / "analysis-results" / "lyrics" / f"{legacy_key}.bin"
     if (
-        _legacy_path(context.root, manifest, "recognition", legacy) is not None
+        not review.lines
+        and _legacy_path(context.root, manifest, "recognition", legacy) is not None
         and _legacy_path(context.root, manifest, "alignment", legacy) is not None
     ):
         return transcript_from_json(legacy.read_text())
@@ -398,22 +486,9 @@ def _transcribe_source(
     )
     old_raw = context.root / "qwen-asr" / "results" / "recognition" / f"{raw_key}.bin"
     if _legacy_path(context.root, manifest, "recognition", old_raw) is not None:
-        # Legacy raw recognition lacks decoded PCM provenance. A migration must
-        # supply it from the exact decoder; never rerun recognition to discover it.
-        info = context.root / "recognition-info" / f"{raw_key}.json"
-        if not info.is_file():
-            raise RuntimeError(
-                "Legacy recognition requires verified decoded-source metadata "
-                "before migration"
-            )
-        recognition = _recognition_result(
-            _json(
-                {
-                    **json.loads(info.read_text()),
-                    "chunks": json.loads(old_raw.read_bytes()),
-                }
-            )
-        )
+        raw = old_raw.read_bytes()
+        info = _legacy_recognition_info(source, raw, raw_key, context)
+        recognition = _recognition_result(_json({**info, "chunks": json.loads(raw)}))
     else:
         recognition = context.stage(
             "recognition", source, "vocals.mp3", {}, digest(source), _recognition_result
@@ -494,27 +569,31 @@ def _transcribe_source(
             "phrases": [asdict(phrase) for phrase in phrases],
         }
     )
-    if not phrases:
-        return apply_reference(transcript, review, {}, {})
-    aligned = context.stage(
-        "alignment",
-        source,
-        "vocals.mp3",
-        parameters,
-        [pcm, parameters],
-        _reference_result,
-    )
-    return apply_reference(
-        transcript,
-        review,
-        {
+    if phrases:
+        aligned = context.stage(
+            "alignment",
+            source,
+            "vocals.mp3",
+            parameters,
+            [pcm, parameters],
+            _reference_result,
+        )
+        candidates = {
             int(index): [TranscriptWord(**word) for word in words]
             for index, words in aligned["aligned_lines"].items()
-        },
-        {
+        }
+        acoustic_evidence = {
             int(index): AcousticEvidence(**value)
             for index, value in aligned["acoustic_evidence"].items()
-        },
+        }
+    else:
+        candidates = {}
+        acoustic_evidence = {}
+    candidates, reused = reuse_exact_asr_candidates(
+        transcript, review, candidates, evidence
+    )
+    return apply_reference(
+        transcript, review, candidates, acoustic_evidence, asr_reused=reused
     )
 
 
