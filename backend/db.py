@@ -16,10 +16,16 @@ _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
 # Renamed options in older stored jobs → current field names.
 _RENAMED_OPTIONS = {"chorus": "genders", "vocalists": "lead_backing"}
 
+type CompletedStage = tuple[str, str | None]
+
 
 class InferenceStageClaim(NamedTuple):
     owner: JobRecord
     newly_claimed: bool
+
+
+class UncompletedInferenceStage(ValueError):
+    """The job still owns a different unresolved inference stage."""
 
 
 def _load_options(options_json: str) -> SeparationOptions:
@@ -472,8 +478,10 @@ def claim_oldest_queued() -> JobRecord | None:
         )
 
 
-def claim_inference_stage(job_id: int, stage_key: str) -> InferenceStageClaim:
-    """A failed or uncertain owner still blocks redispatch by a different job."""
+def claim_inference_stage(
+    job_id: int, stage_key: str, completed_stage: CompletedStage | None = None
+) -> InferenceStageClaim:
+    """Claim a stage without discarding another uncompleted dispatch."""
     with _session() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -481,6 +489,17 @@ def claim_inference_stage(job_id: int, stage_key: str) -> InferenceStageClaim:
         ).fetchone()
         if row is not None:
             return InferenceStageClaim(_row_to_job(row), False)
+        owner = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if owner is None:
+            raise ValueError("Job not found.")
+        previous = owner["active_stage_key"]
+        if (
+            previous is not None
+            and (previous, owner["modal_call_id"]) != completed_stage
+        ):
+            raise UncompletedInferenceStage(
+                "Job has another uncompleted inference stage"
+            )
         conn.execute(
             "UPDATE jobs SET active_stage_key = ?, modal_call_id = NULL WHERE id = ?",
             (stage_key, job_id),
@@ -560,6 +579,16 @@ def mark_failed(job_id: int, error_message: str) -> None:
             "UPDATE jobs SET status = 'failed', error_message = ?, "
             "finished_at = ? WHERE id = ?",
             (error_message, int(time.time()), job_id),
+        )
+
+
+def requeue_job(job_id: int) -> None:
+    """Defer a running job without altering its durable inference ownership."""
+    with _session() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'queued', started_at = NULL "
+            "WHERE id = ? AND status = 'running'",
+            (job_id,),
         )
 
 

@@ -46,9 +46,9 @@ Browser → FastAPI / SQLite / single audio worker on the VPS
 - **`frontend/`** — SolidJS + Vite + Tailwind + Solid UI. Built to static
   assets at image-build time and served by the backend from the same origin,
   so there's exactly one port to expose.
-- Users are identified by an anonymous, signed HTTP-only cookie (no login).
-  State survives a page reload because the frontend re-derives "what's my
-  current job" from the backend on mount, rather than storing it client-side.
+- Access is invite-only, using email verification codes and an HTTP-only
+  session cookie; jobs are scoped to the signed-in account. State survives a
+  page reload because the frontend retrieves the current job from the backend.
 - **SSE job updates** send comment heartbeats every 15 seconds, with
   `Cache-Control: no-cache` and `X-Accel-Buffering: no`, so quiet, long-running
   jobs keep their live status stream open through proxies. The stream subscribes
@@ -1691,13 +1691,23 @@ recordings are included or fetched.
    [ACCESS_PLAN.md](ACCESS_PLAN.md). The prepared access changes are not yet
    deployed.
 
-The container starts Uvicorn with `--timeout-graceful-shutdown 5`, so an open
-SSE response cannot indefinitely postpone lifespan cleanup. Audio and discovery
-workers stop admission together; accepted model calls retain their durable IDs
-for resumption instead of being canceled and repeated. A 300-second Kubernetes
-termination grace is the normal drain budget, not a guaranteed upper bound on
-every remote transport. Old running pods do not retroactively gain this flag:
-drain their jobs/searches and block new uploads before terminating them.
+Configure the pod's `preStop` exec hook as `python -m backend.drain`, readiness
+as `GET /ready`, and liveness as `GET /health`. The hook contacts the
+mode-0600 `/tmp/vocaltools-<uid>/drain.sock` in a mode-0700 directory; it is
+not an HTTP endpoint. It stops new compute admission and queue claims, waits for
+admitted work and discovery to finish, and lets an accepted inference finish
+and persist its cache. An audio job needing another
+uncached stage is requeued for the next pod; fully cached work can finish.
+Only after that work is quiescent does the hook acknowledge completion. Uvicorn's
+`--timeout-graceful-shutdown 5` then limits lingering HTTP connections.
+
+Kubernetes counts the hook against its termination grace. The model's 1200-second
+execution timeout does not bound provisioning, queueing, or transport, so no
+fixed grace guarantees a graceful checkpoint. If a pod is forcibly killed,
+recorded call IDs remain resumable; a dispatch whose acceptance is uncertain
+fails closed and requires operator reconciliation rather than automatic GPU
+resubmission. Older pods without this hook must be drained separately before
+they are terminated.
 
 Keep the single CPU queue and existing 1 GiB limit initially. One isolated
 1-core, 1-GiB/no-swap, network-disabled capacity run processed a 356.8-second

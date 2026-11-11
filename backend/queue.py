@@ -8,8 +8,12 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from backend import config, db, events, song_search_worker
-from backend.inference import cleanup_completed_transfers, process_source
+from backend import config, db, drain, events, song_search_worker
+from backend.inference import (
+    UncertainInferenceDispatch,
+    cleanup_completed_transfers,
+    process_source,
+)
 from backend.metadata import ensure_download_title
 from backend.modal_client import InferenceStageFailure
 from backend.models import (
@@ -192,7 +196,12 @@ async def _run_job(job: JobRecord) -> None:
             db.mark_done, job.id, manifest, processed.transcript, processed.pitch_json
         )
         log.info("job %s done", job.id)
+    except drain.DrainDeferred:
+        log.info("job %s deferred for rollout", job.id)
+        await asyncio.to_thread(db.requeue_job, job.id)
     except Exception as exc:
+        if isinstance(exc, (UncertainInferenceDispatch, db.UncompletedInferenceStage)):
+            drain.state.fail_drain()
         log.exception("job %s failed", job.id)
         message = str(exc).strip() or "Separation failed. Please try again."
         await asyncio.to_thread(db.mark_failed, job.id, message[:500])
@@ -210,37 +219,62 @@ async def _run_job(job: JobRecord) -> None:
 
 
 async def _claim_next_job() -> JobRecord | None:
-    async with _claim_lock:
-        return await asyncio.to_thread(db.claim_oldest_queued)
+    async with drain.state.gate:
+        if drain.state.draining:
+            return None
+        async with _claim_lock:
+            return await asyncio.to_thread(db.claim_oldest_queued)
 
 
 async def _worker_loop(worker_id: int) -> None:
     log.info("queue worker %d started", worker_id)
-    while True:
+    while not drain.state.draining:
         job = await _claim_next_job()
         if job is None:
-            await asyncio.sleep(config.QUEUE_POLL_INTERVAL_S)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    drain.state.changed.wait(), timeout=config.QUEUE_POLL_INTERVAL_S
+                )
             continue
         await _run_job(job)
 
 
 @contextlib.asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     config.validate_auth()
-    await asyncio.to_thread(db.init_db)
-    await asyncio.to_thread(db.reap_running_to_queued)
-    tasks = [
-        asyncio.create_task(_worker_loop(i)) for i in range(config.QUEUE_CONCURRENCY)
-    ]
+    drain.state.reset()
+    server = await drain.serve(start_serving=False)
     async with contextlib.AsyncExitStack() as stack:
-        stop_search = None
-        if config.QUEUE_CONCURRENCY > 0:
-            stop_search = await stack.enter_async_context(song_search_worker.lifespan())
         try:
+            await asyncio.to_thread(db.init_db)
+            await asyncio.to_thread(db.reap_running_to_queued)
+            for i in range(config.QUEUE_CONCURRENCY):
+                drain.state.workers.append(asyncio.create_task(_worker_loop(i)))
+            if config.QUEUE_CONCURRENCY > 0:
+                search_done = asyncio.Event()
+                stop_search = await stack.enter_async_context(
+                    song_search_worker.lifespan(search_done)
+                )
+                drain.state.search_done = search_done
+                drain.state.stop_search = stop_search
+            await server.start_serving()
             yield
         finally:
-            if stop_search is not None:
-                stop_search.set()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await drain.state.begin()
+                await drain.state.wait()
+            finally:
+                server.close()
+                await server.wait_closed()
+                drain.cleanup_socket(server)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    if not drain.state.acquire_lifespan():
+        raise RuntimeError("Only one queue lifespan may run in this process")
+    try:
+        async with _lifespan(app):
+            yield
+    finally:
+        drain.state.release_lifespan()

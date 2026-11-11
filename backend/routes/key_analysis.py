@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from backend import config
+from backend import config, drain
 from backend.session import get_session_id
 from backend.source_cache import cached_download
 from separator.audio import detect_key
@@ -56,10 +56,12 @@ async def analyze_key(
             raise HTTPException(400, "Use an absolute HTTP or HTTPS audio/video URL.")
     data = await file.read() if has_file and file is not None else None
     filename = file.filename if has_file and file is not None else "original.mp3"
+    task = asyncio.create_task(
+        asyncio.to_thread(_analyze_source, data, filename or "original.mp3", source_url)
+    )
+    drain.state.track(task)
     try:
-        key = await asyncio.to_thread(
-            _analyze_source, data, filename or "original.mp3", source_url
-        )
+        key = await asyncio.shield(task)
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc
     return KeyAnalysisResponse(original_key=key)

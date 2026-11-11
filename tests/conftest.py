@@ -13,16 +13,19 @@ os.environ["AUTH_ORIGIN"] = "https://testserver"
 import shutil
 import sqlite3
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import auth_store, config, db, mailer
+from backend import auth_store, config, db, drain, mailer
 from backend.main import app
 
 
 @pytest.fixture(autouse=True)
-def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _fresh_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    monkeypatch.setattr(drain, "SOCKET", tmp_path / "drain.sock")
+    drain.state.reset()
     db.init_db()
     conn = sqlite3.connect(config.DB_PATH)
     conn.executescript(
@@ -43,6 +46,7 @@ def _fresh_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     )
     _codes.clear()
     yield
+    drain.state.reset()
 
 
 _codes: dict[str, str] = {}
@@ -81,9 +85,12 @@ def client() -> Iterator[TestClient]:
 @pytest.fixture
 def other_client() -> Iterator[TestClient]:
     """A client with its own cookie jar — i.e. a different browser session."""
-    with _new_client() as c:
+    c = _new_client()
+    try:
         _register(c, "other@example.com")
         yield c
+    finally:
+        c.close()
 
 
 @pytest.fixture

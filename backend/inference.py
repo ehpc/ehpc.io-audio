@@ -8,7 +8,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from backend import config, db, modal_client
+from backend import config, db, drain, modal_client
 from backend.models import JobRecord, JobStatus
 from separator.artifact_cache import atomic_write, digest, sync_file
 from separator.inference import InferenceRequest
@@ -122,6 +122,21 @@ def cleanup_completed_transfers() -> int:
     return cleaned
 
 
+def _completed_stage(key: str) -> bool:
+    """Only a validated, durably committed artifact permits replacing ownership."""
+    path = _receipt_path(key)
+    if not path.is_file():
+        return False
+    receipt = json.loads(path.read_bytes())
+    if "result_sha256" not in receipt or "result_size" not in receipt:
+        return False
+    artifact = config.DATA_DIR / "artifacts" / "inference" / f"{key}.bin"
+    if not _matches_file(artifact, receipt["result_sha256"], receipt["result_size"]):
+        return False
+    sync_file(artifact)
+    return True
+
+
 class StageRunner:
     def __init__(self, job_id: int, manifest: ProducerManifest, stop: threading.Event):
         self.job_id = job_id
@@ -157,6 +172,7 @@ class StageRunner:
     def __call__(self, request: InferenceRequest, key: str) -> bytes:
         if self.stop.is_set():
             raise InterruptedError("Audio processing is shutting down")
+        # Recorded accepted calls must remain resumable even during a drain.
         # Reject unserializable inputs before recording any dispatch intent.
         fingerprint = request.fingerprint()
         path = _receipt_path(key)
@@ -182,16 +198,14 @@ class StageRunner:
             output_id = uuid.uuid4().hex
             receipt = {**identity, "output_id": output_id}
             _write_receipt(path, receipt)
-        ensure_prepared(
-            self.manifest,
-            request,
-            config.prepared_models_root(),
-            config.MODEL_VOLUME_NAME,
-            config.MODAL_ENVIRONMENT,
+        job = db.get_job(self.job_id)
+        previous = job.active_stage_key if job is not None else None
+        completed = (
+            (previous, job.modal_call_id)
+            if job is not None and previous and _completed_stage(previous)
+            else None
         )
-        if self.stop.is_set():
-            raise InterruptedError("Audio processing is shutting down")
-        claim = db.claim_inference_stage(self.job_id, key)
+        claim = db.claim_inference_stage(self.job_id, key, completed)
         owner = claim.owner
         if not claim.newly_claimed:
             if owner.modal_call_id is None:
@@ -205,6 +219,17 @@ class StageRunner:
             call = modal_client.resume(owner.modal_call_id)
         else:
             try:
+                with drain.state.dispatch():
+                    pass
+                ensure_prepared(
+                    self.manifest,
+                    request,
+                    config.prepared_models_root(),
+                    config.MODEL_VOLUME_NAME,
+                    config.MODAL_ENVIRONMENT,
+                )
+                if self.stop.is_set():
+                    raise InterruptedError("Audio processing is shutting down")
                 modal_client.stage_input(request, output_id)
                 if self.stop.is_set():
                     raise InterruptedError("Audio processing is shutting down")
@@ -214,14 +239,19 @@ class StageRunner:
                 db.release_inference_stage(owner.id, key)
                 raise
             try:
-                call = modal_client.spawn(
-                    output_id,
-                    operation=request.operation,
-                    producer_digest=request.producer_digest,
-                )
-            except Exception as error:
-                raise UncertainInferenceDispatch from error
-            db.set_active_stage(owner.id, key, call.object_id)
+                with drain.state.dispatch():
+                    try:
+                        call = modal_client.spawn(
+                            output_id,
+                            operation=request.operation,
+                            producer_digest=request.producer_digest,
+                        )
+                    except Exception as error:
+                        raise UncertainInferenceDispatch from error
+                    db.set_active_stage(owner.id, key, call.object_id)
+            except drain.DrainDeferred:
+                db.release_inference_stage(owner.id, key)
+                raise
         while not self.stop.is_set():
             try:
                 result = modal_client.poll(call, config.MODAL_CALL_POLL_TIMEOUT_S)

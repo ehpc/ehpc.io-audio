@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from backend import config, db
+from backend import config, db, drain
 from backend.models import SearchDone
 from separator.song_search import (
     SEARCH_HTTP_ERRORS,
@@ -61,7 +61,10 @@ def _complete(search: dict) -> None:
 
 
 async def run_next_search() -> bool:
-    search = await asyncio.to_thread(db.claim_song_search, SEARCH_TTL)
+    async with drain.state.gate:
+        if drain.state.draining:
+            return False
+        search = await asyncio.to_thread(db.claim_song_search, SEARCH_TTL)
     if search is None:
         return False
     # Completion and persistence stay in the same thread, even if the caller is
@@ -82,11 +85,13 @@ async def _worker(stop: asyncio.Event) -> None:
 
 
 @asynccontextmanager
-async def lifespan() -> AsyncIterator[asyncio.Event]:
+async def lifespan(done: asyncio.Event | None = None) -> AsyncIterator[asyncio.Event]:
     """One process/replica owns recovery, as with the existing audio queue."""
     await asyncio.to_thread(db.recover_song_searches, SEARCH_TTL)
     stop = asyncio.Event()
     task = asyncio.create_task(_worker(stop))
+    if done is not None:
+        task.add_done_callback(lambda _: done.set())
     try:
         yield stop
     finally:
