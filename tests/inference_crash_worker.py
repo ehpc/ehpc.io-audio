@@ -181,13 +181,13 @@ def main() -> None:
         patch.setattr(modal_client, "read_result", forbidden)
     original_write = artifact_cache.atomic_write
 
-    def write_artifact(path, data):
+    def write_artifact(path, data, *, complete=True):
         if path.parent.name == "inference" and path.suffix == ".bin":
             if mode == "crash-before-cache":
                 os._exit(CRASH_BEFORE_CACHE)
             if mode == "local-write-fails":
                 raise OSError("owned artifact disk is unavailable")
-        original_write(path, data)
+        original_write(path, data, complete=complete)
 
     patch.setattr(artifact_cache, "atomic_write", write_artifact)
     original_cleanup = modal_client.cleanup

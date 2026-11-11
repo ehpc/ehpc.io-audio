@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -106,6 +106,83 @@ function chooseBackground(name: RegExp | string) {
   fireEvent.canPlay(candidate);
   return candidate;
 }
+
+it("shares the existing playback and output-time seek with the fullscreen reader", async () => {
+  const player = keyboardPlayer();
+  player.audio.currentTime = 10;
+  fireEvent.timeUpdate(player.audio);
+  const open = screen.getByRole("button", { name: "Open karaoke fullscreen" });
+  open.focus();
+  fireEvent.click(open);
+  const dialog = screen.getByRole("dialog", { name: "Karaoke fullscreen" });
+  expect(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" })).toHaveFocus();
+  expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
+  fireEvent.input(within(dialog).getByRole("slider", { name: "Karaoke playback position" }), { target: { value: "20" } });
+  expect(player.audio.currentTime).toBe(20);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Back 5 seconds" }));
+  expect(player.audio.currentTime).toBe(15);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Play" }));
+  expect(player.play).toHaveBeenCalledTimes(1);
+  fireEvent.keyDown(within(dialog).getByRole("region", { name: "Current karaoke line" }), { key: " " });
+  expect(player.state.paused).toBe(true);
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await Promise.resolve();
+  expect(screen.queryByRole("dialog", { name: "Karaoke fullscreen" })).not.toBeInTheDocument();
+  expect(open).toHaveFocus();
+  expect(document.querySelector("audio:not([hidden])")).toBe(player.audio);
+  expect(player.audio.currentTime).toBe(15);
+});
+
+it("uses the active media clock for fullscreen seek while lyrics stay on the output clock", () => {
+  render(() => <PitchView job={job()} />);
+  const original = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
+  Object.defineProperty(original, "duration", { configurable: true, value: 87.5 });
+  original.currentTime = 2.5;
+  fireEvent.loadedMetadata(original);
+  fireEvent.timeUpdate(original);
+  fireEvent.click(screen.getByRole("button", { name: "Open karaoke fullscreen" }));
+  const dialog = screen.getByRole("dialog", { name: "Karaoke fullscreen" });
+  const slider = within(dialog).getByRole("slider", { name: "Karaoke playback position" });
+  expect(slider).toHaveValue("2.5");
+  expect(slider).toHaveAttribute("max", "87.5");
+  expect(within(dialog).getByText("world", { exact: true })).toHaveAttribute("aria-current", "true");
+  fireEvent.input(slider, { target: { value: "5" } });
+  expect(original.currentTime).toBe(5);
+  expect(within(dialog).getByText("world", { exact: true })).toHaveAttribute("data-state", "complete");
+  fireEvent.input(slider, { target: { value: "10" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Back 5 seconds" }));
+  expect(original.currentTime).toBe(5);
+  expect(slider).toHaveValue("5");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Just vocals" }));
+  const vocals = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperties(vocals, { readyState: { configurable: true, value: 4 }, duration: { configurable: true, value: 70 } });
+  fireEvent.loadedMetadata(vocals);
+  fireEvent.seeked(vocals);
+  fireEvent.canPlay(vocals);
+  expect(vocals.currentTime).toBe(4);
+  expect(slider).toHaveValue("4");
+  expect(slider).toHaveAttribute("max", "70");
+  fireEvent.input(slider, { target: { value: "10" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Back 5 seconds" }));
+  expect(vocals.currentTime).toBe(5);
+  expect(slider).toHaveValue("5");
+});
+
+it("bounds shared lyric font controls across inline and fullscreen readers", () => {
+  render(() => <PitchView job={job()} />);
+  const smaller = screen.getByRole("button", { name: "Smaller lyrics" });
+  fireEvent.click(smaller);
+  expect(smaller).toBeDisabled();
+  expect(screen.getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 0.75");
+  fireEvent.click(screen.getByRole("button", { name: "Open karaoke fullscreen" }));
+  const dialog = screen.getByRole("dialog", { name: "Karaoke fullscreen" });
+  const larger = within(dialog).getByRole("button", { name: "Larger lyrics" });
+  for (let index = 0; index < 5; index++) fireEvent.click(larger);
+  expect(larger).toBeDisabled();
+  expect(within(dialog).getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 2");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(screen.getByRole("button", { name: "Larger lyrics" })).toBeDisabled();
+});
 
 it("moves the timeline to a native media seek while preserving browsing and follow preference", () => {
   const player = scrollPlayer();
@@ -1041,7 +1118,7 @@ it.each(["pause", "ended", "emptied", "error"])("stops the frame clock on the na
   if (event === "error") expect(screen.getByRole("alert")).toBeVisible();
 });
 
-it("skips five output seconds across original/private clocks, clamps endpoints and preserves playback state and source", () => {
+it("skips five active-media seconds across original and transformed clocks while preserving source and bounds", () => {
   const source = job();
   source.manifest = [];
   const player = scrollPlayer(source);
@@ -1052,7 +1129,8 @@ it("skips five output seconds across original/private clocks, clamps endpoints a
   fireEvent.click(back);
   expect(player.audio.currentTime).toBe(0);
   fireEvent.click(forward);
-  expect(player.audio.currentTime).toBe(6.25);
+  expect(player.audio.currentTime).toBe(5);
+  expect(screen.getByRole("slider", { name: "Pitch timeline position" })).toHaveAttribute("aria-valuenow", "4");
   expect(player.audio.paused).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Just vocals" }));
   fireEvent.click(forward); // While the source's metadata/seek is pending.
@@ -1060,10 +1138,10 @@ it("skips five output seconds across original/private clocks, clamps endpoints a
   Object.defineProperty(vocals, "readyState", { configurable: true, value: 4 });
   fireEvent.loadedMetadata(vocals);
   fireEvent.seeked(vocals);
-  expect(vocals.currentTime).toBe(10);
+  expect(vocals.currentTime).toBe(8);
   expect(vocals.volume).toBe(0.4);
   fireEvent.click(back);
-  expect(vocals.currentTime).toBe(5);
+  expect(vocals.currentTime).toBe(3);
   vocals.currentTime = 68;
   fireEvent.timeUpdate(vocals);
   fireEvent.click(forward);

@@ -1,6 +1,7 @@
 """Private content-addressed files; one producer per key, publish only on success."""
 
 import asyncio
+import contextvars
 import fcntl
 import hashlib
 import json
@@ -9,6 +10,36 @@ import tempfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from typing import Protocol
+
+
+class LineageRecorder(Protocol):
+    def begin(self, path: Path) -> None: ...
+    def complete(self, path: Path, *, leaf: bool) -> None: ...
+    def record(self, path: Path) -> None: ...
+    def bind(
+        self, audio: bytes, title: str | None = None, artist: str | None = None
+    ) -> None: ...
+
+
+lineage_recorder: contextvars.ContextVar[LineageRecorder | None] = (
+    contextvars.ContextVar("cache_lineage", default=None)
+)
+lineage_stack: contextvars.ContextVar[tuple[Path, ...]] = contextvars.ContextVar(
+    "cache_lineage_stack", default=()
+)
+
+
+def complete_path(path: Path, *, leaf: bool = True) -> None:
+    recorder = lineage_recorder.get()
+    if recorder is not None:
+        recorder.complete(path, leaf=leaf)
+
+
+def record_path(path: Path) -> None:
+    recorder = lineage_recorder.get()
+    if recorder is not None:
+        recorder.record(path)
 
 
 def digest(data: bytes | memoryview) -> str:
@@ -34,13 +65,22 @@ def cached_bytes(root: Path, key: str, produce: Callable[[], bytes]) -> bytes:
     path = root / f"{key}.bin"
     with locked(root / f"{key}.lock"):
         if path.is_file():
+            record_path(path)
             return path.read_bytes()
-        data = produce()
-        atomic_write(path, data)
+        recorder = lineage_recorder.get()
+        if recorder is not None:
+            recorder.begin(path)
+        token = lineage_stack.set((*lineage_stack.get(), path))
+        try:
+            data = produce()
+            atomic_write(path, data, complete=False)
+            complete_path(path, leaf=False)
+        finally:
+            lineage_stack.reset(token)
         return data
 
 
-def atomic_write(path: Path, data: bytes) -> None:
+def atomic_write(path: Path, data: bytes, *, complete: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".pending-")
     try:
@@ -49,6 +89,9 @@ def atomic_write(path: Path, data: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         Path(temporary).replace(path)
+        record_path(path)
+        if complete:
+            complete_path(path)
     finally:
         Path(temporary).unlink(missing_ok=True)
 

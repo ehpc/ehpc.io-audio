@@ -67,9 +67,11 @@ async def run_next_search() -> bool:
         search = await asyncio.to_thread(db.claim_song_search, SEARCH_TTL)
     if search is None:
         return False
-    # Completion and persistence stay in the same thread, even if the caller is
-    # interrupted. The normal lifespan drains this thread rather than cancelling it.
-    await asyncio.to_thread(_complete, search)
+    # Keep the producer visible to cache eviction even if a cancelled caller or
+    # search expiry clears the persisted claim while its thread is still running.
+    task = asyncio.create_task(asyncio.to_thread(_complete, search))
+    drain.state.track(task)
+    await asyncio.shield(task)
     return True
 
 

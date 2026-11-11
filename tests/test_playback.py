@@ -330,6 +330,40 @@ def test_cached_head_and_ranges_reconstruct_native_audio_without_native_work(
     assert invalid.status_code == 416
 
 
+def test_clear_rebuilds_listening_cache_without_losing_saved_vocal_reference(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = _job(client, _mp3(tmp_path), private_only=True)
+    private = config.RESULTS_DIR / str(job_id) / ".pitch-vocals.mp3"
+    saved = private.read_bytes()
+    native_calls: list[str] = []
+    real_run = playback._run
+
+    def counted(command: list[str]) -> bytes:
+        native_calls.append(command[0])
+        return real_run(command)
+
+    monkeypatch.setattr(playback, "_run", counted)
+    url = f"/api/jobs/{job_id}/pitch-reference/vocals?playback=1"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert frequency_amplitude(decode_audio(first.content), 440) == pytest.approx(
+        0.9, abs=0.03
+    )
+    first_calls = len(native_calls)
+    assert first_calls > 0
+    assert client.get(url).content == first.content
+    assert len(native_calls) == first_calls
+    assert client.post("/api/admin/cache/clear", json={"all": True}).status_code == 200
+    assert private.read_bytes() == saved
+    rebuilt = client.get(url)
+    assert rebuilt.status_code == 200 and len(native_calls) > first_calls
+    assert frequency_amplitude(decode_audio(rebuilt.content), 440) == pytest.approx(
+        0.9, abs=0.03
+    )
+    assert private.read_bytes() == saved
+
+
 def test_corrupt_cache_is_rebuilt_before_audio_consumption(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

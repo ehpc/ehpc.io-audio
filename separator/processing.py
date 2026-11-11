@@ -17,6 +17,7 @@ from separator.artifact_cache import (
     cached_bytes,
     digest,
     locked,
+    record_path,
     sync_file,
 )
 from separator.inference import InferenceRequest, JSONValue, Operation
@@ -121,6 +122,7 @@ def _legacy_path(
         operation, model
     ):
         return None
+    record_path(path)
     return path
 
 
@@ -240,6 +242,7 @@ def cached_pitch_vocals(
     )
     current = root / "inference" / f"{key}.bin"
     if current.is_file():
+        record_path(current)
         return _stem_archive(current.read_bytes(), VOCALS_STEM)["vocals"]
     legacy = _legacy_path(
         root,
@@ -328,6 +331,7 @@ def _legacy_recognition_info(
     path = context.root / "recognition-info" / f"{raw_key}.json"
     with locked(path.with_suffix(".lock")):
         if path.is_file():
+            record_path(path)
             return json.loads(path.read_bytes())
         # These CPU-only dependencies reproduce librosa's soundfile/soxr
         # 16-kHz mono decoding. A different result cannot pass the legacy key.

@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from backend import config, drain
+from backend.cache_catalog import capture
 from backend.session import get_session_id
 from backend.source_cache import cached_download
 from separator.audio import detect_key
@@ -23,7 +25,10 @@ def _analyze_source(data: bytes | None, filename: str, url: str | None) -> str |
     # The worker owns the directory, including if the HTTP request is cancelled.
     # A cancelled to_thread await cannot stop yt-dlp: keep its files alive until
     # it exits, then the context manager cleans them on both success and error.
-    with tempfile.TemporaryDirectory(prefix="vocals-key-preview-") as directory:
+    with (
+        capture() as recorder,
+        tempfile.TemporaryDirectory(prefix="vocals-key-preview-") as directory,
+    ):
         if url is not None:
             data, filename = cached_download(
                 url,
@@ -33,6 +38,8 @@ def _analyze_source(data: bytes | None, filename: str, url: str | None) -> str |
                 producer=download_mp3,
             )
         assert data is not None
+        if url is None:
+            recorder.bind(data, Path(filename).stem)
         return detect_key(data, filename, config.DATA_DIR / "artifacts")
 
 

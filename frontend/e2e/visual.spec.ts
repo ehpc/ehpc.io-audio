@@ -5,6 +5,7 @@ import { expect, type Locator, type Page, type TestInfo } from '@playwright/test
 import { test } from './auth-fixture';
 import type { PitchAnalysisDTO } from '../src/api';
 import { songArtwork, songVersions } from './song-fixtures';
+import { seedCachedSongs } from './cache-fixture';
 
 const mobile = { width: 390, height: 844 };
 const desktop = { width: 1440, height: 1000 };
@@ -40,6 +41,29 @@ with db._session() as c:
     c.execute("INSERT OR REPLACE INTO song_searches (id,session_id,created_at,result_json,activity_query) VALUES (?,?,?,?,?)", ("visual-search-unknown",member,t-30,"[]",None))
 `;
 
+
+for (const viewport of [desktop, mobile]) {
+  test(`admin cached songs ${viewport.width}`, async ({ page }, info) => {
+    seedCachedSongs();
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    await page.getByRole('button', { name: 'People', exact: true }).click();
+    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    const cache = page.getByRole('region', { name: 'Cached songs' });
+    await expect(cache.getByText('Silver harbor')).toBeVisible();
+    await cache.getByRole('checkbox', { name: /Silver harbor/ }).check();
+    await cache.getByRole('checkbox', { name: /Quiet morning/ }).check();
+    await cache.screenshot({ path: info.outputPath('cache-panel.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect.soft(cache).toHaveScreenshot(`admin-cache-${viewport.width}.png`);
+    await cache.getByRole('button', { name: 'Clear selected (2)' }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('2 selected songs');
+    await dialog.screenshot({ path: info.outputPath('cache-dialog.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect.soft(dialog).toHaveScreenshot(`admin-cache-confirm-${viewport.width}.png`);
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
 
 for (const viewport of [desktop, mobile]) {
   test(`account screens ${viewport.width}`, async ({ page, context }, info) => {
@@ -519,6 +543,14 @@ for (const viewport of [mobile, desktop]) {
     await expect(next.getByText('chorus', { exact: true })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     await compare(reader, info, `karaoke-crowded-${viewport.width}.png`);
+    await view.getByRole('button', { name: 'Open karaoke fullscreen' }).click();
+    const fullscreen = page.getByRole('dialog', { name: 'Karaoke fullscreen' });
+    await expect(fullscreen.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
+    await expect(fullscreen.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
+    await expect(fullscreen.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
+    await fullscreen.getByRole('button', { name: 'Larger lyrics' }).click();
+    await fullscreen.screenshot({ path: info.outputPath('fullscreen.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect(fullscreen).toHaveScreenshot(`karaoke-fullscreen-${viewport.width}.png`);
   });
 }
 

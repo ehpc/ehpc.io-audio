@@ -5,8 +5,9 @@ import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, recoverPitc
 import { displayOutputLabel } from "~/lib/expectedStems";
 import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
 import { Button } from "~/components/button";
-import TimelineKaraoke from "./TimelineKaraoke";
+import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
 import PianoKeyboard from "./PianoKeyboard";
+import KaraokeFullscreen from "./KaraokeFullscreen";
 
 const ROW_HEIGHT = 24;
 const AXIS_WIDTH = 54;
@@ -47,6 +48,14 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [nativePaused, setNativePaused] = createSignal(true);
   const [seeking, setSeeking] = createSignal(false);
   const [seekRevision, setSeekRevision] = createSignal(0);
+  const [karaokeFullscreen, setKaraokeFullscreen] = createSignal(false);
+  const [karaokeFontSize, setKaraokeFontSize] = createSignal<number>(LYRIC_FONT.default);
+  const [karaokePitches, setKaraokePitches] = createSignal(true);
+  let fullscreenReturnFocus: HTMLElement | null = null;
+  const openKaraokeFullscreen = (trigger: HTMLButtonElement) => {
+    fullscreenReturnFocus = trigger;
+    setKaraokeFullscreen(true);
+  };
   const [recoveredVocals, setRecoveredVocals] = createSignal(false);
   const [recoveringVocals, setRecoveringVocals] = createSignal(false);
   const [recoveryError, setRecoveryError] = createSignal("");
@@ -304,6 +313,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
   const toAudioTime = (seconds: number, label = reference()) => sourceClock(label) ? seconds * analysis().tempo_percent / 100 : seconds;
   const fromAudioTime = (seconds: number, label = reference()) => sourceClock(label) ? seconds / (analysis().tempo_percent / 100) : seconds;
+  const [mediaDuration, setMediaDuration] = createSignal(0);
+  const syncMediaDuration = () => setMediaDuration(audio && Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0);
   const [activeSlot, setActiveSlot] = createSignal(0);
   const sources = [createSignal({ url: referenceUrl() }), createSignal<{ url: string | undefined }>({ url: undefined })] as const;
   const slots: HTMLAudioElement[] = [];
@@ -354,6 +365,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     previous.load();
     sources[oldSlot][1]({ url: undefined });
     setReference(candidate.label);
+    syncMediaDuration();
     internalSeekTime = null;
     nativeSeekPending = false;
     setSeeking(false);
@@ -409,13 +421,19 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     sources[slot][1]({ url });
     slots[slot].load();
   };
-  const seek = (seconds: number) => {
-    const next = Math.max(0, Math.min(analysis().duration_s, seconds));
+  const seek = (seconds: number, maximum = analysis().duration_s) => {
+    const next = Math.max(0, Math.min(maximum, seconds));
     setSeekRevision(value => value + 1);
     if (audio && Math.abs(audio.currentTime - toAudioTime(next)) > 0.001) setSeeking(true);
     setPosition(next);
     if (audio) setAudioTime(toAudioTime(next));
   };
+  const mediaLimit = () => mediaDuration() || toAudioTime(analysis().duration_s);
+  const seekMedia = (seconds: number) => {
+    const limit = mediaLimit();
+    seek(fromAudioTime(Math.max(0, Math.min(limit, seconds))), fromAudioTime(limit));
+  };
+  const skipMedia = (seconds: number) => seekMedia((audio?.currentTime ?? toAudioTime(position())) + seconds);
   let rulerGesture: { x: number; y: number; scrollLeft: number; moved: boolean } | undefined;
   const seekRuler = (event: MouseEvent & { currentTarget: HTMLDivElement }) => {
     const gesture = rulerGesture;
@@ -518,8 +536,34 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     }
   };
 
+  const BackgroundControls = () => (
+        <div role="group" aria-label="Pitch background audio" aria-describedby={!hasOutput("instruments") || !hasOutput("drums") || !hasOutput("drums-vocals") ? backgroundHelpId : undefined}
+          class="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+          <span>Background audio</span>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "song" ? "secondary" : "outline"} aria-pressed={reference() === "song"} disabled={!hasSong()} onClick={() => changeReference("song")}>Full song</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "vocals" ? "secondary" : "outline"} aria-pressed={reference() === "vocals"} disabled={!hasVocals()} onClick={() => changeReference("vocals")}>Just vocals</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "instruments" ? "secondary" : "outline"} aria-pressed={reference() === "instruments"} disabled={!hasOutput("instruments")} onClick={() => changeReference("instruments")}>{displayOutputLabel("Instruments", props.job.options)}</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums" ? "secondary" : "outline"} aria-pressed={reference() === "drums"} disabled={!hasOutput("drums")} onClick={() => changeReference("drums")}>{displayOutputLabel("Drums only", props.job.options)}</Button>
+          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums-vocals" ? "secondary" : "outline"} aria-pressed={reference() === "drums-vocals"} disabled={!hasOutput("drums-vocals")} onClick={() => changeReference("drums-vocals")}>{displayOutputLabel("Drums + Vocals", props.job.options)}</Button>
+          <For each={otherReferences()}>{item => <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === item.label ? "secondary" : "outline"} aria-pressed={reference() === item.label} onClick={() => changeReference(item.label)}>{displayOutputLabel(item.label, props.job.options)}</Button>}</For>
+        </div>
+  );
+  const TransportControls = () => (
+        <div class="pitch-skip-controls" role="group" aria-label="Timeline playback">
+          <Button type="button" variant="outline" aria-label="Back 5 seconds" onClick={() => skipMedia(-5)}>−5 s</Button>
+          <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl()} onClick={togglePlayback}>
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+              <Show when={nativePaused()} fallback={<><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>}>
+                <path d="M7 3v18l15-9z" />
+              </Show>
+            </svg>
+          </Button>
+          <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => skipMedia(5)}>+5 s</Button>
+        </div>
+  );
+
   return (
-    <section class="pitch-view" aria-label="Karaoke with pitches">
+    <section class="pitch-view" aria-label="Karaoke with pitches" inert={karaokeFullscreen()}>
       <div class="pitch-heading">
         <h3 class="text-base font-semibold">Karaoke with pitches</h3>
         <a href={pitchDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download pitch JSON</a>
@@ -532,16 +576,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             <For each={analysis().tracks}>{item => <option value={item.label}>{item.label}</option>}</For>
           </select>
         </label>
-        <div role="group" aria-label="Pitch background audio" aria-describedby={!hasOutput("instruments") || !hasOutput("drums") || !hasOutput("drums-vocals") ? backgroundHelpId : undefined}
-          class="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-          <span>Background audio</span>
-          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "song" ? "secondary" : "outline"} aria-pressed={reference() === "song"} disabled={!hasSong()} onClick={() => changeReference("song")}>Full song</Button>
-          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "vocals" ? "secondary" : "outline"} aria-pressed={reference() === "vocals"} disabled={!hasVocals()} onClick={() => changeReference("vocals")}>Just vocals</Button>
-          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "instruments" ? "secondary" : "outline"} aria-pressed={reference() === "instruments"} disabled={!hasOutput("instruments")} onClick={() => changeReference("instruments")}>{displayOutputLabel("Instruments", props.job.options)}</Button>
-          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums" ? "secondary" : "outline"} aria-pressed={reference() === "drums"} disabled={!hasOutput("drums")} onClick={() => changeReference("drums")}>{displayOutputLabel("Drums only", props.job.options)}</Button>
-          <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums-vocals" ? "secondary" : "outline"} aria-pressed={reference() === "drums-vocals"} disabled={!hasOutput("drums-vocals")} onClick={() => changeReference("drums-vocals")}>{displayOutputLabel("Drums + Vocals", props.job.options)}</Button>
-          <For each={otherReferences()}>{item => <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === item.label ? "secondary" : "outline"} aria-pressed={reference() === item.label} onClick={() => changeReference(item.label)}>{displayOutputLabel(item.label, props.job.options)}</Button>}</For>
-        </div>
+        <BackgroundControls />
         <div class="pitch-zoom" role="group" aria-label="Timeline zoom">
           <Button type="button" variant="outline" aria-label="Zoom out melody" disabled={zoom() <= MIN_ZOOM} onClick={() => changeZoom(zoom() - ZOOM_STEP)}>−</Button>
           <label class="pitch-zoom-value">
@@ -688,23 +723,21 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <Show when={selectedWord() !== null}><span>“{analysis().words[selectedWord()!].text}” · approximate full-vocal word alignment.</span></Show>
       </div>
       <footer class="pitch-footer">
-        <div class="pitch-skip-controls" role="group" aria-label="Timeline playback">
-          <Button type="button" variant="outline" aria-label="Back 5 seconds" onClick={() => seek(position() - 5)}>−5 s</Button>
-          <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl()} onClick={togglePlayback}>
-            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
-              <Show when={nativePaused()} fallback={<><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>}>
-                <path d="M7 3v18l15-9z" />
-              </Show>
-            </svg>
-          </Button>
-          <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => seek(position() + 5)}>+5 s</Button>
-        </div>
+        <TransportControls />
         <p class="pitch-follow-status" role="status">
           <Show when={follow() && browsing()}>Auto-follow paused while browsing. Scroll back to the playhead to resume.</Show>
         </p>
         <Show when={playbackError()}><p role="alert" class="text-sm text-destructive">{playbackError()}</p></Show>
         <Show when={referenceError()}><p role="alert" class="text-sm text-destructive">{referenceError()}</p></Show>
-        <TimelineKaraoke job={props.job} position={position()} notes={notes()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey} />
+        <TimelineKaraoke job={props.job} position={position()} notes={notes()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey}
+          fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize} showPitches={karaokePitches()} onShowPitches={setKaraokePitches}
+          onFullscreen={openKaraokeFullscreen} />
+        <Show when={karaokeFullscreen()}>
+          <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()} notes={notes()}
+            playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize}
+            showPitches={karaokePitches()} onShowPitches={setKaraokePitches} background={<BackgroundControls />} activeSource={reference()} transport={<TransportControls />}
+            error={referenceError() || playbackError()} onSeek={seekMedia} onKeyDown={togglePlaybackKey} onClose={() => setKaraokeFullscreen(false)} returnFocus={fullscreenReturnFocus} />
+        </Show>
         <For each={[0, 1]}>{index => <Show when={sources[index][0]()} keyed>{source =>
           <audio ref={element => { slots[index] = element; if (index === 0 && !audio) audio = element; }}
             aria-label={`Pitch reference: ${referenceLabel()}`} controls={activeSlot() === index}
@@ -732,7 +765,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
                 setPlaybackError(audio.error?.message || "This reference audio could not be played.");
               } else if (pending?.slot === index) referenceFailed(pending, new Error(event.currentTarget.error?.message || "This reference audio could not be played."));
             }}
-            onLoadedMetadata={event => { if (event.currentTarget === slots[index]) prepareReference(index); }}
+            onLoadedMetadata={event => { if (event.currentTarget === audio) syncMediaDuration(); if (event.currentTarget === slots[index]) prepareReference(index); }}
+            onDurationChange={event => { if (event.currentTarget === audio) syncMediaDuration(); }}
             onCanPlay={event => { if (event.currentTarget === slots[index]) prepareReference(index); }}
             onTimeUpdate={event => { if (event.currentTarget === audio) updatePosition(); }}
             onSeeked={event => {

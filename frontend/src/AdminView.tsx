@@ -2,6 +2,7 @@ import { createSignal, For, onMount, Show, type Component } from "solid-js";
 import { adminUserActivity, adminUsers, deleteInvite, grantInviteSlot, revokeUserSessions, updateAdminUser, type AdminUser, type AdminUserActivity } from "./api";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
+import AdminCacheView from "./AdminCacheView";
 
 const timestamp = (value: number | null) => value === null ? "Unknown" : new Date(value * 1000).toLocaleString();
 
@@ -214,6 +215,7 @@ const AdminView: Component = () => {
   const [users, setUsers] = createSignal<AdminUser[] | null>(null);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  const [showCache, setShowCache] = createSignal(false);
 
   const load = async () => {
     setLoading(true);
@@ -237,6 +239,12 @@ const AdminView: Component = () => {
           {loading() ? "Loading..." : "Refresh"}
         </Button>
       </header>
+      <div class="border-b border-border pb-4">
+        <Button type="button" variant="outline" class="min-h-11" aria-expanded={showCache()} onClick={() => setShowCache(!showCache())}>
+          {showCache() ? "Hide cached songs" : "Manage cached songs"}
+        </Button>
+        <Show when={showCache()}><div class="pt-4"><AdminCacheView /></div></Show>
+      </div>
       <Show when={loading()}><p class="text-sm text-muted-foreground" role="status">Loading people...</p></Show>
       <Show when={error()}><p class="text-sm text-destructive" role="alert">{error()}</p></Show>
       <Show when={users()} keyed>

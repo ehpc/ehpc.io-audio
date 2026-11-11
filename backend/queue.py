@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from backend import config, db, drain, events, song_search_worker
+from backend.cache_catalog import capture
 from backend.inference import (
     UncertainInferenceDispatch,
     cleanup_completed_transfers,
@@ -101,6 +102,16 @@ def _persist_results(
     return manifest
 
 
+async def _cache_thread(function, *args):
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    drain.state.track(task)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
 async def _process(
     job: JobRecord, audio: bytes, filename: str, metadata
 ) -> ProcessingResult:
@@ -108,6 +119,7 @@ async def _process(
     task = asyncio.create_task(
         asyncio.to_thread(process_source, job, audio, filename, metadata, stop)
     )
+    drain.state.track(task)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -119,6 +131,11 @@ async def _process(
 
 
 async def _run_job(job: JobRecord) -> None:
+    with capture() as recorder:
+        await _run_job_captured(job, recorder)
+
+
+async def _run_job_captured(job: JobRecord, recorder) -> None:
     await _publish_status(job.id)
     try:
         log.info(
@@ -129,7 +146,9 @@ async def _run_job(job: JobRecord) -> None:
             dataclasses.asdict(job.options),
         )
         log.info("job %s loading source", job.id)
-        audio_bytes, filename = await asyncio.to_thread(_load_source_bytes, job)
+        audio_bytes, filename = await _cache_thread(_load_source_bytes, job)
+        if job.source_type == "upload":
+            recorder.bind(audio_bytes, job.title or Path(filename).stem)
         log.info(
             "job %s source ready (%s, %.1f MB)",
             job.id,
@@ -141,7 +160,7 @@ async def _run_job(job: JobRecord) -> None:
         if job.source_type == "url":
             job.title = Path(filename).stem
             await asyncio.to_thread(db.set_title, job.id, job.title)
-        job.original_key = await asyncio.to_thread(
+        job.original_key = await _cache_thread(
             detect_key, audio_bytes, filename, config.DATA_DIR / "artifacts"
         )
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
@@ -189,9 +208,9 @@ async def _run_job(job: JobRecord) -> None:
             # Transform the complete source, not a separated/reconstructed mix.
             # Persisting applies pitch and tempo together once, as for each stem.
             result = {"song": StemResult(audio_bytes, 0.0), **result}
-        manifest = await asyncio.to_thread(_persist_results, job, result)
+        manifest = await _cache_thread(_persist_results, job, result)
         if processed.pitch_vocals is not None:
-            await asyncio.to_thread(persist_pitch_vocals, job, processed.pitch_vocals)
+            await _cache_thread(persist_pitch_vocals, job, processed.pitch_vocals)
         await asyncio.to_thread(
             db.mark_done, job.id, manifest, processed.transcript, processed.pitch_json
         )

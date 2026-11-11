@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from backend import config
+from backend.cache_catalog import bind_source
 from separator import cache_versions
 from separator.artifact_cache import cache_key, cached_bytes
 from separator.download import download_mp3
@@ -76,6 +77,15 @@ def cached_download(
         audio = archive.read("audio")
         filename = json.loads(archive.read("name"))
         metadata = archive.read("metadata")
+    try:
+        details = json.loads(metadata.splitlines()[-1]) if metadata else {}
+        if not isinstance(details, dict):
+            details = {}
+    except (ValueError, IndexError):
+        details = {}
+    bind_source(
+        audio, details.get("track") or Path(filename).stem, details.get("artist")
+    )
     destination = Path(dest_dir)
     destination.mkdir(parents=True, exist_ok=True)
     (destination / filename).write_bytes(audio)

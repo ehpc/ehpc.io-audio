@@ -13,6 +13,7 @@ export default defineConfig({
   testDir: './e2e',
   testMatch: '**/*.spec.ts',
   testIgnore: [
+    '**/admin-cache.spec.ts',
     '**/auth.spec.ts',
     '**/karaoke.spec.ts',
     '**/visual.spec.ts',

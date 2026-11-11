@@ -101,7 +101,19 @@ until an operator reconciles the intent; this is not an exactly-once claim.
 Completed cache artifacts win before any such claim or GPU lookup.
 
 Caches remain private implementation details, not public routes or shared
-history. Existing job files and opaque historical artifacts are preserved.
+history. Ordinary upgrades preserve existing job files and opaque historical cache.
+Administrators can open **People → Manage cached songs** to inspect indexed
+reusable audio work and, after confirmation, clear one song, selected songs or
+all reusable cache. A selective clear can also evict artifacts shared with other
+recordings. Older unattributed cache cannot safely be cleared by song: selective
+clearing remains unavailable until an administrator separately confirms clearing
+all reusable cache; no legacy reset happens automatically. Clearing can make
+future processing download or recompute data and incur GPU costs; saved jobs,
+original files, named downloads, karaoke
+reference audio, accounts and model weights remain intact. Active, queued or
+unresolved work can block clearing; the server reports that conflict without
+removing the selection.
+
 Migration imports verified original bytes without relabeling unknown producers.
 Historical producer aliases require actual GPU-runtime evidence; a CPU image
 inspection alone is insufficient. Raw historical Qwen reuse additionally needs
@@ -675,10 +687,9 @@ below the graph and selection details. The center icon and accessible action
 follow the native player's actual state, including external pauses and source
 changes; failed playback is reported rather than shown as playing. Native audio
 controls, including volume, remain below the karaoke reader. All controls use
-the same player. Skips use five **output-timeline** seconds, clamp to zero/the
-analysis end, and preserve playing/paused state, volume, background source and
-selected stem. The unchanged original uses its tempo-converted source clock;
-transformed backgrounds use the output clock.
+the same player. Skips move five seconds on the selected audio's native clock,
+clamp to its available duration, and preserve playing/paused state, volume,
+background source and selected stem. Lyrics remain mapped to the output clock.
 
 With focus on the timeline's scroll region or time ruler, **Space** toggles that
 same native player without scrolling the page; holding Space does not repeatedly
@@ -724,6 +735,15 @@ notes; word and punctuation groups wrap together, and long note sequences wrap
 within their group. The next line can be scrolled when needed; no syllable
 timings or note links are invented.
 Pitch-only or ASR-gap words can appear as short individual cues.
+
+Use **A−** and **A+** to adjust lyric size from 75% to 200% in 25% steps;
+the setting is shared by the normal and fullscreen readers for that view.
+Fullscreen keeps the current player, backing and position, with a scrollable
+backing picker, pitch toggle, play/pause, five-second skips and a seek bar.
+The fullscreen progress bar follows the selected audio's own clock, which can
+differ from the output clock when the untransformed original plays at a changed
+tempo. Exit or Escape returns to the previous view; keyboard Space controls
+playback when focus is not on an interactive control.
 
 **Background audio** is independent of the detected **Vocal stem** selector.
 Choose **Full song** (the transformed song when available, otherwise the

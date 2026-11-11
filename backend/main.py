@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from backend import auth_store, config, drain
 from backend.queue import lifespan
 from backend.routes import (
+    admin_cache,
     auth,
     health,
     jobs,
@@ -33,6 +34,36 @@ def _expensive_work(request: Request) -> bool:
         or path.endswith("/retry")
         or path.endswith("/pitch-reference/vocals")
     )
+
+
+class CacheAdmission:
+    """Keep admission until the ASGI response body has finished streaming."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        playback = (
+            request.method in {"GET", "HEAD"}
+            and request.url.path.startswith("/api/jobs/")
+            and "playback" in request.query_params
+        )
+        if not (_expensive_work(request) or playback):
+            await self.app(scope, receive, send)
+            return
+        if not await drain.state.enter():
+            await JSONResponse({"detail": "Server is draining"}, status_code=503)(
+                scope, receive, send
+            )
+            return
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            drain.state.leave()
 
 
 def create_app() -> FastAPI:
@@ -84,17 +115,9 @@ def create_app() -> FastAPI:
             )
         return response
 
-    @fastapi_app.middleware("http")
-    async def drain_admission(request: Request, call_next):
-        if not _expensive_work(request):
-            return await call_next(request)
-        if not await drain.state.enter():
-            return JSONResponse({"detail": "Server is draining"}, status_code=503)
-        try:
-            return await call_next(request)
-        finally:
-            drain.state.leave()
+    fastapi_app.add_middleware(CacheAdmission)
 
+    fastapi_app.include_router(admin_cache.router, prefix="/api")
     fastapi_app.include_router(auth.router, prefix="/api")
     fastapi_app.include_router(health.router)
     fastapi_app.include_router(jobs.router, prefix="/api")

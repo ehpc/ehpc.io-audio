@@ -275,11 +275,12 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeGreaterThan(195);
     await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1'))).toBeLessThan(205);
     await activate(back);
-    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(0, 1);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(1.25, 1);
     await activate(back);
     expect(await player.evaluate(element => element.currentTime)).toBe(0);
     await activate(forward);
-    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(6.25, 1);
+    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(5, 1);
+    await expect.poll(async () => Number(await view.locator('.pitch-playhead').getAttribute('x1')) / 40).toBeCloseTo(4, 1);
     expect(await player.evaluate(element => element.paused && element.volume === 0.4)).toBe(true);
     // A second choice supersedes a still-loading first choice without stopping
     // the current audio or allowing a late request to change the selection.
@@ -562,11 +563,10 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await activate(forward);
     expect(await scroll.evaluate(element => element.scrollLeft)).toBe(optedOut);
     await player.evaluate(element => element.pause());
-    // The upper clamp is the analysis end, converted to original-media time.
+    // Skipping clamps at the actual active media duration, not the analysis end.
     await ruler.press('End');
     await activate(forward);
-    const analysis = JSON.parse(fixture).pitch;
-    await expect.poll(() => player.evaluate(element => element.currentTime)).toBeCloseTo(analysis.duration_s * 1.25, 1);
+    await expect.poll(() => player.evaluate(element => Math.abs(element.currentTime - element.duration))).toBeLessThan(0.05);
     expect(await player.evaluate(element => element.paused)).toBe(true);
     await expect(backgrounds.getByRole('button', { name: 'Full song' })).toHaveAttribute('aria-pressed', 'true');
     expect(await view.getByLabel('Pitch vocal stem', { exact: true }).inputValue()).toBe('vocals');

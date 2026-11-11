@@ -20,7 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from separator.artifact_cache import atomic_write, locked
+from separator.artifact_cache import atomic_write, locked, record_path
 from separator.lyrics import (
     CanonicalWordPosition,
     Transcript,
@@ -362,6 +362,7 @@ def _lookup_reference(
     if cache is not None:
         cache_file = _cache_path(cache, metadata)
         try:
+            record_path(cache_file)
             value = json.loads(cache_file.read_text("utf-8"))
             record = ReferenceRecord(**value["record"])
             fetched_at = value["fetched_at"]

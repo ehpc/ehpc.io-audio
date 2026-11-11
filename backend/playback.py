@@ -7,8 +7,9 @@ import tempfile
 from pathlib import Path
 from typing import TypedDict
 
+from backend.cache_catalog import record_path
 from separator import cache_versions
-from separator.artifact_cache import atomic_write, cache_key, locked
+from separator.artifact_cache import atomic_write, cache_key, complete_path, locked
 
 _PREPARATION_TIMEOUT_S = 120
 
@@ -125,6 +126,8 @@ def listening_path(source: Path, root: Path) -> Path | None:
     output = root / f"{key}.mp4"
     manifest = root / f"{key}.json"
     with locked(root / f"{key}.lock"):
+        record_path(manifest)
+        record_path(output)
         cached = _cached(manifest)
         if cached is not None:
             audio, checksum = cached
@@ -184,6 +187,8 @@ def listening_path(source: Path, root: Path) -> Path | None:
                 with temporary.open("rb") as handle:
                     os.fsync(handle.fileno())
                 temporary.replace(output)
+                record_path(output)
+                complete_path(output)
                 output_sha256 = cache_versions.file_revision(output)
             finally:
                 temporary.unlink(missing_ok=True)

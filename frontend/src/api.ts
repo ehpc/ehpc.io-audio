@@ -306,6 +306,23 @@ export interface AdminUserActivity {
   searches: { id: string; query: string | null; status: "pending" | "completed" | "expired" | "failed"; created_at: number }[];
 }
 
+export interface AdminCache {
+  songs: { id: string; title: string | null; artist: string | null; bytes: number }[];
+  unattributed_bytes: number;
+  selective_ready: boolean;
+  busy: boolean;
+  unsafe: boolean;
+}
+
+export function adminCache(): Promise<AdminCache> {
+  return authRequest("/admin/cache");
+}
+
+/** `cleared` counts removed cache files, not selected songs. */
+export function clearAdminCache(target: { ids: string[] } | { all: true }): Promise<{ cleared: number; reclaimed_bytes: number }> {
+  return authRequest("/admin/cache/clear", jsonRequest("POST", target));
+}
+
 export interface AuthProfile extends Omit<AdminUser, "disabled"> {
   invites: AuthInvite[];
 }

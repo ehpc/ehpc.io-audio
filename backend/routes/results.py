@@ -1,4 +1,8 @@
 import asyncio
+import contextlib
+import hashlib
+import os
+import stat
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -6,7 +10,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from backend import config, db
+from backend import config, db, drain
+from backend.cache_catalog import capture
 from backend.inference import recover_vocals
 from backend.metadata import ensure_download_title
 from backend.models import (
@@ -34,12 +39,55 @@ from separator.pitched_lyrics_odt import MIME_TYPE, pitched_lyrics_odt
 router = APIRouter(tags=["results"])
 
 
+def _source_identity(job: JobRecord):
+    """Hash the sole original without following links or loading it into memory."""
+    try:
+        with contextlib.ExitStack() as stack:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            root = os.open(config.UPLOADS_DIR, flags)
+            stack.callback(os.close, root)
+            directory = os.open(str(job.id), flags, dir_fd=root)
+            stack.callback(os.close, directory)
+            with os.scandir(directory) as entries:
+                names = [entry.name for entry in entries]
+            if len(names) != 1:
+                return None
+            descriptor = os.open(
+                names[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+            )
+            stream = stack.enter_context(os.fdopen(descriptor, "rb"))
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return None
+            return hashlib.file_digest(stream, "sha256").hexdigest(), names[0]
+    except OSError:
+        return None
+
+
+def _with_source(job: JobRecord, function, *args):
+    with capture() as recorder:
+        identity = _source_identity(job)
+        if identity is not None:
+            digest, filename = identity
+            recorder.bind_digest(digest, job.title or Path(filename).stem)
+        return function(*args)
+
+
+async def _tracked_thread(function, *args):
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    drain.state.track(task)
+    return await asyncio.shield(task)
+
+
 async def _listening_response(
-    path: Path, media_type: str | None = None
+    job: JobRecord, path: Path, media_type: str | None = None
 ) -> FileResponse:
     try:
-        indexed = await asyncio.to_thread(
-            listening_path, path, config.DATA_DIR / "artifacts" / "playback"
+        indexed = await _tracked_thread(
+            _with_source,
+            job,
+            listening_path,
+            path,
+            config.DATA_DIR / "artifacts" / "playback",
         )
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(
@@ -74,7 +122,7 @@ async def get_original(
     if not path.is_file():
         raise HTTPException(404, "original not available")
     if playback:
-        return await _listening_response(path)
+        return await _listening_response(job, path)
     return FileResponse(
         path, filename=original_filename(job.title, job_id, path.suffix)
     )
@@ -94,7 +142,7 @@ async def get_pitch_vocals(
     if path is None:
         raise HTTPException(404, "pitch reference not found")
     if playback:
-        return await _listening_response(path, "audio/mpeg")
+        return await _listening_response(job, path, "audio/mpeg")
     return FileResponse(path, media_type="audio/mpeg")
 
 
@@ -121,7 +169,7 @@ async def recover_pitch_vocals(
             )
         source = await asyncio.to_thread(sources[0].read_bytes)
         try:
-            vocals = await asyncio.to_thread(recover_vocals, source)
+            vocals = await _tracked_thread(_with_source, job, recover_vocals, source)
         except Exception as exc:
             raise HTTPException(
                 503, "Vocal cache lookup is unavailable. Please try again later."
@@ -133,7 +181,7 @@ async def recover_pitch_vocals(
                 "identity. The cache may be missing or from an older model. "
                 "Run pitch detection again to create a reference.",
             )
-        await asyncio.to_thread(persist_pitch_vocals, job, vocals)
+        await _tracked_thread(_with_source, job, persist_pitch_vocals, job, vocals)
     return Response(status_code=204)
 
 
@@ -162,7 +210,7 @@ async def get_result(
     if not path.is_file():
         raise HTTPException(404, "result not found")
     if playback:
-        return await _listening_response(path, "audio/mpeg")
+        return await _listening_response(job, path, "audio/mpeg")
     download_name = download_filename(
         job.title, job_id, label, job.options, job.original_key
     )

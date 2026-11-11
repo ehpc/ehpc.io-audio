@@ -3,6 +3,9 @@ import type { JobDTO, PitchNoteDTO } from "~/api";
 import { currentKaraokeLine, karaokeLines, karaokeWordState, type KaraokeLine, type KaraokePart, type KaraokeWord } from "~/lib/karaoke";
 import { Button } from "~/components/button";
 
+// Percent of the normal reader size; shared by inline and fullscreen views.
+export const LYRIC_FONT = { default: 100, min: 75, max: 200, step: 25 } as const;
+
 interface TimelineKaraokeProps {
   job: JobDTO;
   /** Output-clock seconds supplied by the timeline's single media clock. */
@@ -12,6 +15,11 @@ interface TimelineKaraokeProps {
   seeking?: boolean;
   seekRevision?: number;
   onKeyDown?: (event: KeyboardEvent) => void;
+  fontSize?: number;
+  onFontSize?: (size: number) => void;
+  showPitches?: boolean;
+  onShowPitches?: (show: boolean) => void;
+  onFullscreen?: (trigger: HTMLButtonElement) => void;
 }
 
 interface DisplayWord {
@@ -56,7 +64,9 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     }
     return result;
   });
-  const [showPitches, setShowPitches] = createSignal(true);
+  const [localPitches, setLocalPitches] = createSignal(true);
+  const showPitches = () => props.showPitches ?? localPitches();
+  const togglePitches = () => props.onShowPitches ? props.onShowPitches(!showPitches()) : setLocalPitches(!showPitches());
   const [sliding, setSliding] = createSignal(false);
   const hasTiming = createMemo(() => lines().some(line => line.timing !== null));
   let reader: HTMLElement | undefined;
@@ -82,9 +92,22 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
 
   return <>
     <div class="timeline-karaoke-controls">
-      <Button type="button" variant={showPitches() ? "secondary" : "outline"} aria-pressed={showPitches()} onClick={() => setShowPitches(!showPitches())}>Pitches</Button>
+      <Button type="button" variant={showPitches() ? "secondary" : "outline"} aria-pressed={showPitches()} onClick={togglePitches}>Pitches</Button>
+      <Show when={props.onFontSize}>
+        <Button type="button" variant="outline" aria-label="Smaller lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) <= LYRIC_FONT.min} onClick={() => props.onFontSize?.(Math.max(LYRIC_FONT.min, (props.fontSize ?? LYRIC_FONT.default) - LYRIC_FONT.step))}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 19 9 4l6 15M5 14h8M16 12h6" /></svg>
+        </Button>
+        <Button type="button" variant="outline" aria-label="Larger lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) >= LYRIC_FONT.max} onClick={() => props.onFontSize?.(Math.min(LYRIC_FONT.max, (props.fontSize ?? LYRIC_FONT.default) + LYRIC_FONT.step))}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 19 9 4l6 15M5 14h8M16 12h6M19 9v6" /></svg>
+        </Button>
+      </Show>
+      <Show when={props.onFullscreen}>
+        <Button type="button" variant="outline" aria-label="Open karaoke fullscreen" onClick={event => props.onFullscreen?.(event.currentTarget)}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
+        </Button>
+      </Show>
     </div>
-    <section ref={reader} class="timeline-karaoke" tabIndex={0} aria-label="Current karaoke line" aria-live="off"
+    <section ref={reader} class="timeline-karaoke" tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}
       onClick={event => {
         if (!(event.target instanceof Element) || !event.target.closest(".timeline-karaoke-pitches")) reader?.focus({ preventScroll: true });
       }} onKeyDown={event => props.onKeyDown?.(event)}>

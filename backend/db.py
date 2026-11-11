@@ -17,6 +17,8 @@ _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
 _RENAMED_OPTIONS = {"chorus": "genders", "vocalists": "lead_backing"}
 
 type CompletedStage = tuple[str, str | None]
+type RetiringStage = tuple[int, str, str]
+type StageOwner = tuple[int, str | None, str | None]
 
 
 class InferenceStageClaim(NamedTuple):
@@ -529,6 +531,42 @@ def release_inference_stage(job_id: int, stage_key: str) -> bool:
             ).rowcount
             == 1
         )
+
+
+def cache_work_state() -> tuple[bool, list[StageOwner]]:
+    """Return work and durable stage owners while cache admission is gated."""
+    with _session() as conn:
+        busy = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE status IN ('queued','running')) "
+            "OR EXISTS(SELECT 1 FROM song_searches "
+            "WHERE pending_query IS NOT NULL OR claimed_at IS NOT NULL)"
+        ).fetchone()[0]
+        owners = conn.execute(
+            "SELECT id, active_stage_key, modal_call_id FROM jobs "
+            "WHERE active_stage_key IS NOT NULL OR modal_call_id IS NOT NULL"
+        ).fetchall()
+        return bool(busy), [tuple(row) for row in owners]
+
+
+def retire_cache_stages(
+    owners: list[RetiringStage], *, invalidate_search: bool = False
+) -> None:
+    """Atomically release validated owners and invalidate global search reuse."""
+    if not owners and not invalidate_search:
+        return
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for job_id, key, call_id in owners:
+            changed = conn.execute(
+                "UPDATE jobs SET active_stage_key = NULL, modal_call_id = NULL "
+                "WHERE id = ? AND active_stage_key = ? AND modal_call_id = ? "
+                "AND status NOT IN ('queued','running')",
+                (job_id, key, call_id),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Inference ownership changed")
+        if invalidate_search:
+            conn.execute("UPDATE song_searches SET successful_at = NULL")
 
 
 def update_result_size(job_id: int, label: str, size_bytes: int) -> None:

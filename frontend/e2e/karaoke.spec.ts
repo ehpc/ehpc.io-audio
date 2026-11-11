@@ -115,7 +115,7 @@ async function mountFixture(page: Page) {
   await page.goto('/');
   const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(view).toBeVisible();
-  const player = view.locator('audio:not([hidden])');
+  const player = page.locator('.pitch-view audio:not([hidden])');
   const song = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' });
   await song.click();
   await expect(song).toHaveAttribute('aria-pressed', 'true');
@@ -375,6 +375,116 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         scope: 'Fixture HTTP data + actual native media decoding/playback; not backend alignment inference',
         viewport, geometry, sung, longSung, rapid, reduced,
       }, null, 2), contentType: 'application/json' });
+    });
+  });
+}
+
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  test.describe(`karaoke fullscreen ${viewport.width}px`, () => {
+    test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('keeps native playback, source, seeking and lyric sizing across fullscreen', async ({ page }, info) => {
+      const { view, player } = await mountFixture(page);
+      await seekNative(player, 5.625);
+      const original = await player.elementHandle();
+      await player.evaluate(audio => audio.play());
+      const before = await player.evaluate(audio => audio.currentTime);
+      const open = view.getByRole('button', { name: 'Open karaoke fullscreen' });
+      await open.click();
+      const dialog = page.getByRole('dialog', { name: 'Karaoke fullscreen' });
+      await expect(dialog.getByRole('button', { name: 'Exit karaoke fullscreen' })).toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(dialog.getByRole('button', { name: 'Forward 5 seconds' })).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(dialog.getByRole('button', { name: 'Exit karaoke fullscreen' })).toBeFocused();
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(before + 0.15);
+      expect(await player.evaluate((audio, prior) => audio === prior, original)).toBe(true);
+      const lyrics = dialog.getByRole('region', { name: 'Current karaoke line' });
+      await expect(lyrics.getByText('silver', { exact: true })).toHaveAttribute('aria-current', 'true');
+      const slider = dialog.getByRole('slider', { name: 'Karaoke playback position' });
+      expect(Number(await slider.getAttribute('max'))).toBeCloseTo(await player.evaluate(audio => audio.duration), 1);
+      expect(Number(await slider.inputValue())).toBeGreaterThanOrEqual(5.625);
+      await expect(slider.locator('..')).toContainText('0:45');
+      const initialSize = await lyrics.evaluate(element => parseFloat(getComputedStyle(element).fontSize));
+      await dialog.getByRole('button', { name: 'Larger lyrics' }).click();
+      expect(await lyrics.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThan(initialSize);
+      const larger = dialog.getByRole('button', { name: 'Larger lyrics' });
+      while (await larger.isEnabled()) await larger.click();
+      await expect(larger).toBeDisabled();
+      if (viewport.width === 390) {
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.screenshot({ path: info.outputPath('fullscreen-390-largest.png'), animations: 'disabled' });
+      }
+      const smaller = dialog.getByRole('button', { name: 'Smaller lyrics' });
+      while (await smaller.isEnabled()) await smaller.click();
+      await expect(smaller).toBeDisabled();
+      await larger.click();
+      await expect(dialog.locator('audio, canvas, svg.pitch-chart, .piano-keyboard')).toHaveCount(0);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: info.outputPath(`fullscreen-${viewport.width}.png`), animations: 'disabled' });
+      if (viewport.width === 390) {
+        await page.setViewportSize({ width: 844, height: 390 });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await expect(lyrics.getByText('silver', { exact: true })).toBeInViewport();
+        await expect(dialog.getByRole('slider', { name: 'Karaoke playback position' })).toBeInViewport();
+        await expect(dialog.getByRole('button', { name: 'Back 5 seconds' })).toBeInViewport();
+        expect(await lyrics.getByText('silver', { exact: true }).evaluate(element => {
+          const box = element.getBoundingClientRect();
+          return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === element;
+        })).toBe(true);
+        await page.screenshot({ path: info.outputPath('fullscreen-landscape.png'), animations: 'disabled' });
+        await page.setViewportSize(viewport);
+      }
+      await dialog.getByRole('button', { name: 'Pause', exact: true }).click();
+      await slider.fill('10');
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeCloseTo(10, 1);
+      await expect.poll(() => lyricText(lyrics.getByRole('group', { name: 'Current lyrics' }))).toBe('Before silver, after');
+      await dialog.getByRole('button', { name: 'Back 5 seconds' }).click();
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeCloseTo(5, 1);
+      await expect(lyrics.locator('[aria-current]')).toHaveText('silver');
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Just vocals' }).click();
+      await expect(dialog.getByRole('button', { name: 'Just vocals' })).toHaveAttribute('aria-pressed', 'true');
+      await expect.poll(() => player.evaluate(audio => !audio.paused)).toBe(true);
+      await expect.poll(async () => Math.abs(Number(await slider.getAttribute('max')) - await player.evaluate(audio => audio.duration))).toBeLessThan(0.1);
+      await expect.poll(async () => Math.abs(Number(await slider.inputValue()) - await player.evaluate(audio => audio.currentTime))).toBeLessThan(0.2);
+      await dialog.getByRole('button', { name: 'Pause', exact: true }).focus();
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate(audio => !audio.paused)).toBe(true);
+      await lyrics.focus();
+      await lyrics.evaluate(element => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      });
+      expect(await page.evaluate(() => !window.getSelection()!.isCollapsed)).toBe(true);
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate(audio => !audio.paused)).toBe(true);
+      const atExit = await player.evaluate(audio => audio.currentTime);
+      const active = await player.elementHandle();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expect(open).toBeFocused();
+      expect(await player.evaluate((audio, prior) => audio === prior, active)).toBe(true);
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(atExit + 0.15);
+      await expect(view.getByRole('button', { name: 'Just vocals' })).toHaveAttribute('aria-pressed', 'true');
+      if (viewport.width === 390) {
+        await view.getByRole('button', { name: /^backing \(pitch/ }).click();
+        await expect(view.getByRole('button', { name: /^backing \(pitch/ })).toHaveAttribute('aria-pressed', 'true');
+        await open.click();
+        const activeButton = dialog.getByRole('button', { name: /^backing \(pitch/ });
+        await expect(activeButton).toHaveAttribute('aria-pressed', 'true');
+        await expect.poll(() => activeButton.evaluate(button => {
+          const item = button.getBoundingClientRect(), row = button.parentElement!.getBoundingClientRect();
+          return item.left >= row.left - 1 && item.right <= row.right + 1;
+        })).toBe(true);
+        await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      }
     });
   });
 }
