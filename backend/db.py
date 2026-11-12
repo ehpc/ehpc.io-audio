@@ -419,14 +419,16 @@ def delete_completed_job(
     with _session() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT session_id, status, active_stage_key, modal_call_id FROM jobs WHERE id = ?",
+            "SELECT session_id, status, active_stage_key, modal_call_id "
+            "FROM jobs WHERE id = ?",
             (job_id,),
         ).fetchone()
         if row is None or row["session_id"] != session_id:
             return False
-        if row["status"] != JobStatus.DONE or (
-            row["active_stage_key"], row["modal_call_id"]
-        ) != expected_stage:
+        if (
+            row["status"] != JobStatus.DONE
+            or (row["active_stage_key"], row["modal_call_id"]) != expected_stage
+        ):
             raise ValueError("Job is not ready for deletion")
         remove_files()
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))

@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from backend import config, db, drain
 from backend.main import JobAccess, app
 from backend.models import ResultManifestEntry
+from backend.routes import jobs, results
+from backend.routes.results import _tracked_thread
 from separator.options import SeparationOptions
 
 
@@ -53,7 +55,9 @@ def stage(job: int, *, cleaned: bool = True) -> tuple[Path, Path]:
     return artifact, receipt
 
 
-def test_delete_is_owned_and_preserves_shared_cache_and_other_user(client, other_client):
+def test_delete_is_owned_and_preserves_shared_cache_and_other_user(
+    client, other_client
+):
     owner = client.get("/api/auth/me").json()["id"]
     other = other_client.get("/api/auth/me").json()["id"]
     first = completed_job(owner, "same.wav")
@@ -163,8 +167,6 @@ def test_missing_owned_files_can_be_deleted_but_unsafe_symlink_cannot(client, tm
 
 
 def test_partial_file_error_keeps_row_and_allows_retry(client, monkeypatch):
-    from backend.routes import jobs
-
     owner = client.get("/api/auth/me").json()["id"]
     job = completed_job(owner, "original.wav")
     real_rmtree = jobs.shutil.rmtree
@@ -187,8 +189,6 @@ def test_partial_file_error_keeps_row_and_allows_retry(client, monkeypatch):
 def test_delete_http_fails_fast_during_download_without_blocking_other_reads(
     client, other_client, monkeypatch, id_format
 ):
-    from backend.routes import results
-
     owner = client.get("/api/auth/me").json()["id"]
     job = completed_job(owner, "original.wav")
     db.mark_done(
@@ -210,9 +210,7 @@ def test_delete_http_fails_fast_during_download_without_blocking_other_reads(
     monkeypatch.setattr(results, "ensure_download_title", delay_title)
     download = threading.Thread(
         target=lambda: observed.append(
-            client.get(
-                f"/api/jobs/{id_format.format(job)}/results/song"
-            ).status_code
+            client.get(f"/api/jobs/{id_format.format(job)}/results/song").status_code
         )
     )
     download.start()
@@ -271,8 +269,6 @@ def test_delete_fails_fast_for_stream_and_readers_remain_concurrent():
 
 
 def test_cancelled_file_request_keeps_lease_until_worker_exits():
-    from backend.routes.results import _tracked_thread
-
     async def exercise():
         started, finish = threading.Event(), threading.Event()
 

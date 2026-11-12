@@ -196,10 +196,8 @@ def _remove_job_files(job_id: int) -> None:
     if check(metadata_root, stat.S_ISDIR):
         check(metadata, stat.S_ISREG)
     for directory in directories:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             shutil.rmtree(directory)
-        except FileNotFoundError:
-            pass
     metadata.unlink(missing_ok=True)
 
 
