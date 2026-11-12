@@ -161,7 +161,7 @@ jobs:
       MODAL_L40S_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-l40s
       MODAL_TEST_GPU: L4
       MODAL_GPU_IDLE_SECONDS: ${{ vars.MODAL_GPU_IDLE_SECONDS || '60' }}
-    timeout-minutes: 90
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@v5
       - name: Install native audio tools
@@ -205,7 +205,8 @@ jobs:
       - name: Deploy isolated L4 Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: Run L4 GPU smoke cases
-        run: uv run pytest -m smoke --ignore=tests/test_structure_smoke.py --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-l4"
+        timeout-minutes: 30
+        run: uv run pytest -x -m smoke --ignore=tests/test_structure_smoke.py --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-l4"
       - name: Stop L4 app before production-class validation
         run: uv run modal app stop -y "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: Deploy isolated L40S Modal app
@@ -215,19 +216,21 @@ jobs:
           MODAL_TEST_GPU: L40S
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: Run production-class structure smoke
+        timeout-minutes: 10
         env:
           MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           E2E_MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           MODAL_TEST_GPU: L40S
-        run: uv run pytest tests/test_structure_smoke.py -m smoke --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-l40s"
+        run: uv run pytest -x tests/test_structure_smoke.py -m smoke --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-l40s"
       - name: Run full-stack browser E2E on isolated L40S
+        timeout-minutes: 30
         env:
           MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           E2E_MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           MODAL_TEST_GPU: L40S
         run: npm --prefix frontend run test:e2e
       - name: Upload E2E failure artifacts
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: browser-e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}

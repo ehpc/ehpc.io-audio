@@ -8,11 +8,14 @@ from uuid import uuid4
 from backend import config, modal_client
 from separator.inference import InferenceRequest
 from separator.inference_transport import InferenceTransferError
+from separator.modal_app import TIMEOUT
 from separator.prepare_models import ensure_prepared
 from separator.processing import ProcessingContext
 from separator.producer_manifest import load_manifest
 
 logger = logging.getLogger(__name__)
+SMOKE_RESULT_TIMEOUT_S = TIMEOUT + 60
+L4_FIRST_RESULT_TIMEOUT_S = 300
 
 
 def gpu_context(root: Path) -> ProcessingContext:
@@ -29,8 +32,10 @@ def gpu_context(root: Path) -> ProcessingContext:
         )
     manifest = load_manifest(config.PRODUCER_MANIFEST)
     pending: dict[str, str] = {}
+    first_l4_result = os.environ.get("MODAL_TEST_GPU") == "L4"
 
     def infer(request: InferenceRequest, key: str) -> bytes:
+        nonlocal first_l4_result
         ensure_prepared(
             manifest,
             request,
@@ -42,27 +47,45 @@ def gpu_context(root: Path) -> ProcessingContext:
         pending[key] = output_id
         modal_client.stage_input(request, output_id)
         failure: InferenceTransferError | None = None
+        call = modal_client.spawn(
+            output_id,
+            operation=request.operation,
+            producer_digest=request.producer_digest,
+        )
         try:
-            returned_id = modal_client.spawn(
-                output_id,
-                operation=request.operation,
-                producer_digest=request.producer_digest,
-            ).get()
+            returned_id = call.get(
+                timeout=L4_FIRST_RESULT_TIMEOUT_S
+                if first_l4_result
+                else SMOKE_RESULT_TIMEOUT_S
+            )
         except InferenceTransferError as error:
             if error.output_id != output_id:
                 raise ValueError(
                     "Inference failure belongs to another transfer"
                 ) from error
             failure = error
+        except BaseException:
+            # Only isolated smoke calls are cancelled; keep staged inputs and
+            # diagnostics for investigation even if cancellation itself fails.
+            try:
+                call.cancel()
+            except BaseException as error:
+                logger.warning(
+                    "Could not cancel isolated test inference (%s)",
+                    type(error).__name__,
+                )
+            raise
         else:
             if returned_id != output_id:
                 raise ValueError("Inference returned another transport identity")
         try:
-            return modal_client.read_result(
+            result = modal_client.read_result(
                 output_id,
                 request.fingerprint(),
                 diagnostics_root=root / "diagnostics",
             )
+            first_l4_result = False
+            return result
         except FileNotFoundError:
             if failure is not None:
                 raise failure from None

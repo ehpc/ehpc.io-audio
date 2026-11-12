@@ -1435,6 +1435,15 @@ arbitrary numeric pitch/tempo values.
 Pull requests run the cheap deterministic/native, frontend, isolated Firefox,
 seeded browser and visual checks. Paid GPU and live-queue gates run for main
 pushes and explicitly opted-in manual runs; their full assertions remain intact.
+For each L4 smoke context, the first inference result has a 300-second budget
+covering queueing, model loading and execution; subsequent results, and L40S
+results, have the model execution ceiling plus one minute. A timeout cannot
+distinguish a slow queue from slow inference. On a wait abort the test attempts
+to cancel only its accepted call and retains staged transfer data for diagnosis;
+cancellation can fail, so an operator must check the isolated app's state.
+Both GPU smoke commands stop after the first failure; all gates remain required.
+Three recent successful full GPU jobs took approximately 54–56 minutes; the
+short first-result budget does not make a successful full run a five-minute job.
 Only a passing main run promotes **`audio-inference-v3`** and publishes the
 matching web image. Main is already a release branch: batching changes before a
 main push, rather than merely renaming a run “release,” avoids duplicate paid
