@@ -550,6 +550,15 @@ export async function retryJob(id: number): Promise<SubmitResult> {
   }
   return (await res.json()) as SubmitResult;
 }
+export async function deleteJob(id: number): Promise<void> {
+  const res = await fetch(`${API_BASE}/jobs/${id}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw await responseError(res);
+  }
+}
 
 export async function listJobs(): Promise<JobDTO[]> {
   const res = await fetch(`${API_BASE}/jobs`, {

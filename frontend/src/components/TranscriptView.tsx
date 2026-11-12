@@ -25,6 +25,9 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
       <Show when={transcript()?.timestamped_text}>
         {(text) => <pre aria-label="Timestamped lyrics" class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm leading-relaxed">{text()}</pre>}
       </Show>
+      <Show when={transcript()?.reference || (transcript()?.recognition_chunks?.length ?? 0) > 0}>
+        <details>
+          <summary class="flex min-h-11 cursor-pointer items-center text-sm font-medium text-primary">Online alignment and raw recognition details</summary>
       <Show when={transcript()?.reference}>{review => (
         <div class="space-y-2 rounded-md border border-border p-3" aria-label="Lyrics reference comparison">
           <p class="text-sm font-medium">Online lyrics {review().lines?.length ? "alignment" : "comparison"}: {review().status}</p>
@@ -85,7 +88,6 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
             <summary class="flex min-h-11 cursor-pointer items-center text-sm font-medium text-primary">Original ASR (before reference comparison)</summary>
             <pre aria-label="Original ASR text" class="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm">{transcript()?.original_timestamped_text || "No words recognized."}</pre>
           </details>
-          <a href={lyricsJsonDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download lyrics JSON + original ASR</a>
         </div>
       )}</Show>
       <Show when={(transcript()?.recognition_chunks?.length ?? 0) > 0}>
@@ -99,6 +101,11 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
             </div>
           )}</For>
         </details>
+      </Show>
+        </details>
+      </Show>
+      <Show when={transcript()?.reference}>
+        <a href={lyricsJsonDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download lyrics JSON + original ASR</a>
       </Show>
     </>
   );

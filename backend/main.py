@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import TypeAdapter, ValidationError
 
 from backend import auth_store, config, drain
 from backend.queue import lifespan
@@ -19,6 +20,7 @@ from backend.routes import (
 )
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_JOB_ID = TypeAdapter(int)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +54,13 @@ class CacheAdmission:
             and request.url.path.startswith("/api/jobs/")
             and "playback" in request.query_params
         )
-        if not (_expensive_work(request) or playback):
+        path = request.url.path
+        deletion = (
+            request.method == "DELETE"
+            and len(path.rstrip("/").split("/")) == 4
+            and path.startswith("/api/jobs/")
+        )
+        if not (_expensive_work(request) or playback or deletion):
             await self.app(scope, receive, send)
             return
         if not await drain.state.enter():
@@ -66,8 +74,60 @@ class CacheAdmission:
             drain.state.leave()
 
 
+class JobAccess:
+    """Track job-file requests through the final ASGI response body."""
+
+    def __init__(self, app):
+        self.app = app
+        self.active: dict[int, int] = {}
+        self.deleting: set[int] = set()
+
+    def begin_delete(self, job_id: int) -> bool:
+        if self.active.get(job_id, 0) or job_id in self.deleting:
+            return False
+        self.deleting.add(job_id)
+        return True
+
+    def end_delete(self, job_id: int) -> None:
+        self.deleting.remove(job_id)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        scope.setdefault("state", {})["job_access"] = self
+        parts = scope["path"].strip("/").split("/")
+        if (
+            len(parts) < 4
+            or parts[:2] != ["api", "jobs"]
+            or parts[3] not in {"original", "results", "pitch-reference", "retry"}
+        ):
+            await self.app(scope, receive, send)
+            return
+        try:
+            job_id = _JOB_ID.validate_python(parts[2])
+        except ValidationError:
+            await self.app(scope, receive, send)
+            return
+        if job_id in self.deleting:
+            await JSONResponse({"detail": "Job not found"}, status_code=404)(
+                scope, receive, send
+            )
+            return
+        self.active[job_id] = self.active.get(job_id, 0) + 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            count = self.active[job_id] - 1
+            if count:
+                self.active[job_id] = count
+            else:
+                del self.active[job_id]
+
+
 def create_app() -> FastAPI:
     fastapi_app = FastAPI(lifespan=lifespan)
+    fastapi_app.add_middleware(JobAccess)
 
     @fastapi_app.middleware("http")
     async def access_control(request: Request, call_next):

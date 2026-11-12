@@ -100,7 +100,7 @@ it.each(["karaoke", "original"] as const)("opens a compact history entry into or
   const [selected, setSelected] = createSignal<JobDTO | null>(null);
   render(() => <>
     <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-    <HistoryView jobs={jobs()} onSelect={setSelected} onRetried={vi.fn()} />
+    <HistoryView jobs={jobs()} onSelect={setSelected} onRetried={vi.fn()} onDeleted={vi.fn()} />
   </>);
   expect(screen.queryByText("not the pitched renderer")).not.toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Aligned pitch and lyric text" })).not.toBeInTheDocument();

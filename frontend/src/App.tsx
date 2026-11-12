@@ -13,6 +13,7 @@ import { Button } from "~/components/button";
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
   const [history, setHistory] = createSignal<JobDTO[]>([]);
+  const deletedJobIds = new Set<number>();
   const auth = useAuth();
   const [tab, setTab] = createSignal<"workspace" | "profile" | "people">("workspace");
   const [accountError, setAccountError] = createSignal("");
@@ -31,7 +32,8 @@ const App: Component = () => {
 
   const refreshHistory = async () => {
     try {
-      setHistory(await listJobs());
+      const jobs = await listJobs();
+      setHistory(jobs.filter((item) => !deletedJobIds.has(item.id)));
     } catch {
       // leave the previous list in place if this refresh fails
     }
@@ -59,6 +61,12 @@ const App: Component = () => {
   const isActive = () => job()?.status === "queued" || job()?.status === "running";
   const isDone = () => job()?.status === "done";
 
+  const onDeleted = (id: number) => {
+    deletedJobIds.add(id);
+    setHistory((items) => items.filter((item) => item.id !== id));
+    if (job()?.id === id) setJob(null);
+  };
+
   return (
     <main class="app-shell">
       <header class="app-header">
@@ -80,15 +88,20 @@ const App: Component = () => {
 
       <SubmitForm onSubmitted={onSubmitted} />
 
-      <Show when={isActive()}>
-        <QueueStatus job={job()!} onTerminal={onTerminal} />
+      <Show when={isActive() || isDone()}>
+        <div class="processing-results">
+          <Show when={isActive()}>
+            <QueueStatus job={job()!} onTerminal={onTerminal} />
+          </Show>
+
+          <Show when={isDone()}>
+            <ResultsView job={job()!} onReset={() => setJob(null)} />
+          </Show>
+        </div>
       </Show>
 
-      <Show when={isDone()}>
-        <ResultsView job={job()!} onReset={() => setJob(null)} />
-      </Show>
+      <HistoryView jobs={history()} onSelect={setJob} onRetried={onSubmitted} onDeleted={onDeleted} />
 
-      <HistoryView jobs={history()} onSelect={setJob} onRetried={onSubmitted} />
       </div>
     </main>
   );

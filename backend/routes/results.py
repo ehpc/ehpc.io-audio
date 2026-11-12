@@ -75,7 +75,19 @@ def _with_source(job: JobRecord, function, *args):
 async def _tracked_thread(function, *args):
     task = asyncio.create_task(asyncio.to_thread(function, *args))
     drain.state.track(task)
-    return await asyncio.shield(task)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()
+        raise
 
 
 async def _listening_response(
@@ -167,7 +179,7 @@ async def recover_pitch_vocals(
             raise HTTPException(
                 404, "Original audio is unavailable; cached vocals cannot be recovered."
             )
-        source = await asyncio.to_thread(sources[0].read_bytes)
+        source = await _tracked_thread(sources[0].read_bytes)
         try:
             vocals = await _tracked_thread(_with_source, job, recover_vocals, source)
         except Exception as exc:
@@ -216,7 +228,7 @@ async def get_result(
     )
     # Old persisted results predate canonical titles (and source-key filenames).
     # Reconcile tags without re-encoding, and skip writes once they match.
-    size_bytes = await asyncio.to_thread(ensure_download_title, path, download_name)
+    size_bytes = await _tracked_thread(ensure_download_title, path, download_name)
     if entry.size_bytes != size_bytes:
         await asyncio.to_thread(db.update_result_size, job_id, label, size_bytes)
     return FileResponse(

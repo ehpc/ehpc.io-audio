@@ -1,10 +1,10 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { JobDTO, PitchNoteDTO } from "~/api";
 import { currentKaraokeLine, karaokeLines, karaokeWordState, type KaraokeLine, type KaraokePart, type KaraokeWord } from "~/lib/karaoke";
 import { Button } from "~/components/button";
 
 // Percent of the normal reader size; shared by inline and fullscreen views.
-export const LYRIC_FONT = { default: 100, min: 75, max: 200, step: 25 } as const;
+export const LYRIC_FONT = { default: 200, min: 75, max: 400, step: 25 } as const;
 
 interface TimelineKaraokeProps {
   job: JobDTO;
@@ -20,6 +20,7 @@ interface TimelineKaraokeProps {
   showPitches?: boolean;
   onShowPitches?: (show: boolean) => void;
   onFullscreen?: (trigger: HTMLButtonElement) => void;
+  fit?: boolean;
 }
 
 interface DisplayWord {
@@ -70,6 +71,57 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
   const [sliding, setSliding] = createSignal(false);
   const hasTiming = createMemo(() => lines().some(line => line.timing !== null));
   let reader: HTMLElement | undefined;
+  let fitFrame: number | undefined;
+  let disposed = false;
+  const scheduleFit = () => {
+    if (!props.fit || disposed) return;
+    if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = undefined;
+      if (!reader || !reader.clientWidth || !reader.clientHeight) return;
+      const rows = [...reader.querySelectorAll<HTMLElement>(".timeline-karaoke-line")];
+      const padding = getComputedStyle(reader);
+      const height = reader.clientHeight - parseFloat(padding.paddingTop) - parseFloat(padding.paddingBottom);
+      const fits = (size: number) => {
+        reader!.style.fontSize = `${size}px`;
+        let totalHeight = 0;
+        for (const row of rows) {
+          const range = document.createRange();
+          range.selectNodeContents(row);
+          if (range.getBoundingClientRect().width > row.clientWidth) return false;
+          totalHeight += row.getBoundingClientRect().height;
+        }
+        return totalHeight <= height;
+      };
+      let low = 0, high = height;
+      for (let i = 0; i < 14; i++) {
+        const middle = (low + high) / 2;
+        if (fits(middle)) low = middle; else high = middle;
+      }
+      const preference = Math.min(1, (props.fontSize ?? LYRIC_FONT.default) / LYRIC_FONT.default);
+      reader.style.fontSize = `${low * preference}px`;
+    });
+  };
+  onMount(() => {
+    if (!props.fit) return;
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(scheduleFit);
+    if (reader) observer?.observe(reader);
+    window.addEventListener("resize", scheduleFit);
+    document.fonts?.ready.then(scheduleFit);
+    document.fonts?.addEventListener("loadingdone", scheduleFit);
+    scheduleFit();
+    onCleanup(() => {
+      disposed = true;
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      document.fonts?.removeEventListener("loadingdone", scheduleFit);
+      if (fitFrame !== undefined) cancelAnimationFrame(fitFrame);
+    });
+  });
+  createEffect(() => {
+    current(); next(); showPitches(); props.notes; props.fontSize;
+    scheduleFit();
+  });
   let previous: KaraokeLine | null = null;
   let previousNext: KaraokeLine | null = null;
   let previousPosition = props.position;
@@ -94,10 +146,10 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     <div class="timeline-karaoke-controls">
       <Button type="button" variant={showPitches() ? "secondary" : "outline"} aria-pressed={showPitches()} onClick={togglePitches}>Pitches</Button>
       <Show when={props.onFontSize}>
-        <Button type="button" variant="outline" aria-label="Smaller lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) <= LYRIC_FONT.min} onClick={() => props.onFontSize?.(Math.max(LYRIC_FONT.min, (props.fontSize ?? LYRIC_FONT.default) - LYRIC_FONT.step))}>
+        <Button type="button" variant="outline" aria-label="Smaller lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) <= LYRIC_FONT.min} onClick={() => props.onFontSize?.(Math.max(LYRIC_FONT.min, Math.min(props.fit ? LYRIC_FONT.default : LYRIC_FONT.max, props.fontSize ?? LYRIC_FONT.default) - LYRIC_FONT.step))}>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 19 9 4l6 15M5 14h8M16 12h6" /></svg>
         </Button>
-        <Button type="button" variant="outline" aria-label="Larger lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) >= LYRIC_FONT.max} onClick={() => props.onFontSize?.(Math.min(LYRIC_FONT.max, (props.fontSize ?? LYRIC_FONT.default) + LYRIC_FONT.step))}>
+        <Button type="button" variant="outline" aria-label="Larger lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) >= (props.fit ? LYRIC_FONT.default : LYRIC_FONT.max)} onClick={() => props.onFontSize?.(Math.min(props.fit ? LYRIC_FONT.default : LYRIC_FONT.max, (props.fontSize ?? LYRIC_FONT.default) + LYRIC_FONT.step))}>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 19 9 4l6 15M5 14h8M16 12h6M19 9v6" /></svg>
         </Button>
       </Show>

@@ -10,13 +10,11 @@ visitor sees their live position.
 
 ## Private access
 
-Invite-only email-OTP access and its operator configuration are implemented and
-tested locally but **are not deployed**. The existing send-only mail service is
-active; one approved delivery passed SPF, DKIM and DMARC, which does not
-establish ongoing deliverability. An isolated gateway-only ingress test passed;
-the real audio policy and authenticated cutover remain unverified. See
-[ACCESS_PLAN.md](ACCESS_PLAN.md) for bootstrap, invitation accounting,
-credential provisioning, legacy ownership and rollout prerequisites.
+Invite-only email-OTP access is deployed. The existing send-only mail service
+has delivered an approved message that passed SPF, DKIM and DMARC; this does
+not establish ongoing deliverability. See [ACCESS_PLAN.md](ACCESS_PLAN.md) for
+bootstrap, invitation accounting, credential provisioning and legacy ownership
+details.
 
 ## Architecture
 
@@ -260,9 +258,25 @@ ODT); disabling it restores the previous independent preference.
 
 In this source, expanded results show **Karaoke with
 pitches**, **Lyrics with pitches**, then **Lyrics**. Completed History entries
-remain compact, showing title, status, date, key, adjustments, output count and
-an action to open Results; pitch JSON remains available when present. Open the
-job to see lyrics and individual audio downloads.
+remain compact, showing title, status, date, key, adjustments, an audio-output
+count and an action to open Results. Open Results for lyrics, individual audio
+and pitch JSON downloads when present. Timestamped lyrics remain visible while
+online-alignment and raw-recognition diagnostics are initially collapsed in
+the **Online alignment and raw recognition details** disclosure.
+
+Each signed-in user can delete their own completed History entries after a
+confirmation. Deletion permanently removes that job's history, original upload
+or download, saved outputs, and private karaoke vocal reference; it does not
+remove shared reusable cache or another user's jobs. Active transfers or
+unresolved inference ownership can block deletion. Stop an active transfer and
+retry; unresolved or unsafe data may require operator investigation. If file
+deletion encounters an I/O error, the job remains in History for retry, but some
+of its files may already have been removed. Queued, running, and failed jobs
+cannot be deleted.
+The owner-protected `DELETE /api/jobs/{id}` returns **204** on success, **404**
+for a missing or other user's job, **409** for an ineligible or unsafe deletion,
+and **503** if file removal fails.
+
 Existing completed karaoke jobs with both saved transcript and pitch data expose
 their derived TXT and ODT downloads in Results without reprocessing. Pitch-only
 jobs without saved lyrics do not offer these downloads.
@@ -707,9 +721,10 @@ piano-like tone; the view remains stable during a held note, which sustains and
 fades briefly on release. An icon-labelled vertical **Piano volume** control to
 the right of the keyboard adjusts only these manually played tones, including
 notes currently held; zero is silent and does not affect the song or backing
-track. Detection does not produce automatic piano sound. The instrument uses
-browser Web Audio rather than samples, suspends when idle, and reports
-unavailable audio.
+track. Its default sound level is doubled while the slider still starts at 100%;
+volume is not saved between sessions. Detection does not produce automatic piano
+sound. The instrument uses browser Web Audio rather than samples, suspends when
+idle, and reports unavailable audio.
 
 With **Follow playback** enabled, the timeline advances when the playhead passes
 about 75% of the visible note area, excluding the sticky note axis, leaving room
@@ -725,19 +740,23 @@ stationary-frame fallback for gesture completion.
 A seek in the native audio controls reveals the playhead even with Follow off,
 without clearing an existing browsing pause.
 
-The karaoke reader shows the current lyric line and a dimmed next timed line.
+The karaoke reader centers the current lyric line and a dimmed next timed line.
 Natural progression slides the next line upward; seeks jump directly, and
 reduced-motion preferences suppress animation. Known words fill progressively
 using published timings and the same output clock; untimed words remain neutral.
 An optional **Pitches** row shows only unambiguously linked notes from the
 selected vocal track above each word. Each word reserves room for its linked
-notes; word and punctuation groups wrap together, and long note sequences wrap
-within their group. The next line can be scrolled when needed; no syllable
-timings or note links are invented.
-Pitch-only or ASR-gap words can appear as short individual cues.
+notes; the inline reader can wrap word groups and long note sequences. No syllable
+timings or note links are invented. Pitch-only or ASR-gap words can appear as
+short individual cues.
 
-Use **A−** and **A+** to adjust lyric size from 75% to 200% in 25% steps;
-the setting is shared by the normal and fullscreen readers for that view.
+The inline lyric size starts at twice the previous base size; **A−** and **A+**
+adjust it from 75% to 400% in 25% steps. The choice is shared within the view
+and is not stored between sessions. Fullscreen centers the current and next
+lines together and fits them, including associated pitches, without wrapping.
+Its **A−** can reduce the text; **A+** stops at the largest size that fits.
+Very long lines or note sequences may therefore appear small. Fullscreen
+recomputes the fit when the content, settings, or viewport changes.
 Fullscreen keeps the current player, backing and position, with a scrollable
 backing picker, pitch toggle, play/pause, five-second skips and a seek bar.
 The fullscreen progress bar follows the selected audio's own clock, which can

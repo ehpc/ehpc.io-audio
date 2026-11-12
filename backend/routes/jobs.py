@@ -1,14 +1,22 @@
 import asyncio
+import contextlib
+import fcntl
 import json
+import os
+import shutil
+import stat
 from dataclasses import fields
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from backend import auth_store, config, db, events
 from backend.models import JobDTO, JobRecord, JobStatus, job_to_dto
+from backend.routes import admin_cache
 from backend.routes.auth import cookie_name
+from backend.routes.results import _tracked_thread
 from backend.session import get_session_id
 from separator.options import SeparationOptions, parse_mixes
 
@@ -121,7 +129,7 @@ async def retry_job(
 
     if job.source_type == "upload":
         src = config.UPLOADS_DIR / str(job.id) / job.source_value
-        data = await asyncio.to_thread(src.read_bytes)
+        data = await _tracked_thread(src.read_bytes)
         await _save_upload(new_job_id, job.source_value, data)
 
     position = await asyncio.to_thread(db.queue_position, new_job_id)
@@ -150,6 +158,118 @@ async def get_job(
     if job is None or job.session_id != session_id:
         raise HTTPException(404, "job not found")
     return await _to_dto(job)
+
+
+def _remove_job_files(job_id: int) -> None:
+    directories = [
+        root / str(job_id) for root in (config.UPLOADS_DIR, config.RESULTS_DIR)
+    ]
+    metadata_root = config.DATA_DIR / "source-metadata"
+    metadata = metadata_root / f"{job_id}.json"
+
+    def check(path, expected) -> bool:
+        try:
+            mode = path.lstat().st_mode
+        except FileNotFoundError:
+            return False
+        if not expected(mode):
+            raise ValueError("Unsafe job path")
+        return True
+
+    def walk_error(error: OSError) -> None:
+        raise error
+
+    for directory in directories:
+        if not check(directory.parent, stat.S_ISDIR) or not check(
+            directory, stat.S_ISDIR
+        ):
+            continue
+        for current, dirs, files in os.walk(
+            directory, followlinks=False, onerror=walk_error
+        ):
+            for name in dirs:
+                if not check(Path(current) / name, stat.S_ISDIR):
+                    raise ValueError("Job path changed")
+            for name in files:
+                if not check(Path(current) / name, stat.S_ISREG):
+                    raise ValueError("Job path changed")
+    if check(metadata_root, stat.S_ISDIR):
+        check(metadata, stat.S_ISREG)
+    for directory in directories:
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            pass
+    metadata.unlink(missing_ok=True)
+
+
+def _delete_job(job_id: int, session_id: str) -> None:
+    job = db.get_job(job_id)
+    if job is None or job.session_id != session_id:
+        raise HTTPException(404, "Job not found")
+    if job.status != JobStatus.DONE:
+        raise HTTPException(409, "Only completed jobs can be deleted")
+    key, call_id = job.active_stage_key, job.modal_call_id
+    if (key is None) != (call_id is None):
+        raise HTTPException(409, "Inference ownership is unresolved")
+    try:
+        with contextlib.ExitStack() as stack:
+            if key is not None:
+                if not admin_cache._KEY.fullmatch(key) or not call_id:
+                    raise admin_cache.CacheConflict("Inference ownership is unresolved")
+                lock_path = config.DATA_DIR / "artifacts" / "inference" / f"{key}.lock"
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                handle = stack.enter_context(os.fdopen(fd, "r+b"))
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise admin_cache.CacheConflict(
+                        "Inference stage is in use"
+                    ) from None
+                stack.callback(fcntl.flock, handle, fcntl.LOCK_UN)
+                files = admin_cache.Files(stack)
+                entry = admin_cache._ledger(
+                    files, [(job_id, key, call_id)], only_key=key
+                )[key]
+                if entry.artifact is None:
+                    raise admin_cache.CacheConflict("Inference did not complete")
+            deleted = db.delete_completed_job(
+                job_id, session_id, (key, call_id), lambda: _remove_job_files(job_id)
+            )
+    except admin_cache.CacheConflict as exc:
+        raise HTTPException(409, "Inference ownership is unresolved") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(409, "Inference ownership is unresolved") from exc
+    except ValueError as exc:
+        raise HTTPException(
+            409, "Job state or file paths are unsafe for deletion"
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            503, "Job deletion failed; some files may already have been removed"
+        ) from exc
+    if not deleted:
+        raise HTTPException(404, "Job not found")
+
+
+@router.delete("/jobs/{job_id}", status_code=204)
+async def delete_job(
+    job_id: int, request: Request, session_id: Annotated[str, Depends(get_session_id)]
+) -> Response:
+    job = await asyncio.to_thread(db.get_job, job_id)
+    if job is None or job.session_id != session_id:
+        raise HTTPException(404, "Job not found")
+    if job.status != JobStatus.DONE:
+        raise HTTPException(409, "Only completed jobs can be deleted")
+    access = request.state.job_access
+    if not access.begin_delete(job_id):
+        raise HTTPException(409, "A job file is currently in use")
+    try:
+        await admin_cache._under_gate(_delete_job, job_id, session_id)
+        return Response(status_code=204)
+    finally:
+        access.end_delete(job_id)
 
 
 _SSE_HEARTBEAT_INTERVAL = 15

@@ -160,17 +160,26 @@ def _matches(file: File, sha, size, *, verify_content: bool = True) -> bool:
 
 
 def _ledger(
-    files: Files, owners: list[db.StageOwner], *, verify_content: bool = True
+    files: Files,
+    owners: list[db.StageOwner],
+    *,
+    verify_content: bool = True,
+    only_key: str | None = None,
 ) -> dict[str, VerifiedLedgerEntry]:
-    """Verify every durable dispatch, including receipts unrelated to selection."""
-    try:
-        with (
-            files.directory(["inference-requests"]) as directory,
-            os.scandir(directory) as entries,
-        ):
-            names = [entry.name for entry in entries]
-    except FileNotFoundError:
-        names = []
+    """Verify durable dispatches, or one specific dispatch when deleting a job."""
+    if only_key is not None:
+        if not _KEY.fullmatch(only_key):
+            raise CacheConflict("Invalid inference key")
+        names = [f"{only_key}.json"]
+    else:
+        try:
+            with (
+                files.directory(["inference-requests"]) as directory,
+                os.scandir(directory) as entries,
+            ):
+                names = [entry.name for entry in entries]
+        except FileNotFoundError:
+            names = []
     receipts = {}
     if names:
         for name in names:

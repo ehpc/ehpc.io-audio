@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, fields
 from typing import NamedTuple
@@ -407,6 +407,30 @@ def get_job(job_id: int) -> JobRecord | None:
     with _session() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return _row_to_job(row) if row else None
+
+
+def delete_completed_job(
+    job_id: int,
+    session_id: str,
+    expected_stage: tuple[str | None, str | None],
+    remove_files: Callable[[], None],
+) -> bool:
+    """Delete a finished owned job only if its dispatch ownership is unchanged."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT session_id, status, active_stage_key, modal_call_id FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None or row["session_id"] != session_id:
+            return False
+        if row["status"] != JobStatus.DONE or (
+            row["active_stage_key"], row["modal_call_id"]
+        ) != expected_stage:
+            raise ValueError("Job is not ready for deletion")
+        remove_files()
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        return True
 
 
 def list_jobs_for_session(session_id: str, limit: int = 50) -> list[JobRecord]:

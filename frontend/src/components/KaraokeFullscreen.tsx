@@ -94,7 +94,7 @@ export default function KaraokeFullscreen(props: KaraokeFullscreenProps) {
       <div class="karaoke-fullscreen-reader">
         <TimelineKaraoke job={props.job} position={props.position} notes={props.notes} playing={props.playing}
           seeking={props.seeking} seekRevision={props.seekRevision} fontSize={props.fontSize} onFontSize={props.onFontSize}
-          showPitches={props.showPitches} onShowPitches={props.onShowPitches} />
+          showPitches={props.showPitches} onShowPitches={props.onShowPitches} fit />
       </div>
       <div class="karaoke-fullscreen-player">
         <label class="karaoke-fullscreen-seek">

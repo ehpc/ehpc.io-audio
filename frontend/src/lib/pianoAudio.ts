@@ -4,8 +4,8 @@ export interface PianoVoice {
 }
 const ATTACK_SECONDS = 0.012;
 const DECAY_SECONDS = 0.32;
-const PEAK_GAIN = 0.065;
-const SUSTAIN_GAIN = 0.024;
+const PEAK_GAIN = 0.13;
+const SUSTAIN_GAIN = 0.048;
 const RELEASE_SECONDS = 0.12;
 
 // One output per instrument controls every voice without changing its envelope.

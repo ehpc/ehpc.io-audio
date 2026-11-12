@@ -85,9 +85,13 @@ for (const width of [390, 1440]) {
     expect(sliderBounds.height).toBeGreaterThan(sliderBounds.width);
     const audio = page.getByRole('region', { name: 'Karaoke with pitches', exact: true }).locator('audio:not([hidden])');
     await audio.evaluate((element: HTMLAudioElement) => { element.volume = 0.37; });
-    await volume.fill('70');
+    await expect(volume).toHaveValue('100');
     expect(await page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts.length)).toBe(0);
-    await volume.fill('0');
+    if (width === 390) {
+      await volume.fill('70');
+      expect(await page.evaluate(() => (window as unknown as { __pianoContexts: AudioContext[] }).__pianoContexts.length)).toBe(0);
+      await volume.fill('0');
+    }
     const key = piano.getByRole('button', { name: 'Piano C4', exact: true });
     await key.scrollIntoViewIfNeeded();
     const box = (await key.boundingBox())!;
@@ -101,6 +105,16 @@ for (const width of [390, 1440]) {
       analyser.getFloatTimeDomainData(samples);
       return Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
     });
+    if (width === 1440) {
+      // Allow the real held note to reach its sustain, then adjust its gain live.
+      await page.waitForTimeout(450);
+      await expect.poll(level).toBeGreaterThan(0.019);
+      await expect.poll(level).toBeLessThan(0.029);
+      await volume.fill('50');
+      await expect.poll(level).toBeLessThan(0.015);
+      await expect.poll(level).toBeGreaterThan(0.009);
+      await volume.fill('0');
+    }
     await expect.poll(level).toBeLessThan(0.0001);
     await volume.focus();
     await page.keyboard.press('ArrowUp');
@@ -404,4 +418,35 @@ test('Firefox renders piano volume changes without unsupported automation', asyn
   } finally {
     await browser.close();
   }
+});
+
+test('default piano renders twice the former amplitude with headroom and natural release', async ({ page }) => {
+  const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/src/lib/pianoAudio.ts'), 'utf8');
+  const compiled = await transform(source, { loader: 'ts', format: 'iife', globalName: 'PianoAudio' });
+  await page.addScriptTag({ content: compiled.code });
+  const result = await page.evaluate(async () => {
+    interface PianoAudioModule {
+      createPianoOutput(context: BaseAudioContext, volume: number): GainNode;
+      createPianoVoice(context: BaseAudioContext, midi: number, output: AudioNode): { release(at: number): void };
+    }
+    const piano = (window as unknown as { PianoAudio: PianoAudioModule }).PianoAudio;
+    const render = async (notes: number[]) => {
+      const context = new OfflineAudioContext(1, 96000, 48000);
+      const output = piano.createPianoOutput(context, 1);
+      for (const midi of notes) piano.createPianoVoice(context, midi, output).release(1.2);
+      const samples = (await context.startRendering()).getChannelData(0);
+      const rms = (start: number, end: number) => {
+        let sum = 0;
+        for (let i = start * 48000; i < end * 48000; i++) sum += samples[i] ** 2;
+        return Math.sqrt(sum / ((end - start) * 48000));
+      };
+      return { attack: rms(0.02, 0.1), sustain: rms(0.8, 1.1), released: rms(1.5, 1.8), peak: Math.max(...samples.map(Math.abs)) };
+    };
+    return { single: await render([69]), chord: await render([60, 64, 67]) };
+  });
+  // Former A4 100%-volume baseline, rendered at 48kHz with the same envelope.
+  expect(result.single.attack).toBeCloseTo(2 * 0.027758366724963315, 4);
+  expect(result.single.sustain).toBeCloseTo(2 * 0.011876966403457713, 4);
+  expect(result.single.released).toBeLessThan(0.00001);
+  expect(result.chord.peak).toBeLessThan(0.4);
 });

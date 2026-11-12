@@ -23,6 +23,37 @@ test.afterEach(async ({ page, browser }, info) => {
     viewport: page.viewportSize(),
   }, null, 2));
 });
+
+// Real owner-scoped completed job; no processing or model inference.
+const seedDeleteDialog = String.raw`
+import sys
+from backend import db
+with db._session() as c:
+    cursor = c.execute("INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,created_at,finished_at) VALUES (?,?,?,?,?,?,?,?)",
+                       (sys.argv[1], "done", "upload", "fixture.wav", "Visual fixture track", "{}", 1767268800, 1767268801))
+    print(cursor.lastrowid)
+`;
+for (const viewport of [mobile, desktop]) {
+  test(`delete confirmation ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
+    const id = execFileSync('uv', ['run', 'python', '-c', seedDeleteDialog, identity.id], {
+      cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! }, encoding: 'utf8',
+    }).trim();
+    try {
+      await page.goto('/');
+      await page.getByRole('button', { name: 'Delete Visual fixture track', exact: true }).click();
+      const dialog = page.getByRole('alertdialog');
+      await expect(dialog).toContainText('Shared reusable processing cache is not deleted.');
+      await compare(dialog, info, `delete-confirmation-${viewport.width}.png`);
+    } finally {
+      execFileSync('uv', ['run', 'python', '-c',
+        'import sys; from backend import db\nwith db._session() as c: c.execute("DELETE FROM jobs WHERE id=? AND session_id=?", (int(sys.argv[1]), sys.argv[2]))', id, identity.id], {
+        cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+    }
+  });
+}
 // Fixed, synthetic metadata in the isolated database exercises the actual admin
 // activity UI without sending searches, mail, or inference requests.
 const seedAccountActivity = String.raw`
@@ -469,7 +500,7 @@ for (const viewport of [mobile, desktop]) {
     await page.mouse.down();
     await expect(key).toHaveAttribute('aria-pressed', 'true');
     await expect(key).toHaveClass(/piano-key-active/);
-    await compare(piano, info, `piano-pressed-${viewport.width}.png`);
+    await compare(piano.locator('.piano-scroll'), info, `piano-pressed-${viewport.width}.png`);
     await page.mouse.up();
     const toggle = view.getByRole('button', { name: 'Pitches', exact: true });
     await toggle.click();
@@ -542,13 +573,14 @@ for (const viewport of [mobile, desktop]) {
     await expect(next.getByText('Next', { exact: true })).toBeVisible();
     await expect(next.getByText('chorus', { exact: true })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
-    await compare(reader, info, `karaoke-crowded-${viewport.width}.png`);
+    await reader.screenshot({ path: info.outputPath('actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect.soft(reader).toHaveScreenshot(`karaoke-crowded-${viewport.width}.png`);
     await view.getByRole('button', { name: 'Open karaoke fullscreen' }).click();
     const fullscreen = page.getByRole('dialog', { name: 'Karaoke fullscreen' });
     await expect(fullscreen.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
     await expect(fullscreen.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
     await expect(fullscreen.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
-    await fullscreen.getByRole('button', { name: 'Larger lyrics' }).click();
+    await expect(fullscreen.getByRole('button', { name: 'Larger lyrics' })).toBeDisabled();
     await fullscreen.screenshot({ path: info.outputPath('fullscreen.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
     await expect(fullscreen).toHaveScreenshot(`karaoke-fullscreen-${viewport.width}.png`);
   });
@@ -608,6 +640,7 @@ for (const viewport of [mobile, desktop]) {
     await page.reload();
     const view = page.getByLabel('Lyrics transcript', { exact: true }).first();
     await expect(view).toBeVisible();
+    await view.getByText('Online alignment and raw recognition details', { exact: true }).click();
     await view.getByText('Canonical reference order and audio support', { exact: true }).click();
     await expect(view.getByText('??:?? · 67% local word agreement', { exact: false })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);

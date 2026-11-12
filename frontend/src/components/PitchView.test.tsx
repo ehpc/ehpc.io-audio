@@ -171,7 +171,8 @@ it("uses the active media clock for fullscreen seek while lyrics stay on the out
 it("bounds shared lyric font controls across inline and fullscreen readers", () => {
   render(() => <PitchView job={job()} />);
   const smaller = screen.getByRole("button", { name: "Smaller lyrics" });
-  fireEvent.click(smaller);
+  expect(screen.getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 2");
+  for (let index = 0; index < 5; index++) fireEvent.click(smaller);
   expect(smaller).toBeDisabled();
   expect(screen.getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 0.75");
   fireEvent.click(screen.getByRole("button", { name: "Open karaoke fullscreen" }));
@@ -181,7 +182,21 @@ it("bounds shared lyric font controls across inline and fullscreen readers", () 
   expect(larger).toBeDisabled();
   expect(within(dialog).getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 2");
   fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
-  expect(screen.getByRole("button", { name: "Larger lyrics" })).toBeDisabled();
+  const inlineLarger = screen.getByRole("button", { name: "Larger lyrics" });
+  for (let index = 0; index < 8; index++) fireEvent.click(inlineLarger);
+  expect(inlineLarger).toBeDisabled();
+  expect(screen.getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 4");
+});
+
+it("keeps an explicitly adjusted inline lyric size when fullscreen opens and closes", () => {
+  render(() => <PitchView job={job()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Smaller lyrics" }));
+  expect(screen.getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 1.75");
+  fireEvent.click(screen.getByRole("button", { name: "Open karaoke fullscreen" }));
+  const dialog = screen.getByRole("dialog", { name: "Karaoke fullscreen" });
+  expect(within(dialog).getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 1.75");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(screen.getByRole("region", { name: "Current karaoke line" })).toHaveStyle("--karaoke-scale: 1.75");
 });
 
 it("moves the timeline to a native media seek while preserving browsing and follow preference", () => {
@@ -653,6 +668,7 @@ it("keeps corrected text separate from original ASR provenance and its downloada
   render(() => <TranscriptView job={source} />);
   expect(screen.getByText("[00:01] Good morning")).toBeVisible();
   expect(screen.getByText("[00:01] Good morninx")).not.toBeVisible();
+  fireEvent.click(screen.getByText("Online alignment and raw recognition details"));
   fireEvent.click(screen.getByText("Original ASR (before reference comparison)"));
   expect(screen.getByText("[00:01] Good morninx")).toBeVisible();
   expect(screen.getByRole("link", { name: "LRCLIB source: Artist — Track" })).toHaveAttribute("href", "https://lrclib.net/api/get/123");
@@ -660,7 +676,7 @@ it("keeps corrected text separate from original ASR provenance and its downloada
   expect(screen.getByText(/“morninx” → “morning”/)).toHaveTextContent("1.50s on original audio");
 });
 
-it("shows ordered reference support, unsupported words, conflicting variants and raw untimed recognition without implying verification", () => {
+it("keeps lyrics visible while online alignment and raw recognition are keyboard-expandable details", async () => {
   const source = job();
   source.transcript = {
     status: "recognized", language: "English", timestamp_reference: "original", sections: [], structure_model: null,
@@ -685,7 +701,17 @@ it("shows ordered reference support, unsupported words, conflicting variants and
     },
   };
   render(() => <TranscriptView job={source} />);
-  fireEvent.click(screen.getByText("Canonical reference order and audio support"));
+  expect(screen.getByLabelText("Timestamped lyrics")).toHaveTextContent("Amber lanterns softly shine");
+  expect(screen.getByText(/Cached successful provider record/)).not.toBeVisible();
+  expect(screen.getByText("Online alignment and raw recognition details").closest("details")).not.toHaveAttribute("open");
+  expect(screen.getByText("Amber lanterns shine! <img src=x onerror=alert(1)>")).not.toBeVisible();
+
+  const details = screen.getByText("Online alignment and raw recognition details");
+  expect(details.tagName).toBe("SUMMARY");
+  expect(details).toBeVisible();
+  fireEvent.click(details);
+  expect(screen.getByText(/Cached successful provider record/)).toBeVisible();
+  await userEvent.click(screen.getByText("Canonical reference order and audio support"));
   const lines = document.querySelectorAll("ol > li");
   expect(lines[0]).toHaveTextContent("Amber lanterns softly shine");
   expect(lines[1]).toHaveTextContent("Silver branches sway");
@@ -693,8 +719,7 @@ it("shows ordered reference support, unsupported words, conflicting variants and
   expect(lines[1]).not.toHaveTextContent("nulls");
   expect(lines[0]).toHaveTextContent("Not independently corroborated; no word timestamps: softly");
   expect(lines[1]).toHaveTextContent("Independent recognition variant (preserved): silver branches sleep");
-  expect(screen.getByText(/Cached successful provider record/)).toBeVisible();
-  fireEvent.click(screen.getByText("Raw independent recognition (input windows, not lyric timestamps)"));
+  await userEvent.click(screen.getByText("Raw independent recognition (input windows, not lyric timestamps)"));
   expect(screen.getByText("Amber lanterns shine! <img src=x onerror=alert(1)>")).toBeVisible();
   expect(document.querySelector("img")).toBeNull();
 });
