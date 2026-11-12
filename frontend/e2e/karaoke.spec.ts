@@ -233,12 +233,27 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(nextPitch).toBeVisible();
       const chorusPitch = next.getByRole('group', { name: 'Pitches for chorus: C#5 D#5 F#5' });
       await expect(chorusPitch).toBeVisible();
-      const [nextNotesBox, chorusNotesBox] = await Promise.all([nextPitch.boundingBox(), chorusPitch.boundingBox()]);
+      const nextCells = await Promise.all([nextPitch, chorusPitch].map(pitchGroup => pitchGroup.evaluate(group => {
+        const cell = group.parentElement!;
+        return {
+          pitch: group.getBoundingClientRect().toJSON(),
+          word: cell.querySelector<HTMLElement>('.timeline-karaoke-word')!.getBoundingClientRect().toJSON(),
+          lyric: cell.querySelector<HTMLElement>('.timeline-karaoke-lyric')!.getBoundingClientRect().toJSON(),
+          cell: cell.getBoundingClientRect().toJSON(),
+        };
+      })));
+      for (const { pitch, word, lyric, cell } of nextCells) {
+        expect(pitch.bottom).toBeLessThanOrEqual(word.top + 1);
+        expect(pitch.left).toBeGreaterThanOrEqual(cell.left - 1);
+        expect(pitch.right).toBeLessThanOrEqual(cell.right + 1);
+        expect(Math.abs((lyric.left + lyric.right) / 2 - (cell.left + cell.right) / 2)).toBeLessThanOrEqual(1);
+      }
+      const [firstCell, secondCell] = nextCells.map(({ cell }) => cell);
       expect(
-        chorusNotesBox!.y >= nextNotesBox!.y + nextNotesBox!.height - 1
-        || (Math.abs(chorusNotesBox!.y - nextNotesBox!.y) <= 1
-          && chorusNotesBox!.x >= nextNotesBox!.x + nextNotesBox!.width - 1),
-        'next-word notes must follow without overlapping, whether inline or wrapped',
+        secondCell.top >= firstCell.bottom - 1
+        || (Math.abs(secondCell.bottom - firstCell.bottom) <= 1
+          && secondCell.left >= firstCell.right - 1),
+        'next-word cells must follow without overlapping, whether inline or wrapped',
       ).toBe(true);
       const layout = await current.evaluate(line => {
         const cells = [...line.querySelectorAll<HTMLElement>('.timeline-karaoke-cell')];
@@ -287,6 +302,32 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       ]);
       expect(pitchBox!.y + pitchBox!.height).toBeLessThanOrEqual(wordBox!.y + 1);
       expect(nextBox!.y).toBeGreaterThanOrEqual(currentBox!.y);
+      if (viewport.width === 390) {
+        const assertActiveVisible = async () => {
+          await silver.scrollIntoViewIfNeeded();
+          const visibility = await silver.evaluate(word => {
+            const reader = word.closest<HTMLElement>('.timeline-karaoke')!;
+            const next = reader.querySelector<HTMLElement>('.timeline-karaoke-next')!;
+            const wordBox = word.getBoundingClientRect(), readerBox = reader.getBoundingClientRect();
+            const hit = document.elementFromPoint((wordBox.left + wordBox.right) / 2, (wordBox.top + wordBox.bottom) / 2);
+            return { word: wordBox.toJSON(), reader: readerBox.toJSON(), next: next.getBoundingClientRect().toJSON(),
+              hitWord: hit === word || word.contains(hit) };
+          });
+          expect(visibility.word.top).toBeGreaterThanOrEqual(visibility.reader.top);
+          expect(visibility.word.bottom).toBeLessThanOrEqual(visibility.reader.bottom);
+          expect(visibility.word.bottom).toBeLessThanOrEqual(visibility.next.top + 1);
+          expect(visibility.hitWord).toBe(true);
+        };
+        // Simulate wider host font metrics at the default size, then exercise the largest user-selected size.
+        const wideMetrics = await page.addStyleTag({ content: '.timeline-karaoke-pitches { letter-spacing: .12em; }' });
+        await assertActiveVisible();
+        await reader.screenshot({ path: info.outputPath('crowded-default-wide-font.png'), animations: 'disabled' });
+        await wideMetrics.evaluate(style => style.remove());
+        for (let i = 0; i < 8; i++) await view.getByRole('button', { name: 'Larger lyrics' }).click();
+        await assertActiveVisible();
+        await reader.screenshot({ path: info.outputPath('crowded-large-lyrics.png'), animations: 'disabled' });
+        for (let i = 0; i < 8; i++) await view.getByRole('button', { name: 'Smaller lyrics' }).click();
+      }
       const pitchToggle = view.getByRole('button', { name: 'Pitches', exact: true });
       if (viewport.width === 390) await pitchToggle.tap(); else await pitchToggle.click();
       await expect(pitchToggle).toHaveAttribute('aria-pressed', 'false');
@@ -399,7 +440,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const sungRapid = rapid.filter(sample => rapidWords.includes(sample.text));
       expect(new Set(sungRapid.map(sample => sample.text)).size).toBeGreaterThanOrEqual(5);
       expect(Math.min(...sungRapid.map(sample => sample.opacity)), '100ms word cues must never spend their whole life transparent').toBeGreaterThanOrEqual(0.65);
-      expect(await reader.evaluate(region => region.getBoundingClientRect().height)).toBeCloseTo(geometry.height, 0);
+      expect(await reader.evaluate(region => region.getBoundingClientRect().height)).toBeGreaterThanOrEqual(geometry.font * 11 - 1);
 
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await seekNative(player, 32);

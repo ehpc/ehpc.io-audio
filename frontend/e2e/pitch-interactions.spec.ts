@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator } from '@playwright/test';
 import { test } from './auth-fixture';
-import type { JobDTO, SubmitResult } from '../src/api';
+import { jobLabel, type JobDTO, type SubmitResult } from '../src/api';
 import { inspectAudio } from './audio';
 
 interface StemSignalFixture {
@@ -666,9 +666,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(completed.manifest?.map(stem => stem.label).sort()).toEqual([...labels].sort());
       await page.reload();
       const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-      const historyCard = history.locator('.rounded-lg').filter({ has: page.locator(`a[href="/api/jobs/${queued.id}/pitch"]`) });
+      const historyJobLabel = jobLabel(completed);
+      const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), completed.created_at);
+      const historyCard = history.locator('.rounded-lg').filter({
+        has: page.getByRole('button', { name: `Delete ${historyJobLabel}` }),
+        hasText: historyTimestamp,
+      });
       await activate(page.getByRole('button', { name: 'Start another job', exact: true }));
       await expect(history.getByRole('region', { name: 'Lyrics with pitches', exact: true })).toHaveCount(0);
+      await expect(historyCard).toHaveCount(1);
+      await expect(historyCard.getByRole('link')).toHaveCount(0);
       await expect(historyCard.locator('a[href*="/results/"]')).toHaveCount(0);
       await expect(historyCard.locator('a[href$="/original"]')).toHaveCount(0);
       await expect(history.getByRole('region', { name: 'Lyrics transcript', exact: true })).toHaveCount(0);

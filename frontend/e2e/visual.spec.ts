@@ -163,7 +163,7 @@ async function adjust(page: Page) {
 async function compare(subject: Page | Locator, info: TestInfo, name: string, mask: Locator[] = []) {
   // Keep an actual PNG even on success, alongside the strict baseline comparison.
   await subject.screenshot({ path: info.outputPath('actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
-  await expect(subject).toHaveScreenshot(name, { mask });
+  await expect.soft(subject).toHaveScreenshot(name, { mask });
 }
 
 async function expectReadableTooltip(page: Page, info: TestInfo, interaction: string) {
