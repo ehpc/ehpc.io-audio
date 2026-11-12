@@ -234,7 +234,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const chorusPitch = next.getByRole('group', { name: 'Pitches for chorus: C#5 D#5 F#5' });
       await expect(chorusPitch).toBeVisible();
       const [nextNotesBox, chorusNotesBox] = await Promise.all([nextPitch.boundingBox(), chorusPitch.boundingBox()]);
-      expect(nextNotesBox!.x + nextNotesBox!.width).toBeLessThanOrEqual(chorusNotesBox!.x + 1);
+      expect(
+        chorusNotesBox!.y >= nextNotesBox!.y + nextNotesBox!.height - 1
+        || (Math.abs(chorusNotesBox!.y - nextNotesBox!.y) <= 1
+          && chorusNotesBox!.x >= nextNotesBox!.x + nextNotesBox!.width - 1),
+        'next-word notes must follow without overlapping, whether inline or wrapped',
+      ).toBe(true);
       const layout = await current.evaluate(line => {
         const cells = [...line.querySelectorAll<HTMLElement>('.timeline-karaoke-cell')];
         const pitch = line.querySelector<HTMLElement>('.timeline-karaoke-pitches')!;
