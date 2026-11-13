@@ -156,10 +156,10 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: ehpc-audio
-      MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-l4
-      E2E_MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-l4
+      MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-smoke
+      E2E_MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-smoke
       MODAL_L40S_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-l40s
-      MODAL_TEST_GPU: L4
+      MODAL_TEST_GPU: L40S
       MODAL_GPU_IDLE_SECONDS: ${{ vars.MODAL_GPU_IDLE_SECONDS || '60' }}
     timeout-minutes: 65
     steps:
@@ -189,10 +189,10 @@ jobs:
             command -v "$tool"
           done
           test "$MODAL_ENVIRONMENT" = ehpc-audio
-          test "$MODAL_APP_NAME" = "audio-separator-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-l4"
+          test "$MODAL_APP_NAME" = "audio-separator-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-smoke"
           test "$E2E_MODAL_APP_NAME" = "$MODAL_APP_NAME"
           test "$MODAL_L40S_APP_NAME" = "audio-separator-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-l40s"
-          test "$MODAL_TEST_GPU" = L4
+          test "$MODAL_TEST_GPU" = L40S
       - name: Provision verified shared model receipts before GPU work
         run: |
           echo "PREPARED_MODELS_ROOT=$RUNNER_TEMP/audio-prepared-models" >> "$GITHUB_ENV"
@@ -202,12 +202,12 @@ jobs:
             --volume audio-separator-models \
             --environment "$MODAL_ENVIRONMENT" \
             --prepared-models-root "$RUNNER_TEMP/audio-prepared-models"
-      - name: Deploy isolated L4 Modal app
+      - name: Deploy isolated primary Modal app
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
-      - name: Run L4 GPU smoke cases
+      - name: Run primary GPU smoke cases
         timeout-minutes: 30
-        run: uv run pytest -x -m smoke --ignore=tests/test_structure_smoke.py --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-l4"
-      - name: Stop L4 app before production-class validation
+        run: uv run pytest -x -m smoke --ignore=tests/test_structure_smoke.py --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-primary"
+      - name: Stop primary app before production-class validation
         run: uv run modal app stop -y "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
       - name: Deploy isolated L40S Modal app
         env:
@@ -237,8 +237,8 @@ jobs:
           path: |
             frontend/test-results/
             frontend/playwright-report/
-            ${{ runner.temp }}/audio-gpu-smoke-l4/**/diagnostics/**
-            ${{ runner.temp }}/audio-gpu-smoke-l4/**/inference-diagnostics/**
+            ${{ runner.temp }}/audio-gpu-smoke-primary/**/diagnostics/**
+            ${{ runner.temp }}/audio-gpu-smoke-primary/**/inference-diagnostics/**
             ${{ runner.temp }}/audio-gpu-smoke-l40s/**/diagnostics/**
             ${{ runner.temp }}/audio-gpu-smoke-l40s/**/inference-diagnostics/**
           if-no-files-found: ignore
@@ -268,7 +268,7 @@ jobs:
           apps = {os.environ["MODAL_APP_NAME"], os.environ["MODAL_L40S_APP_NAME"]}
           environment = os.environ["MODAL_ENVIRONMENT"]
           prefix = f"audio-separator-ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
-          if apps != {f"{prefix}-l4", f"{prefix}-l40s"} or environment != "ehpc-audio":
+          if apps != {f"{prefix}-smoke", f"{prefix}-l40s"} or environment != "ehpc-audio":
               raise RuntimeError("Refusing cleanup outside these isolated CI apps")
           deadline = time.monotonic() + 60
           while True:

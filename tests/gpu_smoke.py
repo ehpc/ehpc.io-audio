@@ -15,7 +15,7 @@ from separator.producer_manifest import load_manifest
 
 logger = logging.getLogger(__name__)
 SMOKE_RESULT_TIMEOUT_S = TIMEOUT + 60
-L4_FIRST_RESULT_TIMEOUT_S = 300
+FIRST_RESULT_TIMEOUT_S = 300
 
 
 def gpu_context(root: Path) -> ProcessingContext:
@@ -32,10 +32,10 @@ def gpu_context(root: Path) -> ProcessingContext:
         )
     manifest = load_manifest(config.PRODUCER_MANIFEST)
     pending: dict[str, str] = {}
-    first_l4_result = os.environ.get("MODAL_TEST_GPU") == "L4"
+    first_result = True
 
     def infer(request: InferenceRequest, key: str) -> bytes:
-        nonlocal first_l4_result
+        nonlocal first_result
         ensure_prepared(
             manifest,
             request,
@@ -54,8 +54,8 @@ def gpu_context(root: Path) -> ProcessingContext:
         )
         try:
             returned_id = call.get(
-                timeout=L4_FIRST_RESULT_TIMEOUT_S
-                if first_l4_result
+                timeout=FIRST_RESULT_TIMEOUT_S
+                if first_result
                 else SMOKE_RESULT_TIMEOUT_S
             )
         except InferenceTransferError as error:
@@ -84,7 +84,7 @@ def gpu_context(root: Path) -> ProcessingContext:
                 request.fingerprint(),
                 diagnostics_root=root / "diagnostics",
             )
-            first_l4_result = False
+            first_result = False
             return result
         except FileNotFoundError:
             if failure is not None:

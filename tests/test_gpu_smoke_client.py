@@ -40,11 +40,11 @@ class QueuedCall:
 
 @pytest.fixture
 def isolated_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MODAL_APP_NAME", "audio-separator-ci-local-l4")
-    monkeypatch.setenv("MODAL_TEST_GPU", "L4")
-    monkeypatch.setattr(config, "MODAL_APP_NAME", "audio-separator-ci-local-l4")
+    monkeypatch.setenv("MODAL_APP_NAME", "audio-separator-ci-local-smoke")
+    monkeypatch.setenv("MODAL_TEST_GPU", "L40S")
+    monkeypatch.setattr(config, "MODAL_APP_NAME", "audio-separator-ci-local-smoke")
     monkeypatch.setattr(gpu_smoke, "SMOKE_RESULT_TIMEOUT_S", 0.05)
-    monkeypatch.setattr(gpu_smoke, "L4_FIRST_RESULT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(gpu_smoke, "FIRST_RESULT_TIMEOUT_S", 0.05)
     monkeypatch.setattr(gpu_smoke, "ensure_prepared", lambda *_args: None)
     volume = LocalVolume(tmp_path / "private-volume")
     monkeypatch.setattr(modal_client, "_get_transport_volume", lambda: volume)
@@ -66,14 +66,46 @@ def assert_input_retained(volume: LocalVolume, audio: bytes) -> None:
     assert not volume.removals
 
 
-@pytest.mark.parametrize("gpu", ["L4", "L40S"])
-def test_later_l4_and_first_l40s_result_allow_longer_wait(
-    isolated_context, monkeypatch: pytest.MonkeyPatch, gpu: str
+def test_first_l40s_result_uses_short_deadline(
+    isolated_context, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context, volume = isolated_context
-    if gpu == "L40S":
-        monkeypatch.setenv("MODAL_TEST_GPU", gpu)
-        context = gpu_context(context.root)
+    monkeypatch.setattr(gpu_smoke, "SMOKE_RESULT_TIMEOUT_S", 1.0)
+    call = QueuedCall()
+    workers = []
+
+    def spawn(output_id: str, **_kwargs):
+        def finish():
+            if call.future.set_running_or_notify_cancel():
+                produce_result(
+                    volume,
+                    output_id,
+                    lambda request: hashlib.sha256(request.audio_bytes).digest(),
+                )
+                call.future.set_result(output_id)
+
+        worker = threading.Timer(0.15, finish)
+        workers.append(worker)
+        worker.start()
+        return call
+
+    monkeypatch.setattr(modal_client, "spawn", spawn)
+    audio = tone_wav((440.0,), duration_s=0.2)
+    try:
+        with pytest.raises(TimeoutError):
+            run_stage(context, audio)
+    finally:
+        for worker in workers:
+            worker.join()
+    assert call.future.cancelled()
+    assert_input_retained(volume, audio)
+    assert not list((context.root / "inference").glob("*.bin"))
+
+
+def test_first_result_budget_resets_for_each_context(
+    isolated_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, volume = isolated_context
     monkeypatch.setattr(gpu_smoke, "SMOKE_RESULT_TIMEOUT_S", 1.0)
     calls = []
     workers = []
@@ -83,6 +115,8 @@ def test_later_l4_and_first_l40s_result_allow_longer_wait(
         calls.append(call)
 
         def finish():
+            if not call.future.set_running_or_notify_cancel():
+                return
             produce_result(
                 volume,
                 output_id,
@@ -90,7 +124,7 @@ def test_later_l4_and_first_l40s_result_allow_longer_wait(
             )
             call.future.set_result(output_id)
 
-        if len(calls) == 1 and gpu == "L4":
+        if len(calls) == 1:
             finish()
         else:
             worker = threading.Timer(0.15, finish)
@@ -110,10 +144,18 @@ def test_later_l4_and_first_l40s_result_allow_longer_wait(
             context.stage("recognition", second, "two.wav", {}, ["two"], bytes)
             == hashlib.sha256(second).digest()
         )
+        fresh_context = gpu_context(context.root)
+        with pytest.raises(TimeoutError):
+            fresh_context.stage("recognition", first, "three.wav", {}, ["three"], bytes)
     finally:
         for worker in workers:
             worker.join()
-    assert len(calls) == 2 and all(call.future.done() for call in calls)
+    assert len(calls) == 3
+    assert calls[0].future.done() and calls[1].future.done()
+    assert calls[2].future.cancelled()
+    remaining = list(volume.root.iterdir())
+    assert len(remaining) == 1
+    assert load_request(volume.root, remaining[0].name).audio_bytes == first
 
 
 @pytest.mark.parametrize("cancel_fails", [False, True])

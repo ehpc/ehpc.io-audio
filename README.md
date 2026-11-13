@@ -1070,12 +1070,15 @@ scenarios require the tools above and are skipped when those executables are
 unavailable. These suites are not a substitute for exercising deployed GPU
 inference and real browser downloads.
 
-### Lower-cost isolated GPU tests
+### Isolated GPU tests
 
-CI uses two explicit, isolated test apps: **L4** for the eleven shorter GPU
-smokes, then **L40S** for the full-song/short-tail structure smoke and all 68 live
-browser cases. Each app is stopped after its phase; this is not an automatic
-retry on larger hardware. Production keeps **L40S** when `MODAL_TEST_GPU` is
+CI uses two explicit isolated **L40S** test apps: the primary app runs the
+eleven shorter GPU smokes, then the second runs the full-song/short-tail
+structure smoke and all 68 live browser cases. L4 remains available as an
+explicit local test override, but the primary CI phase uses L40S after an L4
+placement probe and CI request timed out. Each app is stopped after its phase;
+this is not an automatic retry on larger hardware. Production keeps **L40S**
+when `MODAL_TEST_GPU` is
 absent; production promotion requires it to be unset. Each app uses one `infer`
 pool for five finite operations:
 a separator pass, raw Qwen recognition, MMS alignment, CREPE frame prediction,
@@ -1101,6 +1104,9 @@ L4 must take less than approximately **2.44 times** the L40S total billable GPU
 allocation time, including startup and idle time, to reduce the GPU portion of
 the bill. CPU, memory, storage and external APIs are additional costs;
 whole-suite wall time is not the sum of billable GPU allocation time.
+The L40S rate is higher per GPU-second; the cost of the current full CI
+configuration has not been measured, so the rate alone cannot establish its
+per-run cost.
 
 [L4 has 24 GB GPU memory and BF16 support](https://www.nvidia.com/en-us/data-center/l4/),
 versus L40S's 48 GB. The unchanged full-song structure smoke completed its
@@ -1435,9 +1441,9 @@ arbitrary numeric pitch/tempo values.
 Pull requests run the cheap deterministic/native, frontend, isolated Firefox,
 seeded browser and visual checks. Paid GPU and live-queue gates run for main
 pushes and explicitly opted-in manual runs; their full assertions remain intact.
-For each L4 smoke context, the first inference result has a 300-second budget
-covering queueing, model loading and execution; subsequent results, and L40S
-results, have the model execution ceiling plus one minute. A timeout cannot
+For each smoke context, the first inference result has a 300-second budget
+covering queueing, model loading and execution; subsequent results have the
+model execution ceiling plus one minute. A timeout cannot
 distinguish a slow queue from slow inference. On a wait abort the test attempts
 to cancel only its accepted call and retains staged transfer data for diagnosis;
 cancellation can fail, so an operator must check the isolated app's state.
