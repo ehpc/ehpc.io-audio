@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,14 +23,18 @@ from separator.inference_transport import (
 )
 from separator.producer_manifest import load_manifest, verify_runtime
 
+type GPUSelection = str | list[str]
 
-def _deployment_settings() -> tuple[str, str]:
-    """Keep production resources fixed; cheaper hardware is an isolated opt-in."""
+GPU_POOL_SELECTOR = "L40S,A100-80GB"
+
+
+def _deployment_settings() -> tuple[str, GPUSelection]:
+    """Keep production fixed; alternatives are isolated opt-ins."""
     test_gpu = os.environ.get("MODAL_TEST_GPU")
     if test_gpu is None:
         return "audio-inference-v3", "L40S"
-    if test_gpu not in {"L4", "L40S"}:
-        raise ValueError("MODAL_TEST_GPU must be L4 or L40S when set")
+    if test_gpu not in {"L4", "L40S", GPU_POOL_SELECTOR}:
+        raise ValueError("Unsupported MODAL_TEST_GPU")
     target = os.environ.get("MODAL_APP_NAME", "")
     if (
         not target
@@ -45,6 +50,10 @@ def _deployment_settings() -> tuple[str, str]:
         raise ValueError(
             "E2E_MODAL_APP_NAME must match MODAL_APP_NAME for MODAL_TEST_GPU"
         )
+    if test_gpu == GPU_POOL_SELECTOR:
+        if not re.fullmatch(r"audio-separator-ci-[0-9]+-[0-9]+-(smoke|l40s)", target):
+            raise ValueError("The GPU fallback pool is restricted to isolated CI apps")
+        return target, ["L40S", "A100-80GB"]
     return target, test_gpu
 
 
@@ -90,6 +99,42 @@ image = (
     .add_local_python_source("separator")
     .add_local_file(_manifest_path, "/producer-manifest.json")
 )
+if GPU == ["L40S", "A100-80GB"]:
+    image = image.env({"AUDIO_CI_GPU_EVIDENCE": "1"})
+
+
+@cache
+def _record_ci_gpu() -> None:
+    """Identify the actual selected accelerator once per isolated container."""
+    if os.environ.get("AUDIO_CI_GPU_EVIDENCE") != "1":
+        return
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        lines = result.stdout.strip().splitlines()
+        if len(lines) != 1:
+            raise ValueError("Expected one allocated GPU")
+        name, memory = (value.strip() for value in lines[0].rsplit(",", 1))
+        if (
+            not name
+            or not memory.isascii()
+            or not memory.isdecimal()
+            or int(memory) <= 0
+        ):
+            raise ValueError("Invalid GPU name or memory")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        print("AUDIO_CI_GPU UNKNOWN", flush=True)
+        raise
+    print(f"AUDIO_CI_GPU name={name} memory_mib={int(memory)}", flush=True)
 
 
 @cache
@@ -174,6 +219,7 @@ def _run_model(request: InferenceRequest, source: Path, temporary: Path) -> Path
 )
 def infer(output_id: str) -> str:
     """Only a bounded token uses RPC; bulk I/O uses the private mounted Volume."""
+    _record_ci_gpu()
     validate_output_id(output_id)
     root = Path(TRANSFER_MOUNT)
     try:

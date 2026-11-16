@@ -4,6 +4,8 @@ import sys
 
 import pytest
 
+from separator import modal_app
+
 _REJECTED_DEPLOYMENT_PROBE = """
 import socket
 import modal
@@ -57,7 +59,7 @@ def assert_deployment_rejected(
     [
         *[
             (gpu, target, None)
-            for gpu in ("L4", "L40S")
+            for gpu in ("L4", "L40S", "L40S,A100-80GB")
             for target in (
                 None,
                 "",
@@ -72,7 +74,7 @@ def assert_deployment_rejected(
         ],
         *[
             (gpu, "audio-separator-ci-owned", None)
-            for gpu in ("", "T4", "A10", "L4:2", "l4")
+            for gpu in ("", "T4", "A10", "A100", "A100-80GB", "L4:2", "l4")
         ],
         *[
             (gpu, "audio-separator-ci-owned", browser_target)
@@ -90,6 +92,35 @@ def test_test_gpu_rejects_unsafe_deployment_before_resource_declarations(
     gpu, target, browser_target
 ):
     assert_deployment_rejected(gpu, target, browser_target)
+
+
+@pytest.mark.parametrize(
+    ("target", "browser_target"),
+    [
+        ("audio-separator-ci-owned", None),
+        ("audio-separator-ci-12-1-structure", None),
+        ("audio-separator-ci-12-1-smoke-extra", None),
+        ("audio-separator-ci-12-1-smoke", "audio-inference-v3"),
+        ("audio-separator-ci-12-1-l40s", "audio-separator-ci-12-1-smoke"),
+    ],
+)
+def test_fallback_pool_rejects_non_ci_and_mismatched_browser_targets_before_resources(
+    target: str, browser_target: str | None
+) -> None:
+    assert_deployment_rejected("L40S,A100-80GB", target, browser_target)
+
+
+def test_missing_ci_hardware_probe_fails_instead_of_assuming_a_gpu(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("AUDIO_CI_GPU_EVIDENCE", "1")
+    modal_app._record_ci_gpu.cache_clear()
+    try:
+        with pytest.raises(FileNotFoundError):
+            modal_app._record_ci_gpu()
+    finally:
+        modal_app._record_ci_gpu.cache_clear()
 
 
 @pytest.mark.parametrize(

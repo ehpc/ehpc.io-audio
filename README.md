@@ -1105,23 +1105,25 @@ inference and real browser downloads.
 
 ### Isolated GPU tests
 
-CI uses two explicit isolated **L40S** test apps: the primary app runs the
-eleven shorter GPU smokes, then the second runs the full-song/short-tail
-structure smoke and all 68 live browser cases. L4 remains available as an
-explicit local test override, but the primary CI phase uses L40S after an L4
-placement probe and CI request timed out. Each app is stopped after its phase;
-this is not an automatic retry on larger hardware. Production keeps **L40S**
-when `MODAL_TEST_GPU` is
-absent; production promotion requires it to be unset. Each app uses one `infer`
+CI uses two explicit isolated, **L40S-preferred production-sized** test apps:
+the primary runs the eleven shorter GPU smokes, then the second runs the
+full-song/short-tail structure smoke and all 68 live browser cases. Both request
+the ordered pool `L40S,A100-80GB`; Modal may place a container on A100-80GB when
+L40S is unavailable. This is a placement choice, not a retry after a failed
+inference. Each app is stopped after its phase. Production keeps **L40S**
+when `MODAL_TEST_GPU` is absent; production promotion requires it to be unset.
+Each app uses one `infer`
 pool for five finite operations:
 a separator pass, raw Qwen recognition, MMS alignment, CREPE frame prediction,
 and full-context SongFormer prediction. Cache lookup, reference HTTP, final
 transcript/section/note assembly, mixes, exports, song discovery and recovery
 run on the VPS, without acquiring a GPU.
 
-The override accepts only `L4` or `L40S` and requires an explicit, nonblank
-`MODAL_APP_NAME` other than `audio-separator`, `audio-separator-v2` or
-`audio-inference-v3`, without surrounding whitespace.
+The override accepts `L4`, `L40S`, or the exact CI pool `L40S,A100-80GB` and
+requires an explicit, nonblank `MODAL_APP_NAME` other than `audio-separator`,
+`audio-separator-v2` or `audio-inference-v3`, without surrounding whitespace.
+The pool is restricted to the run-specific CI app names
+`audio-separator-ci-<run>-<attempt>-smoke` and `...-l40s`.
 If `E2E_MODAL_APP_NAME` is set, it must match.
 An override also binds the source app's default name to that isolated target.
 Modal's CLI can still override this with `--name`: **keep `--name`,
@@ -1130,32 +1132,35 @@ reinterpret CLI arguments.
 Unset `MODAL_TEST_GPU` and clear isolated app-name variables before deploying
 production.
 
-[Modal's published GPU rates](https://modal.com/pricing) are $0.000222/second
-for L4 ($0.7992/hour) and $0.000542/second for L40S ($1.9512/hour).
-That is about **59% less per GPU-second**, not a promise of 59% less per test run:
-L4 must take less than approximately **2.44 times** the L40S total billable GPU
-allocation time, including startup and idle time, to reduce the GPU portion of
-the bill. CPU, memory, storage and external APIs are additional costs;
-whole-suite wall time is not the sum of billable GPU allocation time.
-The L40S rate is higher per GPU-second; the cost of the current full CI
-configuration has not been measured, so the rate alone cannot establish its
-per-run cost.
+[Modal's published GPU rates](https://modal.com/pricing) (GPU time only):
+
+| GPU | Rate per hour |
+| --- | ---: |
+| L4 | $0.7992 |
+| L40S | $1.9512 |
+| A100-80GB | $2.4984 |
+
+L4 is about 59% less per GPU-second than L40S, but must take less than about
+2.44 times the L40S total billable allocation time, including startup and idle,
+to reduce that portion of a run's bill. A100-80GB is about 28% more per
+GPU-second than L40S. CPU, memory, storage and external APIs are extra; pool
+availability, fit, numerical equivalence and total per-run cost remain unknown.
 
 [L4 has 24 GB GPU memory and BF16 support](https://www.nvidia.com/en-us/data-center/l4/),
 versus L40S's 48 GB. The unchanged full-song structure smoke completed its
 approximately 141-second input on L4, but its required **420.02-second** padded
 short-tail case exhausted memory inside MuQ attention: a 6.57 GiB allocation
-was requested with only 5.41 GiB free. The longer case therefore runs explicitly
-on production-class L40S; it is not clipped, split into shorter model contexts,
-or replaced with a warm-cache-only assertion.
+was requested with only 5.41 GiB free. The longer case therefore runs on the
+L40S-preferred production-sized pool, never L4; it is not clipped, split into
+shorter model contexts, or replaced with a warm-cache-only assertion.
 
 Model identities, precision, batching, source lengths, resource limits,
 timeouts and artifact versions do not change with the hardware override.
 All existing real-model and live-browser coverage remains required.
-An out-of-memory or timeout failure stays visible, without a silent GPU
-fallback or reduced assertions. The local deployment-boundary tests require
-no Modal allocation. The full CI run is the hardware-fit/performance proof,
-rather than an additional duplicate neural smoke run.
+An out-of-memory or timeout failure stays visible without a retry or reduced
+assertions. Local deployment-boundary tests require no Modal allocation.
+Full CI tests only the actually allocated hardware; a passing A100-80GB run does
+not establish numerical equivalence or a passing L40S run.
 
 The pool has `min_containers=0`, `buffer_containers=0` and `max_containers=1`.
 `MODAL_GPU_IDLE_SECONDS` accepts a positive integer and defaults to **60 seconds**.
@@ -1485,6 +1490,10 @@ The primary GPU smoke also records all Python thread stacks every 30 seconds;
 on failure or cancellation CI uploads those snapshots and the pytest log for
 diagnosis. The smoke's test selection, exit status and existing deadlines are
 unchanged.
+Each isolated CI container logs its actual GPU name and memory via `nvidia-smi`
+once; CI retains the owned apps' timestamped container-prefixed hardware evidence
+on success or failure. Missing evidence is reported as unknown, not inferred
+from the requested pool; a successful GPU gate requires recorded evidence.
 Three recent successful full GPU jobs took approximately 54–56 minutes; the
 short first-result budget does not make a successful full run a five-minute job.
 Only a passing main run promotes **`audio-inference-v3`** and publishes the
@@ -1661,7 +1670,7 @@ recordings are included or fetched.
 | `MODEL_VOLUME_NAME` | `audio-separator-models` | Existing verified model volume; mounted read-only in the GPU pool |
 | `PRODUCER_MANIFEST` | `separator/model_manifest.json` | Exact captured image, native producer identities and consumed model assets |
 | `PREPARED_MODELS_ROOT` | `$DATA_DIR/artifacts` | Private shared weight-verification receipts; independent of computed-output namespaces |
-| `MODAL_TEST_GPU` | *(unset)* | Strict isolated-test-only `L4` or `L40S` override; production remains `L40S` |
+| `MODAL_TEST_GPU` | *(unset)* | Isolated `L4`/`L40S` override or run-specific CI-only `L40S,A100-80GB` pool; production remains `L40S` |
 | `MODAL_GPU_IDLE_SECONDS` | `60` | Positive GPU idle-window seconds, a deployment setting rather than an algorithm version |
 | `OPENROUTER_API_KEY` | *(unset)* | Server-only VPS discovery credential; never sent to Modal or browsers |
 | `AUTH_OTP_SECRET` | *(required)* | Stable secret of at least 32 bytes for OTP verification; distinct from the invitation secret |

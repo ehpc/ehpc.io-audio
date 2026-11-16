@@ -159,7 +159,7 @@ jobs:
       MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-smoke
       E2E_MODAL_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-smoke
       MODAL_L40S_APP_NAME: audio-separator-ci-${{ github.run_id }}-${{ github.run_attempt }}-l40s
-      MODAL_TEST_GPU: L40S
+      MODAL_TEST_GPU: L40S,A100-80GB
       MODAL_GPU_IDLE_SECONDS: ${{ vars.MODAL_GPU_IDLE_SECONDS || '60' }}
     timeout-minutes: 65
     steps:
@@ -192,7 +192,7 @@ jobs:
           test "$MODAL_APP_NAME" = "audio-separator-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-smoke"
           test "$E2E_MODAL_APP_NAME" = "$MODAL_APP_NAME"
           test "$MODAL_L40S_APP_NAME" = "audio-separator-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-l40s"
-          test "$MODAL_TEST_GPU" = L40S
+          test "$MODAL_TEST_GPU" = L40S,A100-80GB
       - name: Provision verified shared model receipts before GPU work
         run: |
           echo "PREPARED_MODELS_ROOT=$RUNNER_TEMP/audio-prepared-models" >> "$GITHUB_ENV"
@@ -232,25 +232,25 @@ jobs:
           PY
       - name: Stop primary app before production-class validation
         run: uv run modal app stop -y "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
-      - name: Deploy isolated L40S Modal app
+      - name: Deploy isolated production-sized Modal app
         env:
           MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           E2E_MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
-          MODAL_TEST_GPU: L40S
+          MODAL_TEST_GPU: L40S,A100-80GB
         run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
-      - name: Run production-class structure smoke
+      - name: Run L40S-preferred production-sized structure smoke
         timeout-minutes: 10
         env:
           MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           E2E_MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
-          MODAL_TEST_GPU: L40S
+          MODAL_TEST_GPU: L40S,A100-80GB
         run: uv run pytest -x tests/test_structure_smoke.py -m smoke --log-cli-level=INFO --basetemp="$RUNNER_TEMP/audio-gpu-smoke-l40s"
-      - name: Run full-stack browser E2E on isolated L40S
+      - name: Run full-stack browser E2E on isolated production-sized pool
         timeout-minutes: 30
         env:
           MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
           E2E_MODAL_APP_NAME: ${{ env.MODAL_L40S_APP_NAME }}
-          MODAL_TEST_GPU: L40S
+          MODAL_TEST_GPU: L40S,A100-80GB
         run: npm --prefix frontend run test:e2e
       - name: Upload E2E failure artifacts
         if: failure() || cancelled()
@@ -276,6 +276,70 @@ jobs:
           for app in "$MODAL_APP_NAME" "$MODAL_L40S_APP_NAME"; do
             uv run modal app stop -y "$app" --env "$MODAL_ENVIRONMENT" || true
           done
+      - name: Capture actual isolated GPU hardware
+        if: always()
+        env:
+          PRIOR_JOB_STATUS: ${{ job.status }}
+        run: |
+          umask 077
+          uv run python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          report = root / "audio-isolated-gpu-hardware.log"
+          prefix = f"audio-separator-ci-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          apps = {"primary": f"{prefix}-smoke", "sized": f"{prefix}-l40s"}
+          if (
+              os.environ["MODAL_ENVIRONMENT"] != "ehpc-audio"
+              or os.environ["MODAL_APP_NAME"] != apps["primary"]
+              or os.environ["MODAL_L40S_APP_NAME"] != apps["sized"]
+          ):
+              raise SystemExit("Refusing hardware lookup outside the owned CI apps")
+          try:
+              rows = json.loads(subprocess.check_output(
+                  ["modal", "app", "list", "--json", "--env", os.environ["MODAL_ENVIRONMENT"]],
+                  text=True, timeout=20,
+              ))
+          except (OSError, subprocess.SubprocessError, ValueError):
+              rows = []
+          missing = False
+          with report.open("w") as out:
+              for label, name in apps.items():
+                  matches = [row["app_id"] for row in rows if row["description"] == name]
+                  if len(matches) != 1 or not matches[0].startswith("ap-"):
+                      print(f"{label}: UNKNOWN (app ID unavailable or ambiguous)", file=out)
+                      missing = True
+                      continue
+                  app_id = matches[0]
+                  try:
+                      result = subprocess.run(
+                          ["modal", "app", "logs", app_id, "--env", os.environ["MODAL_ENVIRONMENT"],
+                           "--timestamps", "--show-function-id", "--show-container-id",
+                           "--search", "AUDIO_CI_GPU", "--tail", "1000"],
+                          check=True, capture_output=True, text=True, timeout=30,
+                      )
+                      lines = [line for line in result.stdout.splitlines() if "AUDIO_CI_GPU" in line]
+                  except (OSError, subprocess.SubprocessError):
+                      lines = []
+                  if not lines or any("AUDIO_CI_GPU UNKNOWN" in line for line in lines):
+                      print(f"{label} {app_id}: UNKNOWN (hardware evidence unavailable)", file=out)
+                      missing = True
+                  for line in lines:
+                      print(f"{label} {app_id} {line}", file=out)
+          if missing and os.environ["PRIOR_JOB_STATUS"] == "success":
+              raise SystemExit("Successful GPU validation requires actual hardware evidence")
+          PY
+      - name: Upload isolated GPU hardware evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-gpu-hardware-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/audio-isolated-gpu-hardware.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: Remove stopped isolated transport volumes
         # Failed runs retain private diagnostics for operator retrieval and
         # explicit cleanup after both owned apps are verified stopped.

@@ -8,7 +8,7 @@ from uuid import uuid4
 from backend import config, modal_client
 from separator.inference import InferenceRequest
 from separator.inference_transport import InferenceTransferError
-from separator.modal_app import TIMEOUT
+from separator.modal_app import GPU_POOL_SELECTOR, TIMEOUT
 from separator.prepare_models import ensure_prepared
 from separator.processing import ProcessingContext
 from separator.producer_manifest import load_manifest
@@ -25,10 +25,10 @@ def gpu_context(root: Path) -> ProcessingContext:
         or config.MODAL_APP_NAME
         in {"audio-separator", "audio-separator-v2", "audio-inference-v3"}
         or os.environ.get("MODAL_APP_NAME") != config.MODAL_APP_NAME
-        or os.environ.get("MODAL_TEST_GPU") not in {"L4", "L40S"}
+        or os.environ.get("MODAL_TEST_GPU") not in {"L4", "L40S", GPU_POOL_SELECTOR}
     ):
         raise RuntimeError(
-            "GPU smoke requires an explicit isolated app and MODAL_TEST_GPU=L4 or L40S"
+            "GPU smoke requires an explicit isolated app and supported MODAL_TEST_GPU"
         )
     manifest = load_manifest(config.PRODUCER_MANIFEST)
     pending: dict[str, str] = {}
