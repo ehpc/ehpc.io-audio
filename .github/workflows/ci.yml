@@ -286,6 +286,7 @@ jobs:
           import json
           import os
           from pathlib import Path
+          import re
           import subprocess
 
           root = Path(os.environ["RUNNER_TEMP"])
@@ -321,10 +322,19 @@ jobs:
                            "--search", "AUDIO_CI_GPU", "--tail", "1000"],
                           check=True, capture_output=True, text=True, timeout=30,
                       )
-                      lines = [line for line in result.stdout.splitlines() if "AUDIO_CI_GPU" in line]
+                      output = result.stdout.splitlines()
+                      pattern = r"(?:^|\s)AUDIO_CI_GPU name=\S(?:.*\S)? memory_mib=([0-9]+)$"
+                      lines = [
+                          line for line in output
+                          if (match := re.search(pattern, line)) and int(match.group(1)) > 0
+                      ]
+                      unknown = any(
+                          re.search(r"(?:^|\s)AUDIO_CI_GPU UNKNOWN\s*$", line)
+                          for line in output
+                      )
                   except (OSError, subprocess.SubprocessError):
-                      lines = []
-                  if not lines or any("AUDIO_CI_GPU UNKNOWN" in line for line in lines):
+                      lines, unknown = [], False
+                  if not lines or unknown:
                       print(f"{label} {app_id}: UNKNOWN (hardware evidence unavailable)", file=out)
                       missing = True
                   for line in lines:

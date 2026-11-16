@@ -1497,8 +1497,10 @@ diagnosis. The smoke's test selection, exit status and existing deadlines are
 unchanged.
 Each isolated CI container logs its actual GPU name and memory via `nvidia-smi`
 once; CI retains the owned apps' timestamped container-prefixed hardware evidence
-on success or failure. Missing evidence is reported as unknown, not inferred
-from the requested pool; a successful GPU gate requires recorded evidence.
+on success or failure. A successful GPU gate requires at least one valid actual
+name and positive MiB record per app; build-layer text does not qualify. Missing
+evidence is reported as unknown, not inferred from the requested pool. The gate
+does not independently reconcile every call's container with those records.
 Three recent successful full GPU jobs took approximately 54–56 minutes; the
 short first-result budget does not make a successful full run a five-minute job.
 Only a passing main run promotes **`audio-inference-v3`** and publishes the
