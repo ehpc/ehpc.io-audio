@@ -1,0 +1,39 @@
+name: One-time CI failure diagnostics
+
+on:
+  push:
+    branches: [diagnose-ci-43918418206]
+
+permissions:
+  actions: read
+
+jobs:
+  retrieve-owned-job-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Retrieve exact failed smoke job logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          umask 077
+          for job in 133485006137 133464488539; do
+            curl --fail --silent --show-error --location \
+              --connect-timeout 10 --max-time 120 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/jobs/$job/logs" \
+              --output "$RUNNER_TEMP/gpu-smoke-$job.log"
+            test -s "$RUNNER_TEMP/gpu-smoke-$job.log"
+          done
+      - name: Upload exact job logs for diagnosis
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-failure-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gpu-smoke-133485006137.log
+            ${{ runner.temp }}/gpu-smoke-133464488539.log
+          retention-days: 1
+          if-no-files-found: error
