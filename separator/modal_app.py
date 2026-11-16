@@ -94,13 +94,12 @@ transport_volume = modal.Volume.from_name(
 )
 # Source deployments never re-resolve native dependencies or rebuild model images.
 # Intentional producer builds live in separator.build_image and require new capture.
-image = (
-    modal.Image.from_id(_manifest.image_id)
-    .add_local_python_source("separator")
-    .add_local_file(_manifest_path, "/producer-manifest.json")
-)
+image = modal.Image.from_id(_manifest.image_id)
 if GPU == ["L40S", "A100-80GB"]:
     image = image.env({"AUDIO_CI_GPU_EVIDENCE": "1"})
+image = image.add_local_python_source("separator").add_local_file(
+    _manifest_path, "/producer-manifest.json"
+)
 
 
 @cache

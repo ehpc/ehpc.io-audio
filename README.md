@@ -1132,6 +1132,11 @@ reinterpret CLI arguments.
 Unset `MODAL_TEST_GPU` and clear isolated app-name variables before deploying
 production.
 
+The CI-only diagnostic environment layer must precede both local source mounts:
+Modal rejects a build layer added after deferred `add_local_*` mounts during
+deployment. Leave those source mounts deferred rather than copying them into the
+image.
+
 [Modal's published GPU rates](https://modal.com/pricing) (GPU time only):
 
 | GPU | Rate per hour |
