@@ -71,49 +71,10 @@ export async function inspectAudio(page: Page, path: string, expectedDuration: n
   return { ...decoded, sha256: hash(bytes), size: bytes.length, rms, peak, quarterRms: quarters.map(value => Math.sqrt(value / (samples.length / 4))), fundamental };
 }
 
-interface MixTransform {
-  pitchSemitones: number;
-  tempoPercent: number;
-  referencePath: string;
-}
-
-export function inspectMix(mixPath: string, inputPaths: string[], transform?: MixTransform) {
+export function inspectMix(mixPath: string, inputPaths: string[]) {
   const mix = pcm(mixPath);
-  let expected: Float32Array;
   const inputs = inputPaths.map(pcm);
-  if (transform) {
-    const summed = `${transform.referencePath}-sum.mp3`;
-    const decoded = `${transform.referencePath}-decoded.wav`;
-    const adjusted = `${transform.referencePath}-adjusted.wav`;
-    // Build the oracle from untransformed real prerequisites: summing separately
-    // transformed stems would incorrectly assume Rubber Band is linear.
-    const labels = inputPaths.map((_, index) => `[a${index}]`).join('');
-    execFileSync('ffmpeg', [
-      '-nostdin', '-v', 'error', '-y',
-      ...inputPaths.flatMap(path => ['-i', path]),
-      '-filter_complex',
-      `${inputPaths.map((_, index) => `[${index}:a:0]aresample=48000:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=stereo[a${index}];`).join('')}` +
-      `${labels}amix=inputs=${inputPaths.length}:duration=longest:dropout_transition=0:normalize=0,` +
-      'alimiter=limit=0.89:attack=5:release=50:level=false:latency=true[out]',
-      '-map', '[out]', '-c:a', 'libmp3lame', '-q:a', '0', summed,
-    ]);
-    execFileSync('ffmpeg', [
-      '-nostdin', '-v', 'error', '-y', '-i', summed,
-      '-map', '0:a:0', '-vn', '-c:a', 'pcm_f32le', decoded,
-    ]);
-    execFileSync('rubberband', [
-      '--fine', '--formant', '--pitch', String(transform.pitchSemitones),
-      '--tempo', `100:${transform.tempoPercent}`, decoded, adjusted,
-    ]);
-    execFileSync('ffmpeg', [
-      '-nostdin', '-v', 'error', '-y', '-i', adjusted,
-      '-map', '0:a:0', '-vn', '-c:a', 'libmp3lame', '-q:a', '0', transform.referencePath,
-    ]);
-    expected = pcm(transform.referencePath);
-  } else {
-    expected = inputs[0];
-  }
-  const expectedLength = Math.max(expected.length, ...inputs.slice(1).map(input => input.length));
+  const expectedLength = Math.max(...inputs.map(input => input.length));
   expect(Math.abs(mix.length - expectedLength) / 96000, 'mix must retain the full sum duration').toBeLessThan(0.20);
   const count = Math.min(mix.length, expectedLength);
   let dot = 0, sourceEnergy = 0, mixEnergy = 0, error = 0;
@@ -129,7 +90,7 @@ export function inspectMix(mixPath: string, inputPaths: string[], transform?: Mi
   const relativeError = Math.sqrt(error / sourceEnergy);
   expect(correlation, `mix must be an aligned sum: ${mixPath}`).toBeGreaterThan(0.97);
   expect(relativeError, `mix must retain unity gain: ${mixPath}`).toBeLessThan(0.20);
-  return { correlation, relativeError, comparedSamples: count, transform };
+  return { correlation, relativeError, comparedSamples: count };
 }
 
 /** Compare the full-song output to one independent combined render of the source. */

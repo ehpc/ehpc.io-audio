@@ -36,7 +36,7 @@ const componentStems = (component: StemComponent, options: SeparationOptions): s
     case 'bass': return ['bass'];
     case 'vocals': return [`vocals${dry}`];
     case 'other': return ['other-instruments'];
-    case 'instruments': return ['drums', 'bass', 'other-instruments'];
+    case 'instruments': return ['instruments'];
     case 'female': return [`vocals-female${dry}`];
     case 'male': return [`vocals-male${dry}`];
     case 'lead': return [`lead${dry}`];
@@ -144,10 +144,11 @@ async function referenceMixInputs(page: Page, info: TestInfo, options: Separatio
     components.some(component => variants.includes(component)) && { [flag]: true };
   const referenceOptions = {
     ...defaults,
+    extract_instruments: components.includes('instruments'),
     extract_vocals: components.some(component => component === 'vocals'),
     ...needsSplit(['female', 'male'], 'genders'),
     ...needsSplit(['lead', 'backing'], 'lead_backing'),
-    drums: components.some(component => ['drums', 'bass', 'other', 'instruments'].includes(component)),
+    drums: components.some(component => ['drums', 'bass', 'other'].includes(component)),
     dereverb: options.dereverb,
   };
   const referencePage = await page.context().newPage();
@@ -276,18 +277,13 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   }
   const mixes: Record<string, unknown> = {};
   const selectedMixes = options.mixes;
-  const transformed = options.pitch_semitones !== 0 || options.tempo_percent !== 100;
   const requiredInputs = [...new Set(selectedMixes.flatMap(mix => mix.components.flatMap(component => componentStems(component, options))))];
-  const reference = selectedMixes.length && (transformed || requiredInputs.some(label => !files[label]))
+  const reference = selectedMixes.length && requiredInputs.some(label => !files[label])
     ? await referenceMixInputs(page, info, options, requiredInputs)
     : undefined;
   const sourceFiles = reference?.files ?? files;
   for (const mix of selectedMixes) {
-    mixes[mix.id] = inspectMix(files[mix.id], mix.components.flatMap(component => componentStems(component, options)).map(label => sourceFiles[label]), transformed ? {
-      pitchSemitones: options.pitch_semitones,
-      tempoPercent: options.tempo_percent,
-      referencePath: info.outputPath(`${mix.id}-expected-transformed.mp3`),
-    } : undefined);
+    mixes[mix.id] = inspectMix(files[mix.id], mix.components.flatMap(component => componentStems(component, options)).map(label => sourceFiles[label]));
   }
   if (item.name === 'all-booleans-enabled') {
     expect(hash(await readFile(files['vocals-male']))).not.toBe(hash(await readFile(files['vocals-female'])));

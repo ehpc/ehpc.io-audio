@@ -1454,9 +1454,11 @@ Every successful audio-options matrix case downloads its exact audio manifest,
 checks public filenames/modification suffixes and absent hidden outputs, decodes
 every audio track in Chromium and FFmpeg, and measures channels, timing, finite
 samples, signal, and peak levels.
-The all-enabled case additionally compares each mix's PCM against the aligned
-unity-gain sum of its actual downloaded components. This checks real mixing,
-not just nonempty files.
+Each mix case additionally compares its PCM against the aligned unity-gain sum
+of its actual downloaded components. The Instruments component is checked
+against the direct instrumental stem, not a reconstruction from separately
+separated drums, bass and other instruments. This checks real mixing, not just
+nonempty files.
 
 Artifacts are under `frontend/test-results/`: per-case `proof.json` with options,
 manifest, queue/Modal evidence, hashes and audio measurements; downloaded audio;
