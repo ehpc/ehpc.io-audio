@@ -1481,6 +1481,10 @@ distinguish a slow queue from slow inference. On a wait abort the test attempts
 to cancel only its accepted call and retains staged transfer data for diagnosis;
 cancellation can fail, so an operator must check the isolated app's state.
 Both GPU smoke commands stop after the first failure; all gates remain required.
+The primary GPU smoke also records all Python thread stacks every 30 seconds;
+on failure or cancellation CI uploads those snapshots and the pytest log for
+diagnosis. The smoke's test selection, exit status and existing deadlines are
+unchanged.
 Three recent successful full GPU jobs took approximately 54–56 minutes; the
 short first-result budget does not make a successful full run a five-minute job.
 Only a passing main run promotes **`audio-inference-v3`** and publishes the
