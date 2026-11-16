@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { defineConfig, type ReporterDescription } from '@playwright/test';
+import { VISUAL_BROWSER_ARGS } from './e2e/visual-settings';
 
 const require = createRequire(import.meta.url);
 const version = require('@playwright/test/package.json').version;
@@ -17,7 +18,7 @@ if (process.env.CI) reporter.push(['github']);
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: '**/visual.spec.ts',
+  testMatch: ['**/history-library-visual.spec.ts', '**/visual.spec.ts', '**/microphone-visual.spec.ts'],
   outputDir: 'test-results/visual',
   snapshotPathTemplate: '{testDir}/visual-snapshots/{arg}{ext}',
   updateSnapshots: 'none',
@@ -34,8 +35,7 @@ export default defineConfig({
     baseURL: process.env.E2E_BASE_URL,
     browserName: 'chromium',
     headless: true,
-    // Use CPU rasterization and a fixed color profile on developer/CI hosts.
-    launchOptions: { args: ['--disable-gpu', '--disable-skia-runtime-opts', '--force-color-profile=srgb'] },
+    launchOptions: { args: VISUAL_BROWSER_ARGS },
     viewport: { width: 390, height: 844 },
     deviceScaleFactor: 1,
     locale: 'en-US',

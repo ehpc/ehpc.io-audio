@@ -22,16 +22,12 @@ it("highlights rounded detected notes only while playing and within the half-ope
   expect(key).toHaveAttribute("aria-pressed", "false");
 });
 
-it("adjusts the accessible piano control without creating audio", () => {
+it("renders no piano volume control and does not create audio on mount", () => {
   const constructor = vi.fn();
   vi.stubGlobal("AudioContext", constructor);
   render(() => <PianoKeyboard notes={[note]} rangeNotes={[note]} position={0} playing={false} />);
-  const slider = screen.getByRole("slider", { name: "Piano volume" });
-  fireEvent.input(slider, { target: { value: "0" } });
-  expect(slider).toHaveAttribute("aria-valuetext", "0%");
+  expect(screen.getByRole("region", { name: "Piano keyboard" }).querySelector('input[type="range"]')).toBeNull();
   expect(constructor).not.toHaveBeenCalled();
-  fireEvent.input(slider, { target: { value: "65" } });
-  expect(slider).toHaveAttribute("aria-valuetext", "65%");
 });
 
 

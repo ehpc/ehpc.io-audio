@@ -16,6 +16,7 @@
     "@kobalte/core": "^0.13.12",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "pitchy": "4.1.0",
     "solid-js": "^1.9.3",
     "tailwind-merge": "^2.6.0"
   },

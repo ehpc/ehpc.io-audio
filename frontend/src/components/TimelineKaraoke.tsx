@@ -65,7 +65,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     }
     return result;
   });
-  const [localPitches, setLocalPitches] = createSignal(true);
+  const [localPitches, setLocalPitches] = createSignal(false);
   const showPitches = () => props.showPitches ?? localPitches();
   const togglePitches = () => props.onShowPitches ? props.onShowPitches(!showPitches()) : setLocalPitches(!showPitches());
   const [sliding, setSliding] = createSignal(false);

@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator } from '@playwright/test';
 import { test } from './auth-fixture';
+import { jobLabel, type JobDTO } from '../src/api';
 import { hash, inspectAudio } from './audio';
 
 test('downloaded MP3 Title matches its descriptive filename in Results and reloaded History', async ({ page }, info) => {
@@ -18,10 +19,15 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
   const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
   await page.locator('form button[type=submit]').click();
   const response = await submitted;
-  expect(response.status()).toBe(200);
   const { id } = await response.json();
-  await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible({ timeout: 120_000 });
-  const result = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+  const generatedLink = page.locator(`a[href='/api/jobs/${id}/results/song']`);
+  await expect(generatedLink).toBeVisible({ timeout: 120_000 });
+  const jobResponse = await page.request.get(`/api/jobs/${id}`);
+  expect(jobResponse.ok()).toBe(true);
+  const job = await jobResponse.json() as JobDTO;
+  const resultHeading = page.getByRole('heading', { name: jobLabel(job), exact: true });
+  await expect(resultHeading).toBeVisible();
+  const result = resultHeading.locator('../..');
   const expectedName = 'tone-fixture - song - source-key-C-major - pitch+2.5st - tempo120pct.mp3';
 
   const downloadTrack = async (link: Locator, prefix: string) => {
@@ -54,7 +60,7 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
   const historyCard = history.locator('.rounded-lg').filter({ hasText: 'tone-fixture' }).filter({ hasText: '2.5 semitones' }).first();
   await expect(historyCard.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
-  await historyCard.getByRole('button', { name: 'View results', exact: true }).click();
+  await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
   const historyLink = result.locator(`a[href='/api/jobs/${id}/results/song']`);
   await expect(historyLink).toBeVisible();
   const restored = await downloadTrack(historyLink, 'history');

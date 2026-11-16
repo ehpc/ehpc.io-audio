@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import type { BooleanOptionKey, JobDTO, SeparationOptions } from '../src/api';
+import { jobLabel, type BooleanOptionKey, type JobDTO, type SeparationOptions } from '../src/api';
 import { displayOutputLabel } from '../src/lib/expectedStems';
 import { keyScale, transposeKey } from '../src/lib/music';
 import { stemMixName, type StemComponent, type StemMix } from '../src/lib/stemMix';
@@ -132,7 +132,7 @@ async function complete(page: Page, id: number) {
     if (job!.status === 'failed') throw new Error(`Real job ${id} failed: ${job!.error_message}`);
     return job!.status;
   }, { timeout: 24 * 60 * 1000, intervals: [250, 1000, 3000] }).toBe('done');
-  await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: jobLabel(job!), exact: true })).toBeVisible();
   return job!;
 }
 
@@ -354,7 +354,12 @@ for (const item of cases) {
     if (item.name === 'identity-original-only') {
       await page.reload();
       const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-      await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+      const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job.created_at);
+      const historyCard = history.locator('.rounded-lg').filter({
+        has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }),
+        hasText: historyTimestamp,
+      });
+      await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
       await expect(page.locator(`a[href='/api/jobs/${id}/original']`)).toBeVisible();
     }
     if (item.name === 'identity-original-only' || item.name === 'all-booleans-enabled') {
@@ -432,7 +437,12 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   expect(original.headers()['content-disposition']).toContain('silent-fixture%20-%20original.wav');
   await page.reload();
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+  const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job.created_at);
+  const historyCard = history.locator('.rounded-lg').filter({
+    has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }),
+    hasText: historyTimestamp,
+  });
+  await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
   const historyStem = page.locator(`a[href='/api/jobs/${id}/results/song']`);
   await expect(historyStem).toHaveCount(1);
   await expect(historyStem.locator('../..')).not.toContainText('Source key:');

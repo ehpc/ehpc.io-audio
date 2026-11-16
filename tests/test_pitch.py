@@ -66,6 +66,64 @@ def test_short_regions_are_omitted_but_repeated_notes_across_rests_stay_distinct
     assert segment_frames([440] * 20, [0.209] * 20, [1] * 20, 0.2) == []
 
 
+def test_median_cannot_promote_underlength_raw_pitch_into_a_note() -> None:
+    # The smoother can turn a brief transition plus six high frames into an
+    # apparent eight-frame region, despite insufficient underlying support.
+    frequencies = [0.0] * 20 + [815.0] + [932.0] * 6 + [467.0] * 4 + [0.0] * 20
+    notes = segment_frames(
+        frequencies, [0.8] * len(frequencies), [0.2] * len(frequencies), 0.51
+    )
+    assert notes == []
+
+
+def test_support_is_checked_against_emitted_note_not_hysteresis_state() -> None:
+    # Median crosses the note boundary while the smoothed hysteresis stays A4.
+    midi = [69.55, 68.8, 70.2, 69.55, 69.2, 69.4, 70.2, 69.55, 69.0, 69.55]
+    frequencies = [440 * 2 ** ((value - 69) / 12) for value in midi]
+    notes = segment_frames(frequencies, [0.9] * 10, [0.2] * 10, 0.1)
+    assert notes == []
+
+
+@pytest.mark.parametrize("high_frames", [8, 12])
+def test_supported_brief_upper_notes_and_octave_leaps_survive(
+    high_frames: int,
+) -> None:
+    frequencies = (
+        [440.0] * 20
+        + [932.0] * high_frames
+        + [440.0] * 20
+        + [0.0] * 10
+        + [932.0] * high_frames
+    )
+    notes = segment_frames(
+        frequencies,
+        [0.9] * len(frequencies),
+        [0.2] * len(frequencies),
+        len(frequencies) * 0.01,
+    )
+    assert [note.note for note in notes] == ["A4", "A#5", "A4", "A#5"]
+    assert notes[1].start_s == pytest.approx(0.195)
+    assert notes[1].end_s == pytest.approx((20 + high_frames) * 0.01 - 0.005)
+    assert notes[2].end_s < notes[3].start_s
+
+
+def test_supported_vibrato_and_voiced_gaps_preserve_note_boundaries() -> None:
+    frequencies = (
+        [440 * 2 ** (0.55 * math.sin(i * 0.8) / 12) for i in range(24)]
+        + [0] * 8
+        + [440] * 12
+    )
+    notes = segment_frames(
+        frequencies,
+        [0.9] * len(frequencies),
+        [0.2] * len(frequencies),
+        len(frequencies) * 0.01,
+    )
+    assert [note.note for note in notes] == ["A4", "A4"]
+    assert notes[0].end_s == pytest.approx(0.235)
+    assert notes[1].start_s == pytest.approx(0.315)
+
+
 def test_fractional_transposition_tempo_and_melisma_preserve_measured_information() -> (
     None
 ):

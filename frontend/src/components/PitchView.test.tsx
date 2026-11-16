@@ -546,6 +546,8 @@ it("updates karaoke pitches and piano highlights from the selected vocal track, 
   player.time(1.5);
   fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
   const current = screen.getByRole("group", { name: "Current lyrics" });
+  expect(current.querySelector(".timeline-karaoke-pitches")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Pitches", exact: true }));
   expect(current.querySelector(".timeline-karaoke-pitches")).toHaveTextContent("C#4 D#4");
   expect(screen.getByRole("button", { name: "Piano C#4" })).toHaveAttribute("aria-pressed", "true");
   fireEvent.change(screen.getByLabelText("Pitch vocal stem"), { target: { value: "backing" } });
@@ -623,7 +625,7 @@ it("uses detected time/pitch geometry, linked melisma, zoom and real player seek
   fireEvent.input(screen.getByRole("slider", { name: "Melody zoom" }), { target: { value: "640" } });
   expect(notes[0].querySelector("rect")).toHaveAttribute("x", "640");
   expect(screen.getByText("0:11.75", { exact: true })).toHaveStyle({ left: "7574px" });
-  expect(screen.getByText(/not exact syllable timing/)).toBeInTheDocument();
+  expect(document.querySelector(".pitch-selection")).toHaveTextContent("approximate full-vocal word alignment");
 });
 
 it("maps original reference playback to output time and shows honest empty-stem transitions", () => {
@@ -735,7 +737,7 @@ it("retains unversioned word timing interactions without inventing a recognizer"
   render(() => <><PitchView job={source} /><TranscriptView job={source} /></>);
   expect(screen.queryByText(/Whisper/)).not.toBeInTheDocument();
   expect(screen.getByText(/Recognition model unspecified/)).toBeVisible();
-  expect(screen.getByText(/alignment model is unspecified/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Start microphone pitch detection" })).toHaveAttribute("aria-pressed", "false");
   fireEvent.click(screen.getByRole("button", { name: /^world,/ }));
   expect(document.querySelector("audio")!.currentTime).toBe(1.25);
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);

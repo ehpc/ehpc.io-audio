@@ -42,6 +42,7 @@ for (const viewport of [mobile, desktop]) {
     }).trim();
     try {
       await page.goto('/');
+      if (viewport.width <= 1000) await page.getByRole('button', { name: 'Library', exact: true }).click();
       await page.getByRole('button', { name: 'Delete Visual fixture track', exact: true }).click();
       const dialog = page.getByRole('alertdialog');
       await expect(dialog).toContainText('Shared reusable processing cache is not deleted.');
@@ -160,10 +161,49 @@ async function adjust(page: Page) {
   if (page.viewportSize()!.width <= 700) await page.getByRole('tab', { name: 'Adjust', exact: true }).click();
 }
 
-async function compare(subject: Page | Locator, info: TestInfo, name: string, mask: Locator[] = []) {
-  // Keep an actual PNG even on success, alongside the strict baseline comparison.
-  await subject.screenshot({ path: info.outputPath('actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
-  await expect.soft(subject).toHaveScreenshot(name, { mask });
+const COMPONENT_CAPTURE_CLEARANCE = 160;
+
+async function compare(subject: Page | Locator, info: TestInfo, name: string, mask: Locator[] = [], heldPointer = false) {
+  const element = 'boundingBox' in subject ? subject : null;
+  const page = element?.page();
+  const viewport = page?.viewportSize();
+  const scroll = page ? await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })) : null;
+  try {
+    if (element && page && viewport && !heldPointer) {
+      await page.mouse.move(0, 0);
+      const before = await element.evaluate(node => ({ height: node.getBoundingClientRect().height, fixed: getComputedStyle(node).position === 'fixed' }));
+      if (!before.fixed) {
+        if (before.height + COMPONENT_CAPTURE_CLEARANCE * 2 > viewport.height) {
+          await page.setViewportSize({ width: viewport.width, height: Math.ceil(before.height + COMPONENT_CAPTURE_CLEARANCE * 2) });
+        }
+        await element.scrollIntoViewIfNeeded();
+        await element.evaluate((node, clearance) => window.scrollBy(0, node.getBoundingClientRect().top - clearance), COMPONENT_CAPTURE_CLEARANCE);
+      const positioning = await element.evaluate(node => {
+        const rect = node.getBoundingClientRect();
+        const trigger = document.querySelector<HTMLElement>('.library-trigger');
+        const sticky = trigger && getComputedStyle(trigger).position === 'sticky' ? trigger.getBoundingClientRect() : null;
+        const footer = document.querySelector<HTMLElement>('.workspace-action');
+        const footerStyle = footer && getComputedStyle(footer);
+        const footerBounds = footer?.getBoundingClientRect();
+        const footerRect = footer && footerStyle && ['sticky', 'fixed'].includes(footerStyle.position) && footerStyle.display !== 'none'
+          && !node.contains(footer) && footerBounds && footerBounds.bottom > rect.top && footerBounds.top < rect.bottom ? footerBounds : null;
+        return { top: rect.top, bottom: rect.bottom, height: rect.height, stickyBottom: sticky?.bottom ?? 0, footerTop: footerRect?.top ?? innerHeight };
+      });
+        expect(positioning.height).toBeCloseTo(before.height, 0);
+        if (positioning.stickyBottom > 0) expect(positioning.top).toBeGreaterThanOrEqual(positioning.stickyBottom);
+        expect(positioning.bottom).toBeLessThanOrEqual(positioning.footerTop + 1);
+      }
+    }
+    // Keep an actual PNG even on success, alongside the strict baseline comparison.
+    const actual = await subject.screenshot({ path: info.outputPath('actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await writeFile(info.outputPath(`${name}-capture.png`), actual);
+    await expect.soft(subject).toHaveScreenshot(name, { mask });
+  } finally {
+    if (page && viewport && !heldPointer) {
+      await page.setViewportSize(viewport);
+      if (scroll) await page.evaluate(position => window.scrollTo(position.x, position.y), scroll);
+    }
+  }
 }
 
 async function expectReadableTooltip(page: Page, info: TestInfo, interaction: string) {
@@ -483,6 +523,7 @@ for (const viewport of [mobile, desktop]) {
     await page.mouse.move(0, 0);
     await page.evaluate(() => document.fonts.ready);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await view.getByRole('button', { name: 'Pitches', exact: true }).click();
     await compare(view, info, `vocal-melody-${viewport.width}-word-notes.png`, [player]);
     // Captured CREPE/Whisper data retains its word-to-note provenance; this is
     // the actual reader and keyboard using the same output-clock position.
@@ -500,7 +541,7 @@ for (const viewport of [mobile, desktop]) {
     await page.mouse.down();
     await expect(key).toHaveAttribute('aria-pressed', 'true');
     await expect(key).toHaveClass(/piano-key-active/);
-    await compare(piano.locator('.piano-scroll'), info, `piano-pressed-${viewport.width}.png`);
+    await compare(piano.locator('.piano-scroll'), info, `piano-pressed-${viewport.width}.png`, [], true);
     await page.mouse.up();
     const toggle = view.getByRole('button', { name: 'Pitches', exact: true });
     await toggle.click();
@@ -568,6 +609,10 @@ for (const viewport of [mobile, desktop]) {
     await player.evaluate(audio => { audio.pause(); audio.currentTime = 5.625; });
     await expect.poll(() => player.evaluate(audio => !audio.seeking && audio.paused && Math.abs(audio.currentTime - 5.625) < 0.05)).toBe(true);
     const reader = view.getByLabel('Current karaoke line');
+    await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
+    await reader.screenshot({ path: info.outputPath(`karaoke-lyrics-only-${viewport.width}-actual.png`), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await compare(reader, info, `karaoke-lyrics-only-${viewport.width}.png`);
+    await view.getByRole('button', { name: 'Pitches', exact: true }).click();
     await expect(reader.getByRole('group', { name: /^Pitches for silver:/ })).toHaveText(pitches.join(' '));
     const next = reader.getByRole('group', { name: 'Next lyrics' });
     await expect(next.getByText('Next', { exact: true })).toBeVisible();

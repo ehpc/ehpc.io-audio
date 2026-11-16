@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Request } from '@playwright/test';
 import { test } from './auth-fixture';
+import { jobLabel, type JobDTO } from '../src/api';
 import { hash } from './audio';
 
 const providers = [
@@ -82,10 +83,11 @@ for (const mobile of [false, true]) {
         proof.submission = { status: response.status(), response: result, multipart: multipart(response.request()) };
         expect(response.status()).toBe(200);
         const { id } = result;
-        await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible({ timeout: 60_000 });
+        await expect(page.locator(`a[href='/api/jobs/${id}/original']`).first()).toBeVisible({ timeout: 60_000 });
         const jobResponse = await page.request.get(`/api/jobs/${id}`);
         expect(jobResponse.ok()).toBe(true);
-        const job = await jobResponse.json();
+        const job = await jobResponse.json() as JobDTO;
+        await expect(page.getByRole('heading', { name: jobLabel(job), exact: true })).toBeVisible();
         expect(job.status).toBe('done');
         expect(job.source_type).toBe('upload');
         expect(job.source_value).toBe('native-upload.MP3');
@@ -105,10 +107,12 @@ for (const mobile of [false, true]) {
         await page.screenshot({ path: info.outputPath('mp3-results.png'), fullPage: true });
         proof.stage = 'history';
         await page.reload();
-        const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+        if (mobile) await page.getByRole('button', { name: /^Library/ }).click();
+        const library = page.getByRole(mobile ? 'dialog' : 'complementary', { name: 'Library', exact: true });
+        const history = library.getByRole('region', { name: 'History', exact: true });
         const card = history.locator('.rounded-lg').filter({ hasText: 'native-upload.MP3' }).first();
         await expect(card.locator(`a[href='/api/jobs/${id}/original']`)).toHaveCount(0);
-        await card.getByRole('button', { name: 'View results', exact: true }).click();
+        await card.getByRole('button', { name: jobLabel(job), exact: true }).click();
         await expect(page.locator(`a[href='/api/jobs/${id}/original']`).first()).toBeVisible();
         proof.historyOriginal = await downloadOriginal();
         await expect(page.getByRole('alert')).toHaveCount(0);

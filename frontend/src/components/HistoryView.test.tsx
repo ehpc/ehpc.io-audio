@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal, Show } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -90,6 +90,24 @@ describe("HistoryView copy link", () => {
 
 });
 describe("HistoryView results", () => {
+  it("marks the selected song once and moves it ahead of the other history entries", async () => {
+    const first = urlJob({ id: 11, title: "First Song" });
+    const second = urlJob({ id: 12, title: "Second Song" });
+    const [selected, setSelected] = createSignal<number | null>(second.id);
+    render(() => <HistoryView jobs={[first, second]} selectedId={selected()} onSelect={item => setSelected(item.id)}
+      onRetried={vi.fn()} onDeleted={vi.fn()} />);
+    const history = screen.getByRole("region", { name: "History" });
+    const titles = () => within(history).getAllByRole("button").filter(button => /^(First Song|Second Song)$/.test(button.textContent ?? ""));
+    expect(titles().map(button => button.textContent)).toEqual(["Second Song", "First Song"]);
+    expect(titles()[0]).toHaveAttribute("aria-current", "true");
+    expect(within(history).getAllByText("Current song")).toHaveLength(1);
+    await userEvent.click(titles()[1]);
+    expect(titles().map(button => button.textContent)).toEqual(["First Song", "Second Song"]);
+    expect(titles()[0]).toHaveAttribute("aria-current", "true");
+    expect(titles()[1]).not.toHaveAttribute("aria-current");
+    expect(within(history).getAllByText("Current song")).toHaveLength(1);
+  });
+
   it("keeps the summary compact while preserving all downloads in opened results", async () => {
     const job = urlJob({
       options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
@@ -112,13 +130,36 @@ describe("HistoryView results", () => {
     expect(screen.getByText("D major")).toBeInTheDocument();
     expect(screen.getByText("+2 semitones")).toBeInTheDocument();
     expect(screen.getByText("120% of original")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "View results" }));
+    await userEvent.click(screen.getByRole("button", { name: "Great Song" }));
     expect(screen.getByRole("link", { name: "Download original" })).toBeInTheDocument();
     for (const stem of job.manifest!) {
       expect(screen.getByRole("link", { name: `Download ${stem.download_name}` })).toBeInTheDocument();
     }
     expect(screen.getAllByText("Source key: C major")).toHaveLength(3);
     expect(screen.queryByText("Source key: D major")).toBeNull();
+  });
+
+  it("selects a history track from its title and updates the result heading once", async () => {
+    const [selected, setSelected] = createSignal<JobDTO | null>(null);
+    const onSelect = vi.fn((item: JobDTO) => setSelected(item));
+    const jobs = [urlJob({ id: 11, title: "First Song" }), urlJob({ id: 12, title: "Second Song" })];
+    render(() => <>
+      <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
+      <HistoryView jobs={jobs} onSelect={onSelect} onRetried={vi.fn()} onDeleted={vi.fn()} />
+    </>);
+
+    const firstTitle = screen.getByRole("button", { name: "First Song", exact: true });
+    firstTitle.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { level: 2, name: "First Song" })).toBeVisible();
+    expect(screen.getAllByText("First Song")).toHaveLength(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Second Song", exact: true }));
+    expect(onSelect).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("heading", { level: 2, name: "Second Song" })).toBeVisible();
+    expect(screen.queryByRole("heading", { level: 2, name: "First Song" })).not.toBeInTheDocument();
+    expect(screen.getAllByText("Second Song")).toHaveLength(2);
   });
 
   it("omits the original download when no original is available", () => {
@@ -155,7 +196,7 @@ describe("HistoryView results", () => {
       onSelect={vi.fn()} onRetried={vi.fn()} onDeleted={vi.fn()} />);
     expect(screen.queryByText(transcript.timestamped_text)).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Lyrics transcript" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "View results" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Great Song", exact: true })).toBeVisible();
   });
 
   it("retains empty transcript details when a history result is opened", async () => {
@@ -169,7 +210,7 @@ describe("HistoryView results", () => {
       <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
       <HistoryView jobs={[job]} onSelect={setSelected} onRetried={vi.fn()} onDeleted={vi.fn()} />
     </>);
-    await userEvent.click(screen.getByRole("button", { name: "View results" }));
+    await userEvent.click(screen.getByRole("button", { name: "Great Song", exact: true }));
     expect(screen.getByText("No speech was recognized.")).toBeInTheDocument();
     expect(screen.getByLabelText("Lyrics transcript").querySelector("pre")).toHaveTextContent("[00:00] [Chorus]");
     expect(screen.getByRole("link", { name: "Download timestamped TXT" })).toBeInTheDocument();
@@ -203,12 +244,15 @@ describe("HistoryView key analysis", () => {
   });
 });
 describe("HistoryView deletion", () => {
-  it("cancel leaves the job untouched and does not call the API", async () => {
-    render(() => <HistoryView jobs={[urlJob()]} onSelect={vi.fn()} onRetried={vi.fn()} onDeleted={vi.fn()} />);
+  it("cancel leaves the job untouched and does not select it", async () => {
+    const onSelect = vi.fn();
+    render(() => <HistoryView jobs={[urlJob()]} onSelect={onSelect} onRetried={vi.fn()} onDeleted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Delete Great Song" }));
+    expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText(/permanently deletes this track's history/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(deleteJob).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText("Great Song")).toBeVisible();
   });
 

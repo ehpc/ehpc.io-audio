@@ -665,14 +665,17 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(completed.status).toBe('done');
       expect(completed.manifest?.map(stem => stem.label).sort()).toEqual([...labels].sort());
       await page.reload();
-      const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+      if (viewport.width <= 700) await page.getByRole('button', { name: /^Library/ }).click();
+      const history = page.getByRole(viewport.width <= 700 ? 'dialog' : 'complementary', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
       const historyJobLabel = jobLabel(completed);
       const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), completed.created_at);
       const historyCard = history.locator('.rounded-lg').filter({
         has: page.getByRole('button', { name: `Delete ${historyJobLabel}` }),
         hasText: historyTimestamp,
       });
+      if (viewport.width <= 700) await page.getByRole('button', { name: 'Close library', exact: true }).click();
       await activate(page.getByRole('button', { name: 'Start another job', exact: true }));
+      if (viewport.width <= 700) await page.getByRole('button', { name: /^Library/ }).click();
       await expect(history.getByRole('region', { name: 'Lyrics with pitches', exact: true })).toHaveCount(0);
       await expect(historyCard).toHaveCount(1);
       await expect(historyCard.getByRole('link')).toHaveCount(0);
@@ -682,11 +685,13 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(completed.transcript?.timestamped_text?.length).toBeGreaterThan(0);
       await expect(history).not.toContainText(completed.transcript!.timestamped_text!);
       await history.screenshot({ path: info.outputPath('compact-history.png') });
-      await activate(historyCard.getByRole('button', { name: 'View Karaoke with pitches', exact: true }));
+      await activate(historyCard.getByRole('button', { name: historyJobLabel, exact: true }));
 
       const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
       await expect(view).toBeVisible();
-      const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+      await expect.poll(() => view.evaluate(element => Math.abs(element.getBoundingClientRect().top))).toBeLessThan(120);
+      await page.screenshot({ path: info.outputPath('history-selected-karaoke.png'), fullPage: true });
+      const results = page.getByRole('heading', { name: jobLabel(completed), exact: true }).locator('../..');
       const pitchedLyrics = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
       const transcript = results.getByRole('region', { name: 'Lyrics transcript', exact: true });
       await expect(pitchedLyrics).toBeVisible();

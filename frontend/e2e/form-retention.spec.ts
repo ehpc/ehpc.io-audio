@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import type { JobDTO } from '../src/api';
+import { jobLabel, type JobDTO } from '../src/api';
 import { transposeKey } from '../src/lib/music';
 import { hash, pcm } from './audio';
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
@@ -40,7 +40,7 @@ async function complete(page: Page, id: number) {
     if (job.status === 'failed') throw new Error(`Job ${id} failed: ${job.error_message}`);
     return job.status;
   }, { timeout: 60_000, intervals: [100, 500, 1000] }).toBe('done');
-  await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: jobLabel(job!), exact: true })).toBeVisible();
   return job!;
 }
 
@@ -82,6 +82,13 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 1000 });
     const fixture = await readFile(fixturePath);
     await page.goto('/');
+    const openHistory = async () => {
+      if (mobile) await page.getByRole('button', { name: /^Library/ }).click();
+      const root = page.getByRole(mobile ? 'dialog' : 'complementary', { name: 'Library', exact: true });
+      const history = root.getByRole('region', { name: 'History', exact: true });
+      await expect(history).toBeVisible();
+      return history;
+    };
     const keyResponse = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
     if (mobile) {
       await page.getByRole('button', { name: 'Upload audio', exact: true }).click();
@@ -146,10 +153,15 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       const resultMix = page.locator(`a[href='/api/jobs/${id}/results/mix-1']`).first().locator('../..');
       await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
       await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();
-      const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+      const history = await openHistory();
       await expect(history.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
       await expect(history.locator(`a[href='/api/jobs/${id}/results/mix-1']`)).toHaveCount(0);
-      await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+      const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job.created_at);
+      const historyCard = history.locator('.rounded-lg').filter({
+        has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }),
+        hasText: historyTimestamp,
+      });
+      await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
       await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
       await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();
       const afterDone = await formState(page);

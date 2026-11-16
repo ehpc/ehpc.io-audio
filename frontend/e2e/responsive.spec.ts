@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import { test } from './auth-fixture';
-import type { JobDTO } from '../src/api';
+import { jobLabel, type JobDTO } from '../src/api';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
@@ -52,11 +52,16 @@ for (const viewport of [
     }
     const options = page.locator('.option-groups input[type=checkbox]');
     for (const option of await options.all()) {
+      await option.scrollIntoViewIfNeeded();
       await expect(option).toBeInViewport();
       await assertUncovered(page, option);
     }
-    await expect(page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' })).toBeInViewport();
-    await expect(page.getByRole('region', { name: 'Output preview', exact: true })).toBeInViewport();
+    const pitch = page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' });
+    await pitch.scrollIntoViewIfNeeded();
+    await expect(pitch).toBeInViewport();
+    const preview = page.getByRole('region', { name: 'Output preview', exact: true });
+    await preview.scrollIntoViewIfNeeded();
+    await expect(preview).toBeInViewport();
     await expect(page.getByRole('tablist')).toBeHidden();
     const layout = await page.evaluate(() => {
       const shell = document.querySelector('.app-shell')!;
@@ -152,9 +157,15 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     const mixCard = page.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`).first().locator('../..');
     await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
-    const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+    await page.getByRole('button', { name: /^Library/ }).click();
+    const history = page.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
     await expect(history.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveCount(0);
-    await history.getByRole('button', { name: 'View results', exact: true }).first().click();
+    const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), mixedJob.created_at);
+    const historyCard = history.locator('.rounded-lg').filter({
+      has: page.getByRole('button', { name: `Delete ${jobLabel(mixedJob)}`, exact: true }),
+      hasText: historyTimestamp,
+    });
+    await historyCard.getByRole('button', { name: jobLabel(mixedJob), exact: true }).click();
     await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();

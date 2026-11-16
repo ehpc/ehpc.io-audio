@@ -5,6 +5,6 @@ import base from './playwright.config';
 // QUEUE_CONCURRENCY=0. These cases stay required alongside the live suite.
 export default defineConfig({
   ...base,
-  testMatch: ['**/admin-cache.spec.ts', '**/auth.spec.ts', '**/karaoke.spec.ts', '**/pitch-interactions.spec.ts', '**/pitched-lyrics-odt.spec.ts', '**/piano.spec.ts', '**/delete-track-ui.spec.ts'],
-  testIgnore: [],
+  testMatch: ['**/admin-cache.spec.ts', '**/auth.spec.ts', '**/karaoke.spec.ts', '**/pitch-interactions.spec.ts', '**/pitched-lyrics-odt.spec.ts', '**/piano.spec.ts', '**/microphone-tuner.spec.ts', '**/delete-track-ui.spec.ts', '**/history-library.spec.ts'],
+  testIgnore: ['**/history-library-visual.spec.ts'],
 });

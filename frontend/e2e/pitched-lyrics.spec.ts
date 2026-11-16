@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import type { JobDTO } from '../src/api';
+import { jobLabel, type JobDTO } from '../src/api';
 
 const SOURCE_SHA256 = '0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04';
 
@@ -40,7 +40,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(analysis.tracks.map(track => track.label)).toEqual(['vocals', 'lead', 'backing']);
   expect(job!.pitched_lyrics!.map(track => track.label)).toEqual(['vocals', 'lead', 'backing']);
   expect(job!.manifest!.map(track => track.label)).toEqual(['song', 'vocals', 'lead', 'backing']);
-  const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+  const results = page.getByRole('heading', { name: jobLabel(job!), exact: true }).locator('../..');
   const view = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
   const text = view.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true });
   await expect(view).toBeVisible();
@@ -113,13 +113,13 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
   const historyCard = history.locator('.rounded-lg').filter({ hasText: 'auld-lang-syne-full' }).filter({ hasText: '125%' }).first();
   await expect(historyCard.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true })).toHaveCount(0);
-  await historyCard.getByRole('button', { name: 'View results', exact: true }).click();
+  await historyCard.getByRole('button', { name: jobLabel(job!), exact: true }).click();
   await expect(results.locator(`a[href="/api/jobs/${id}/original"]`)).toBeVisible();
   await expect(results.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true })).toHaveText(job!.pitched_lyrics![0].text);
   const mobile = await browser.newContext({ storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const phone = await mobile.newPage();
   await phone.goto(process.env.E2E_BASE_URL!);
-  const mobileView = phone.getByRole('heading', { name: 'Results', exact: true }).locator('../..').getByRole('region', { name: 'Lyrics with pitches', exact: true });
+  const mobileView = phone.getByRole('heading', { name: jobLabel(job!), exact: true }).locator('../..').getByRole('region', { name: 'Lyrics with pitches', exact: true });
   const mobileText = mobileView.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true });
   expect(await mobileText.textContent()).toBe(job!.pitched_lyrics![0].text);
   expect(await mobileText.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);

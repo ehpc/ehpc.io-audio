@@ -211,6 +211,57 @@ async function fittedRows(reader: Locator) {
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke native-media reader ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('fits current and next lyrics as pitch labels are shown and hidden', async ({ page }) => {
+      const { view, player, reader } = await mountFixture(page);
+      const current = reader.getByRole('group', { name: 'Current lyrics' });
+      const next = reader.getByRole('group', { name: 'Next lyrics' });
+      const toggle = view.getByRole('button', { name: 'Pitches', exact: true });
+      const assertTightReader = async () => {
+        const bounds = await reader.evaluate(region => {
+          const frame = region.getBoundingClientRect();
+          const rows = [...region.querySelectorAll<HTMLElement>('.timeline-karaoke-line')].map(row => {
+            const content = document.createRange();
+            content.selectNodeContents(row);
+            return { box: row.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON() };
+          });
+          return { frame: frame.toJSON(), rows, parent: region.parentElement!.getBoundingClientRect().toJSON(),
+            width: document.documentElement.scrollWidth, viewport: innerWidth };
+        });
+        expect(bounds.rows).toHaveLength(2);
+        expect(bounds.rows[0].box.bottom).toBeLessThanOrEqual(bounds.rows[1].box.top + 1);
+        expect(bounds.rows[0].box.top - bounds.frame.top).toBeGreaterThanOrEqual(8);
+        expect(bounds.frame.bottom - bounds.rows[1].box.bottom).toBeGreaterThanOrEqual(8);
+        expect(bounds.frame.height - (bounds.rows[1].box.bottom - bounds.rows[0].box.top)).toBeLessThanOrEqual(22);
+        expect(bounds.frame.width).toBeLessThanOrEqual(bounds.parent.width + 1);
+        expect(Math.abs(bounds.frame.left + bounds.frame.right - bounds.parent.left - bounds.parent.right)).toBeLessThanOrEqual(2);
+        const widest = Math.max(...bounds.rows.map(row => row.content.width));
+        expect(bounds.frame.width >= bounds.parent.width - 1 || bounds.frame.width - widest <= 26).toBe(true);
+        expect(bounds.width).toBeLessThanOrEqual(bounds.viewport);
+        return bounds.frame;
+      };
+      await seekNative(player, 5.625);
+      await expect.poll(() => lyricText(current)).toBe('Before silver, after');
+      await expect.poll(() => lyricText(next)).toBe('Next chorus');
+      await expect(reader.getByText('silver', { exact: true })).toHaveAttribute('aria-current', 'true');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
+      const compact = await assertTightReader();
+      await toggle.click();
+      await expect(reader.getByRole('group', { name: /^Pitches for silver:/ })).toHaveText(leadPitches.join(' '));
+      const withPitches = await assertTightReader();
+      expect(withPitches.height).toBeGreaterThan(compact.height);
+      await toggle.click();
+      await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
+      const restored = await assertTightReader();
+      expect(restored.height).toBeCloseTo(compact.height, 0);
+      expect(restored.width).toBeCloseTo(compact.width, 0);
+      await seekNative(player, 28.125);
+      await expect.poll(() => lyricText(current)).toBe(longLine);
+      await assertTightReader();
+      await toggle.click();
+      await assertTightReader();
+    });
+
     test('maps native clocks, paints timed words, and keeps wrapped/rapid cues readable', async ({ page }, info) => {
       test.setTimeout(120_000);
       const { view, player, reader } = await mountFixture(page);
@@ -224,6 +275,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect.poll(() => lyricText(current)).toBe('Before silver, after');
       await expect.poll(() => lyricText(next)).toBe('Next chorus');
       await expect(reader.locator('[aria-current]')).toHaveCount(0);
+      const pitchToggle = view.getByRole('button', { name: 'Pitches', exact: true });
+      await pitchToggle.click();
       await seekNative(player, 5.625);
       const silver = reader.getByText('silver', { exact: true });
       const cell = silver.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " timeline-karaoke-cell ")]');
@@ -328,7 +381,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await reader.screenshot({ path: info.outputPath('crowded-large-lyrics.png'), animations: 'disabled' });
         for (let i = 0; i < 8; i++) await view.getByRole('button', { name: 'Smaller lyrics' }).click();
       }
-      const pitchToggle = view.getByRole('button', { name: 'Pitches', exact: true });
+
       if (viewport.width === 390) await pitchToggle.tap(); else await pitchToggle.click();
       await expect(pitchToggle).toHaveAttribute('aria-pressed', 'false');
       await expect(cell.locator('.timeline-karaoke-pitches')).toHaveCount(0);
@@ -440,7 +493,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const sungRapid = rapid.filter(sample => rapidWords.includes(sample.text));
       expect(new Set(sungRapid.map(sample => sample.text)).size).toBeGreaterThanOrEqual(5);
       expect(Math.min(...sungRapid.map(sample => sample.opacity)), '100ms word cues must never spend their whole life transparent').toBeGreaterThanOrEqual(0.65);
-      expect(await reader.evaluate(region => region.getBoundingClientRect().height)).toBeGreaterThanOrEqual(geometry.font * 11 - 1);
 
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await seekNative(player, 32);
@@ -464,7 +516,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(await inlineReader.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBe(viewport.width === 390 ? 32 : 40);
       await seekNative(player, 5.625);
       const inlinePitches = view.getByRole('button', { name: 'Pitches', exact: true });
-      await inlinePitches.click();
+      await expect(inlinePitches).toHaveAttribute('aria-pressed', 'false');
       const inlineGeometry = await fittedRows(inlineReader);
       expect(inlineGeometry.rows).toHaveLength(2);
       for (const row of inlineGeometry.rows) expect(Math.abs(row.center - row.centerTarget)).toBeLessThanOrEqual(2);
@@ -668,6 +720,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await view.getByRole('button', { name: 'Open karaoke fullscreen' }).click();
       const dialog = page.getByRole('dialog', { name: 'Karaoke fullscreen' });
       const reader = dialog.getByRole('region', { name: 'Current karaoke line' });
+      const pitches = dialog.getByRole('button', { name: 'Pitches', exact: true });
+      await expect(pitches).toHaveAttribute('aria-pressed', 'false');
+      await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
       await expect.poll(() => reader.evaluate(element => element.style.fontSize)).not.toBe('');
       await expect.poll(() => lyricText(reader.getByRole('group', { name: 'Current lyrics' })))
         .toBe('The silver moon is shining over quiet water');
@@ -686,6 +741,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(reader.getByText('silver', { exact: true })).toHaveAttribute('aria-current', 'true');
       await info.attach('typical-lyric-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
       await page.screenshot({ path: info.outputPath(`fullscreen-typical-${viewport.width}.png`), animations: 'disabled' });
+      await pitches.click();
+      await expect(reader.getByRole('group', { name: /^Pitches for silver:/ })).toBeVisible();
+      await expect.poll(async () => (await fittedRows(reader)).rows.some(row => row.pitches.length > 0)).toBe(true);
+      const withPitches = await fittedRows(reader);
+      for (const row of withPitches.rows) {
+        expect(row.left).toBeGreaterThanOrEqual(withPitches.frame.left);
+        expect(row.right).toBeLessThanOrEqual(withPitches.frame.right);
+        expect(row.singleWordRow).toBe(true);
+        expect(row.pitches.every(count => count === 1)).toBe(true);
+      }
     });
   });
 }

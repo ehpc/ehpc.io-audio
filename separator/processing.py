@@ -42,7 +42,6 @@ from separator.pitch import (
     PitchAnalysis,
     PitchTrack,
     assemble_pitch_prediction,
-    pitch_from_json,
     pitch_to_json,
     transform_analysis,
 )
@@ -422,11 +421,7 @@ def _structure_result(data: bytes) -> dict:
 
 
 def _pitch_result(data: bytes) -> PitchAnalysis:
-    value = (
-        assemble_pitch_prediction(data)
-        if data.startswith(b"PK")
-        else pitch_from_json(data.decode())
-    )
+    value = assemble_pitch_prediction(data)
     if len(value.tracks) != 1:
         raise ValueError("Pitch producer must return one source track")
     return value
@@ -652,12 +647,6 @@ def run_processing(
         duration = 0.0
         for label in options.pitch_labels:
             source = stems[label].data
-            pitch_key = cache_key(
-                manifest.versions["PITCH"],
-                manifest.structure.ffmpeg,
-                dict(manifest.structure.pitch_packages),
-                digest(source),
-            )
             analysis = context.stage(
                 "pitch",
                 source,
@@ -665,7 +654,6 @@ def run_processing(
                 {},
                 digest(source),
                 _pitch_result,
-                legacy=context.root / "analysis-results" / "pitch" / f"{pitch_key}.bin",
             )
             tracks.append(PitchTrack(label, analysis.tracks[0].notes))
             duration = max(duration, analysis.source_duration_s)

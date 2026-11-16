@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import userEvent from "@testing-library/user-event";
 import { createSignal, Show } from "solid-js";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { JobDTO } from "~/api";
 import PitchedLyricsView from "./PitchedLyricsView";
-import ResultsView from "./ResultsView";
+import ResultsView, { type HistoryScrollRequest } from "./ResultsView";
 import HistoryView from "./HistoryView";
 
 beforeEach(() => {
@@ -104,7 +105,7 @@ it.each(["karaoke", "original"] as const)("opens a compact history entry into or
   </>);
   expect(screen.queryByText("not the pitched renderer")).not.toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Aligned pitch and lyric text" })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "View Karaoke with pitches" }));
+  fireEvent.click(screen.getByRole("button", { name: job.title, exact: true }));
   const karaoke = screen.getByRole("region", { name: "Karaoke with pitches" });
   const pitched = screen.getByRole("region", { name: "Lyrics with pitches" });
   const lyrics = screen.getByRole("region", { name: "Lyrics transcript" });
@@ -124,4 +125,54 @@ it.each(["karaoke", "original"] as const)("opens a compact history entry into or
   expect(pause).toHaveBeenCalled();
   expect(screen.queryByRole("region", { name: "Karaoke with pitches" })).not.toBeInTheDocument();
   expect(screen.queryByText("not the pitched renderer")).not.toBeInTheDocument();
+});
+
+it("scrolls a new history selection to its own karaoke, ignores metadata rerenders, and falls back without pitch", async () => {
+  const first = { ...job, title: "First song", options: { ...job.options, extract_lyrics: true, detect_pitch: true } };
+  const second = { ...first, id: 10, title: "Second song" };
+  const plain = {
+    ...job, id: 11, title: "No karaoke", pitch: null, pitched_lyrics: null, transcript: null,
+    options: { ...job.options, extract_lyrics: false, detect_pitch: false, extract_pitched_lyrics: false },
+  };
+  const [selected, setSelected] = createSignal<JobDTO | null>(null);
+  const [scrollRequest, setScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
+  let token = 0;
+  const scrollIntoView = vi.fn();
+  const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+  try {
+    render(() => <>
+      <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} scrollRequest={scrollRequest()} />}</Show>
+      <HistoryView jobs={[first, second, plain]} onSelect={(item) => {
+        setSelected(item);
+        setScrollRequest({ jobId: item.id, token: ++token });
+      }} onRetried={vi.fn()} onDeleted={vi.fn()} />
+    </>);
+    const firstTitle = screen.getByRole("button", { name: "First song", exact: true });
+    const secondTitle = screen.getByRole("button", { name: "Second song", exact: true });
+    fireEvent.click(firstTitle);
+    fireEvent.click(secondTitle);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    const secondKaraoke = screen.getByRole("region", { name: "Karaoke with pitches" });
+    expect(scrollIntoView.mock.contexts[0]).toBe(secondKaraoke);
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "instant", block: "start" });
+    expect(screen.getByRole("heading", { level: 2, name: "Second song" })).toBeVisible();
+
+    setSelected({ ...second, title: "Second song refreshed" });
+    expect(screen.getByRole("heading", { level: 2, name: "Second song refreshed" })).toBeVisible();
+    await Promise.resolve();
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(secondTitle);
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+    expect(scrollIntoView.mock.contexts[1]).toBe(screen.getByRole("region", { name: "Karaoke with pitches" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "No karaoke", exact: true }));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(3));
+    const resultsHeading = screen.getByRole("heading", { level: 2, name: "No karaoke" });
+    expect(scrollIntoView.mock.contexts[2]).toBe(resultsHeading.parentElement?.parentElement);
+  } finally {
+    if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  }
 });

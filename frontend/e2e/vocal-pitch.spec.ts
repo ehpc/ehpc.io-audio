@@ -4,7 +4,7 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import type { JobDTO } from '../src/api';
+import { jobLabel, type JobDTO } from '../src/api';
 
 const SOURCE_SHA256 = '0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04';
 
@@ -148,7 +148,14 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await mobileView.screenshot({ path: info.outputPath('pitch-mobile-short-note-zoom.png') });
   await mobilePage.reload();
   await expect(mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true })).toBeVisible();
-  await expect(mobilePage.getByRole('button', { name: 'View Karaoke with pitches', exact: true })).toBeVisible();
+  await mobilePage.getByRole('button', { name: /^Library/ }).click();
+  const history = mobilePage.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
+  const historyTimestamp = await mobilePage.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job!.created_at);
+  const historyCard = history.locator('.rounded-lg').filter({
+    has: mobilePage.getByRole('button', { name: `Delete ${jobLabel(job!)}`, exact: true }),
+    hasText: historyTimestamp,
+  });
+  await expect(historyCard.getByRole('button', { name: jobLabel(job!), exact: true })).toBeVisible();
   const foreign = await browser.newContext();
   await authenticateOutsider(foreign);
   const outsider = await foreign.newPage();

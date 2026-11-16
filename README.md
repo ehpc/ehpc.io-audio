@@ -256,13 +256,18 @@ are a separate optional text output and do not create an audio stem. Selecting
 **Karaoke with pitches** also includes and locks **Lyrics with pitches** (TXT and
 ODT); disabling it restores the previous independent preference.
 
-In this source, expanded results show **Karaoke with
-pitches**, **Lyrics with pitches**, then **Lyrics**. Completed History entries
-remain compact, showing title, status, date, key, adjustments, an audio-output
-count and an action to open Results. Open Results for lyrics, individual audio
-and pitch JSON downloads when present. Timestamped lyrics remain visible while
-online-alignment and raw-recognition diagnostics are initially collapsed in
-the **Online alignment and raw recognition details** disclosure.
+Expanded results show **Karaoke with pitches**, **Lyrics with pitches**, then
+**Lyrics**, with the track title as the Results heading. The Library rail keeps
+History beside the workspace on desktop; on smaller screens, the sticky
+**Library** button opens a drawer and remains available while viewing results.
+The current entry is highlighted and listed once. Choosing a History title
+closes the drawer and scrolls to **Karaoke with pitches** when present,
+otherwise to the results panel. History entries show title, status, date, key,
+adjustments, and an audio-output count. Open an entry for lyrics, individual
+audio and pitch JSON downloads when present. Timestamped
+lyrics remain visible while online-alignment and raw-recognition diagnostics are
+initially collapsed in the **Online alignment and raw recognition details**
+disclosure.
 
 Each signed-in user can delete their own completed History entries after a
 confirmation. Deletion permanently removes that job's history, original upload
@@ -660,12 +665,23 @@ using the **full CREPE neural model**, its official **weighted-argmax decoder**,
 The upstream default Viterbi decoder locked to the upper range edge on a
 calibrated C4/A4-plus-silence test; the official local decoder passed that same
 known-frequency boundary. Frames below 0.21 model periodicity or −60 dBFS RMS
-are omitted. Median smoothing, semitone transition hysteresis and an 80 ms
-source-time minimum produce note regions while preserving real rests.
-These are automatic monophonic melody estimates, **not an engraved score or
-polyphonic transcription**. Bleed, harmonies, noisy recordings, vibrato and
-octave errors can produce incorrect or fragmented notes. Confidence is model
-periodicity, not a guarantee of musical accuracy.
+are omitted. Median smoothing and semitone transition hysteresis produce note
+candidates; note regions require an 80 ms minimum and at least 80 ms of original
+voiced frames within ±65 cents of the smoothed semitone. Unsupported short notes
+are omitted, not reassigned to an invented pitch. These are automatic
+monophonic melody estimates, **not an engraved score or polyphonic transcription**.
+Bleed, harmonies, noisy recordings, vibrato and octave errors can still produce
+incorrect or fragmented notes. Confidence is model periodicity, not a guarantee
+of musical accuracy. Existing saved results remain snapshots; new or reprocessed
+jobs apply this rule using cached raw CREPE frames.
+
+A separate, default-off microphone tuner uses local browser Web Audio and
+Pitchy 4.1.0 to show the nearest equal-tempered note from A440 and signed cents.
+Only activating its button requests microphone access. The gauge clamps visually
+at ±25 cents while retaining the measured deviation; silence or unvoiced input
+shows a listening state, not a note. Turning it off, hiding the page or unmounting
+stops microphone tracks. It measures microphone input rather than scoring or
+matching the song; headphones help reduce backing-audio bleed.
 
 Both the [torchcrepe implementation/license](https://github.com/maxrmorrison/torchcrepe/blob/master/LICENSE)
 and the original [CREPE model repository/license](https://github.com/marl/crepe/blob/master/LICENSE)
@@ -718,12 +734,8 @@ every pitch remains reachable by scrolling. Detected notes illuminate only for
 the selected vocal track on its output clock while it is playing. Press and hold
 keys with a pointer, touch, Space or Enter for an independent synthesized
 piano-like tone; the view remains stable during a held note, which sustains and
-fades briefly on release. An icon-labelled vertical **Piano volume** control to
-the right of the keyboard adjusts only these manually played tones, including
-notes currently held; zero is silent and does not affect the song or backing
-track. Its default sound level is doubled while the slider still starts at 100%;
-volume is not saved between sessions. Detection does not produce automatic piano
-sound. The instrument uses browser Web Audio rather than samples, suspends when
+fades briefly on release. Detection does not produce automatic piano sound. The
+instrument uses browser Web Audio rather than samples, suspends when
 idle, and reports unavailable audio.
 
 With **Follow playback** enabled, the timeline advances when the playhead passes
@@ -744,10 +756,11 @@ The karaoke reader centers the current lyric line and a dimmed next timed line.
 Natural progression slides the next line upward; seeks jump directly, and
 reduced-motion preferences suppress animation. Known words fill progressively
 using published timings and the same output clock; untimed words remain neutral.
-An optional **Pitches** row shows only unambiguously linked notes from the
-selected vocal track above each word. Each word reserves room for its linked
-notes; the inline reader can wrap word groups and long note sequences. No syllable
-timings or note links are invented. Pitch-only or ASR-gap words can appear as
+Pitch labels are hidden initially; **Pitches** toggles unambiguously linked notes
+from the selected vocal track above each word in both inline and fullscreen
+readers. The inline reader fits its content within the available width and grows
+for wrapped word groups and long note sequences. No syllable timings or note
+links are invented. Pitch-only or ASR-gap words can appear as
 short individual cues.
 
 The inline lyric size starts at twice the previous base size; **A−** and **A+**
@@ -1529,6 +1542,8 @@ builder/review cases, two karaoke-output dependency/help views (390px/1440px),
 and four song-discovery pending/selected cases (390px/1440px), including three
 version rows, square artwork/fallbacks, and play-count availability. These
 complement, not replace, the functional browser E2E cases.
+Library rail/drawer and the microphone tuner's off/live states also have
+dedicated desktop/mobile snapshots.
 Two additional desktop/mobile geometry cases exercise long transformed-source choices and short notes beside the sticky ruler/word lanes at maximum zoom, using a small purpose-built fixture without inference.
 The optional external YouTube case is not a release gate.
 There is no redundant full-page viewport/state cross-product.
@@ -1548,6 +1563,10 @@ visual tests; existing audio/key cases continue to use real native consumers.
 Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
 timezone, colors, fonts and CPU rasterization; native audio metadata is loaded
 before timeline capture. Animations are disabled and the caret hidden.
+Page and fullscreen captures keep the configured viewport. Isolated component
+captures may temporarily expand viewport height, while preserving width, to
+keep sticky navigation and the action footer outside the captured element; the
+original viewport is restored afterward.
 Only the two detected-vocal timeline pixel comparisons mask the browser-owned
 `<audio>` controls; their bounds still determine the mask region. Every case
 retains an **unmasked** `actual.png` for review. App-owned footer buttons,

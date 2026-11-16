@@ -308,12 +308,16 @@ describe("TimelineKaraoke reactive reader", () => {
     const [notes, setNotes] = createSignal([note, { ...note, note: "D4" }]);
     render(() => <TimelineKaraoke job={source} position={4.5} notes={notes()} />);
     const current = screen.getByRole("group", { name: "Current lyrics" });
+    const toggle = screen.getByRole("button", { name: "Pitches" });
+    expect(within(current).getByText("go", { exact: true })).toBeVisible();
+    expect(within(current).queryByText("C4 D4")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
     expect(within(current).getByText("C4 D4")).toBeVisible();
     expect(within(current).getByText("go", { exact: true }).closest(".timeline-karaoke-cell")).toContainElement(within(current).getByText("C4 D4"));
     setNotes([{ ...note, note: "G4" }]);
     expect(within(current).getByText("G4")).toBeVisible();
     expect(within(current).queryByText("C4 D4")).not.toBeInTheDocument();
-    const toggle = screen.getByRole("button", { name: "Pitches" });
+
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(within(current).queryByText("G4")).not.toBeInTheDocument();
@@ -333,6 +337,7 @@ describe("TimelineKaraoke reactive reader", () => {
     render(() => <TimelineKaraoke job={source} position={position()} notes={notes} playing />);
     const current = screen.getByRole("group", { name: "Current lyrics" });
     const next = screen.getByRole("group", { name: "Next lyrics" });
+    fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
     expect(within(current).getByRole("group", { name: "Pitches for go: C#4 D#4" }).parentElement)
       .toContainElement(within(current).getByText("go", { exact: true }));
     expect(within(current).getByText("go", { exact: true }).parentElement).toHaveTextContent(/^go—$/);

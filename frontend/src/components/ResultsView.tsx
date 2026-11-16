@@ -1,4 +1,4 @@
-import { For, onCleanup, Show, type Component } from "solid-js";
+import { createEffect, For, onCleanup, Show, type Component } from "solid-js";
 import type { JobDTO, StemManifestEntry } from "~/api";
 import { jobLabel, originalUrl, playbackUrl, resultUrl } from "~/api";
 import { displayOutputLabel, manifestOutputLabel } from "~/lib/expectedStems";
@@ -21,16 +21,32 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-const ResultsView: Component<{ job: JobDTO; onReset: () => void }> = (props) => {
+export type HistoryScrollRequest = { jobId: number; token: number };
+
+const ResultsView: Component<{ job: JobDTO; onReset: () => void; scrollRequest?: HistoryScrollRequest | null }> = (props) => {
   const stems = (): StemManifestEntry[] => props.job.manifest ?? [];
   let container!: HTMLDivElement;
+  let consumedScrollToken: number | null = null;
+  let scheduledScrollToken: number | null = null;
   onCleanup(() => container.querySelectorAll("audio").forEach(audio => audio.pause()));
+  createEffect(() => {
+    const request = props.scrollRequest;
+    const jobId = props.job.id;
+    if (!request || request.jobId !== jobId || request.token === consumedScrollToken || request.token === scheduledScrollToken) return;
+    scheduledScrollToken = request.token;
+    queueMicrotask(() => {
+      if (scheduledScrollToken === request.token) scheduledScrollToken = null;
+      if (props.scrollRequest?.token !== request.token || props.job.id !== jobId || !container.isConnected) return;
+      const karaoke = container.querySelector<HTMLElement>('[aria-label="Karaoke with pitches"]');
+      (karaoke ?? container).scrollIntoView({ behavior: "instant", block: "start" });
+      consumedScrollToken = request.token;
+    });
+  });
 
   return (
-    <div ref={container} class="space-y-6">
+    <div ref={container} class="results-panel space-y-6 pb-4">
       <div class="space-y-1">
-        <h2 class="text-lg font-semibold">Results</h2>
-        <p class="text-sm text-muted-foreground">{jobLabel(props.job)}</p>
+        <h2 class="break-words text-lg font-semibold [overflow-wrap:anywhere]">{jobLabel(props.job)}</h2>
         <AudioMetadata job={props.job} />
       </div>
 

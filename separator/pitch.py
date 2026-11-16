@@ -17,6 +17,7 @@ NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 FRAME_SECONDS = 0.01
 MIN_NOTE_SECONDS = 0.08
 MIN_PERIODICITY = 0.21
+PITCH_HYSTERESIS_SEMITONES = 0.65
 MIN_RMS = 0.001  # -60 dBFS: CREPE can report confident pitches on digital silence.
 
 type FrameRegion = tuple[int, int]  # start frame, exclusive end frame
@@ -146,8 +147,8 @@ def segment_frames(
     """Stable semitone regions, not a score or polyphonic transcription.
 
     Median smoothing and 65-cent transition hysteresis suppress vibrato chatter.
-    Real unvoiced gaps remain gaps, including repeated same-pitch notes. Regions
-    shorter than 80 ms are omitted, never stretched into fabricated notes.
+    A region needs 80 ms of original voiced frames supporting its semitone.
+    Real unvoiced gaps remain gaps, including repeated same-pitch notes.
     """
     if not len(frequencies) == len(periodicities) == len(rms):
         raise ValueError("Pitch frame arrays must have equal lengths")
@@ -176,7 +177,8 @@ def segment_frames(
             if pitch is None
             else (
                 current
-                if current is not None and abs(pitch - current) < 0.65
+                if current is not None
+                and abs(pitch - current) < PITCH_HYSTERESIS_SEMITONES
                 else round(pitch)
             )
         )
@@ -186,11 +188,18 @@ def segment_frames(
             current, start = target, i
     notes = []
     for start, end in regions:
+        raw_pitches = [pitch for pitch in pitches[start:end] if pitch is not None]
+        midi = median(raw_pitches)
+        semitone = floor(midi + 0.5)
+        supporting_frames = sum(
+            abs(pitch - semitone) < PITCH_HYSTERESIS_SEMITONES for pitch in raw_pitches
+        )
+        if supporting_frames * frame_s + 1e-9 < MIN_NOTE_SECONDS:
+            continue
         onset = max(0.0, start * frame_s - frame_s / 2)
         offset = min(duration_s, end * frame_s - frame_s / 2)
         if offset - onset + 1e-9 < MIN_NOTE_SECONDS:
             continue
-        midi = median([p for p in pitches[start:end] if p is not None])
         notes.append(
             PitchNote(
                 onset,

@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { test } from './auth-fixture';
-import type { JobDTO } from '../src/api';
+import { jobLabel, type JobDTO } from '../src/api';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const JFK_SHA256 = '63a4b1e4c1dc655ac70961ffbf518acd249df237e5a0152faae9a4a836949715';
@@ -56,7 +56,7 @@ async function assertTranscriptAndDownload(page: Page, job: JobDTO) {
   const maxEndS = Math.max(...job.transcript!.segments.map(segment => segment.end_s));
   expect(maxEndS).toBeLessThanOrEqual(11.0);
   if (job.options.tempo_percent === 120) expect(maxEndS).toBeGreaterThan(11 / 1.2);
-  const results = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..');
+  const results = page.getByRole('heading', { name: jobLabel(job), exact: true }).locator('../..');
   await expect(results.getByText(text, { exact: true })).toBeVisible();
   const transcriptResponse = await page.request.get(`/api/jobs/${job.id}/lyrics`);
   expect(transcriptResponse.ok()).toBe(true);
@@ -100,7 +100,7 @@ test('real speech lyrics render and download in Results and History on the origi
   await page.screenshot({ path: desktopScreenshot, fullPage: true });
   await info.attach('lyrics-results-desktop', { path: desktopScreenshot, contentType: 'image/png' });
   const transcriptScreenshot = info.outputPath('lyrics-transcript-desktop.png');
-  await page.getByRole('heading', { name: 'Results', exact: true }).locator('../..').getByLabel('Lyrics transcript').screenshot({ path: transcriptScreenshot });
+  await page.getByRole('heading', { name: jobLabel(lyricsOnly), exact: true }).locator('../..').getByLabel('Lyrics transcript').screenshot({ path: transcriptScreenshot });
 
   const transformedId = await submitJfk(page, { vocals: true, pitch: 2, tempo: 120 });
   const transformed = await complete(page, transformedId);
@@ -112,22 +112,25 @@ test('real speech lyrics render and download in Results and History on the origi
   const mobileScreenshot = info.outputPath('lyrics-results-mobile.png');
   await page.screenshot({ path: mobileScreenshot, fullPage: true });
   await info.attach('lyrics-results-mobile', { path: mobileScreenshot, contentType: 'image/png' });
-  const resultTranscript = page.getByRole('heading', { name: 'Results', exact: true }).locator('../..').getByLabel('Lyrics transcript');
+  let resultTranscript = page.getByRole('heading', { name: jobLabel(transformed), exact: true }).locator('../..').getByLabel('Lyrics transcript');
   const resultDownload = resultTranscript.getByRole('link', { name: 'Download timestamped TXT' });
   expect((await resultDownload.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   expect(await resultTranscript.getByLabel('Timestamped lyrics', { exact: true }).evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 
   await page.reload();
-  const history = page.locator('section').filter({ has: page.getByRole('heading', { name: 'History', exact: true }) });
+  await page.getByRole('button', { name: /^Library/ }).click();
+  const history = page.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
   const historyCard = (tempo: number) => history.locator('.rounded-lg').filter({ hasText: 'jfk' }).filter({ hasText: new RegExp(`Tempo:\\s*${tempo}% of original`) }).first();
   await expect(historyCard(100).getByLabel('Lyrics transcript')).toHaveCount(0);
   await expect(historyCard(120).getByLabel('Lyrics transcript')).toHaveCount(0);
   await expect(historyCard(120).locator('a[href*="/results/"]')).toHaveCount(0);
-  await historyCard(120).getByRole('button', { name: 'View results', exact: true }).click();
+  await historyCard(120).getByRole('button', { name: jobLabel(transformed), exact: true }).click();
   await expect(page.locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
-  await historyCard(100).getByRole('button', { name: 'View results', exact: true }).click();
+  await page.getByRole('button', { name: /^Library/ }).click();
+  await historyCard(100).getByRole('button', { name: jobLabel(lyricsOnly), exact: true }).click();
+  resultTranscript = page.getByRole('heading', { name: jobLabel(lyricsOnly), exact: true }).locator('../..').getByLabel('Lyrics transcript');
   await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toBeVisible();
   await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
   const historyDownloadPromise = page.waitForEvent('download');
@@ -167,7 +170,8 @@ test('real speech lyrics render and download in Results and History on the origi
     },
   }, null, 2), 'utf8');
   await info.attach('lyrics-proof', { path: proofPath, contentType: 'application/json' });
-  await historyCard(120).getByRole('button', { name: 'View results', exact: true }).click();
+  await page.getByRole('button', { name: /^Library/ }).click();
+  await historyCard(120).getByRole('button', { name: jobLabel(transformed), exact: true }).click();
   await expect(page.locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: jobLabel(transformed), exact: true })).toBeVisible();
 });

@@ -1,4 +1,4 @@
-import { createSignal, For, Show, type Component } from "solid-js";
+import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import * as AlertDialog from "@kobalte/core/alert-dialog";
 import type { JobDTO, JobStatus } from "~/api";
 import { AuthHttpError, deleteJob, jobLabel, retryJob } from "~/api";
@@ -19,6 +19,7 @@ function formatTimestamp(unixSeconds: number): string {
 
 const HistoryView: Component<{
   jobs: JobDTO[];
+  selectedId?: number | null;
   onSelect: (job: JobDTO) => void;
   onRetried: (job: JobDTO) => void;
   onDeleted: (id: number) => void;
@@ -28,6 +29,10 @@ const HistoryView: Component<{
   const [deleting, setDeleting] = createSignal(false);
   const [deleteTarget, setDeleteTarget] = createSignal<JobDTO | null>(null);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
+  const orderedJobs = createMemo(() => {
+    const selected = props.jobs.find(job => job.id === props.selectedId);
+    return selected ? [selected, ...props.jobs.filter(job => job.id !== selected.id)] : props.jobs;
+  });
 
   const copyUrl = async (job: JobDTO, event: MouseEvent) => {
     event.stopPropagation();
@@ -89,7 +94,7 @@ const HistoryView: Component<{
 
   return (
     <>
-    <section class="space-y-3 border-t border-border pt-6">
+    <section class="space-y-3" aria-label="History">
       <h2 class="text-sm font-medium text-muted-foreground">History</h2>
 
       <Show
@@ -97,16 +102,20 @@ const HistoryView: Component<{
         fallback={<p class="text-sm text-muted-foreground">No jobs yet.</p>}
       >
         <div class="space-y-2">
-          <For each={props.jobs}>
+          <For each={orderedJobs()}>
             {(job) => (
               <Card
-                class="cursor-pointer transition-colors hover:bg-accent"
+                class={`cursor-pointer transition-colors hover:bg-accent ${job.id === props.selectedId ? "library-selected" : ""}`}
                 onClick={() => props.onSelect(job)}
               >
                 <CardContent class="space-y-2 p-4">
+                  <Show when={job.id === props.selectedId}><p class="library-current-label">Current song</p></Show>
                   <div class="flex items-center justify-between gap-4">
                     <div class="min-w-0 flex-1">
-                      <p class="truncate text-sm font-medium">{jobLabel(job)}</p>
+                      <button type="button" class="block w-full truncate text-left text-sm font-medium" aria-current={job.id === props.selectedId ? "true" : undefined}
+                        onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
+                        {jobLabel(job)}
+                      </button>
                       <div class="flex items-center gap-2 text-xs text-muted-foreground">
                         <span>{formatTimestamp(job.created_at)}</span>
                         <Show when={job.source_type === "url"}>
@@ -135,11 +144,7 @@ const HistoryView: Component<{
                     </p>
                   </Show>
                   <Show when={job.status === "done"}>
-                    <div class="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-2 text-sm">
-                      <button type="button" class="font-medium text-primary hover:underline"
-                        onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
-                        {job.options.detect_pitch && job.pitch ? "View Karaoke with pitches" : "View results"}
-                      </button>
+                    <div class="flex justify-end border-t border-border pt-2 text-sm">
                       <Button type="button" variant="outline" size="sm" class="min-h-11"
                         aria-label={`Delete ${jobLabel(job)}`}
                         onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(job); }}>

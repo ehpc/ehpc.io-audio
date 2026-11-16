@@ -8,6 +8,7 @@ import { Button } from "~/components/button";
 import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
 import PianoKeyboard from "./PianoKeyboard";
 import KaraokeFullscreen from "./KaraokeFullscreen";
+import MicrophoneTuner from "./MicrophoneTuner";
 
 const ROW_HEIGHT = 24;
 const AXIS_WIDTH = 54;
@@ -50,7 +51,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [seekRevision, setSeekRevision] = createSignal(0);
   const [karaokeFullscreen, setKaraokeFullscreen] = createSignal(false);
   const [karaokeFontSize, setKaraokeFontSize] = createSignal<number>(LYRIC_FONT.default);
-  const [karaokePitches, setKaraokePitches] = createSignal(true);
+  const [karaokePitches, setKaraokePitches] = createSignal(false);
   let fullscreenReturnFocus: HTMLElement | null = null;
   const openKaraokeFullscreen = (trigger: HTMLButtonElement) => {
     fullscreenReturnFocus = trigger;
@@ -605,9 +606,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <p class="text-xs text-muted-foreground">Original-speed playback uses its original clock, mapped to the output timeline. Select Just vocals for matching transformed playback when available.</p>
       </Show>
       <p class="text-xs text-muted-foreground">Swipe or scroll horizontally; zoom for short notes. Tap the time ruler to seek, or tap a note to seek and inspect it. Focus the ruler and use arrow keys (1 second), Page Up/Down (10 seconds), or Home/End. Playback position: {timeLabel(position())} (output time).</p>
-      <Show when={analysis().word_alignment || analysis().words.length > 0}>
-        <p class="pitch-alignment-notice">{`${analysis().word_alignment === "torchaudio/MMS_FA" ? "Approximate MMS acoustic word alignment from full vocals, not exact syllable timing; reference-aligned words are not verified lyrics. Uncorroborated provider words have no word links. Acoustic alignment scores are not calibrated correctness probabilities." : analysis().word_alignment === "whisper-approximate" ? "Approximate Whisper word alignment from full vocals, not exact syllable timing or independent recognition of split voices." : "Stored approximate word timings; the alignment model is unspecified, not inferred from these values."} Words below the notes may be wrong or misaligned. Select a word to highlight its linked notes; one word can span several notes (melisma).`}</p>
-      </Show>
+      <MicrophoneTuner />
       <Show when={analysis().word_alignment && analysis().words.length === 0}>
         <p class="text-sm text-muted-foreground">No sung words were recognized; pitch notes remain available.</p>
       </Show>

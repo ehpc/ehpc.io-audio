@@ -3,6 +3,7 @@
 import io
 import json
 import wave
+import zipfile
 from array import array
 from collections import Counter
 from dataclasses import asdict, replace
@@ -249,6 +250,42 @@ def test_adding_lyrics_to_cached_pitch_invokes_only_missing_dependencies(tmp_pat
     pitch = pitch_from_json(result.pitch_json)
     assert pitch.words == result.transcript.words
     assert pitch.tracks[0].notes[0].word_indices == [0]
+
+
+def test_cached_raw_pitch_is_reassembled_without_inference(tmp_path):
+    manifest = fixture_manifest(tmp_path / "producer")
+    root = tmp_path / "cache"
+    source = b"previously-analyzed-vocals"
+    identity = digest(source)
+    frequencies = (
+        [0] * 20 + [815] + [932] * 6 + [467] * 4 + [0] * 10 + [932] * 12 + [0] * 38
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("audio.f32", (array("f", [0.2]) * 14400).tobytes())
+        archive.writestr("pitch.f32", array("f", frequencies).tobytes())
+        archive.writestr(
+            "periodicity.f32", (array("f", [0.8]) * len(frequencies)).tobytes()
+        )
+        archive.writestr(
+            "metadata.json", json.dumps({"sample_rate": 16000, "duration_s": 0.9})
+        )
+    raw = stream.getvalue()
+
+    def forbidden(*_args):
+        raise AssertionError("cached CREPE frames must not invoke inference")
+
+    context = processing.ProcessingContext(root, manifest, forbidden)
+    path = root / "inference" / f"{context.key('pitch', identity)}.bin"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(raw)
+    result = context.stage(
+        "pitch", source, "vocals.mp3", {}, identity, processing._pitch_result
+    )
+    assert [note.note for note in result.tracks[0].notes] == ["A#5"]
+    assert result.tracks[0].notes[0].start_s == pytest.approx(0.405)
+    assert result.tracks[0].notes[0].end_s == pytest.approx(0.525)
+    assert path.read_bytes() == raw
 
 
 def test_baseline_alignment_tracks_decoded_pcm_not_container_or_asr_version(tmp_path):

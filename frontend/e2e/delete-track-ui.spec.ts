@@ -88,11 +88,20 @@ for (const viewport of [
     await testContext.addCookies(await context.cookies());
     const mobilePage = await testContext.newPage();
     await mobilePage.goto('/');
-    await expect(mobilePage.getByText(cancelledTitle, { exact: true }).last()).toBeVisible();
-    await expect(mobilePage.getByText(confirmedTitle, { exact: true }).last()).toBeVisible();
-    await expect(mobilePage.getByText('6 audio outputs').first()).toBeVisible();
-    const historyRegion = mobilePage.locator('section').filter({ has: mobilePage.getByRole('heading', { name: 'History', exact: true }) });
-    await expect(historyRegion.getByRole('link', { name: /Download/ })).toHaveCount(0);
+    const openHistory = async () => {
+      if (viewport.name === 'iphone') await mobilePage.getByRole('button', { name: 'Library', exact: true }).click();
+      const root = viewport.name === 'iphone'
+        ? mobilePage.getByRole('dialog', { name: 'Library', exact: true })
+        : mobilePage.getByRole('complementary', { name: 'Library', exact: true });
+      const history = root.getByRole('region', { name: 'History', exact: true });
+      await expect(history).toBeVisible();
+      return history;
+    };
+    let historyRegion = await openHistory();
+    await expect(historyRegion.getByRole('button', { name: cancelledTitle, exact: true })).toBeVisible();
+    await expect(historyRegion.getByRole('button', { name: confirmedTitle, exact: true })).toBeVisible();
+    await expect(historyRegion.getByText('6 audio outputs').first()).toBeVisible();
+    if (viewport.name === 'iphone') await mobilePage.getByRole('button', { name: 'Close library', exact: true }).click();
     await expect(mobilePage.locator('.processing-results a[href*="/results/"][download]')).toHaveCount(6);
     await expect(mobilePage.locator('.processing-results').getByRole('link', { name: 'Download original' })).toBeVisible();
     await expect(mobilePage.locator('.processing-results').getByRole('link', { name: 'Download timestamped TXT' })).toBeVisible();
@@ -112,17 +121,18 @@ for (const viewport of [
 
     expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/original`)).status()).toBe(200);
     expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/results/stem-1`)).status()).toBe(200);
-    await mobilePage.getByRole('button', { name: `Delete ${cancelledTitle}` }).click();
+    historyRegion = await openHistory();
+    await historyRegion.getByRole('button', { name: `Delete ${cancelledTitle}` }).click();
     const dialog = mobilePage.getByRole('alertdialog');
     await expect(dialog).toContainText("permanently deletes this track's history, original audio, saved outputs");
     await expect(dialog).toContainText('Shared reusable processing cache is not deleted.');
     await dialog.screenshot({ path: info.outputPath(`delete-confirmation-${viewport.name}.png`), animations: 'disabled' });
     await dialog.getByRole('button', { name: 'Cancel' }).click();
-    await expect(mobilePage.getByText(cancelledTitle, { exact: true }).last()).toBeVisible();
+    await expect(historyRegion.getByRole('button', { name: cancelledTitle, exact: true })).toBeVisible();
     expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/original`)).status()).toBe(200);
     expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/results/stem-1`)).status()).toBe(200);
 
-    await mobilePage.getByRole('button', { name: 'View results' }).first().click();
+    await historyRegion.getByRole('button', { name: cancelledTitle, exact: true }).click();
     await expect(mobilePage.getByLabel('Timestamped lyrics')).toContainText('Visible fixture lyric');
     const summary = mobilePage.getByText('Online alignment and raw recognition details');
     await summary.focus();
@@ -131,14 +141,14 @@ for (const viewport of [
     await expect(rawRecognition).toBeVisible();
     await rawRecognition.click();
     await expect(mobilePage.getByText('Raw recognition diagnostic')).toBeVisible();
-    await mobilePage.getByRole('button', { name: `Delete ${confirmedTitle}` }).click();
+    historyRegion = await openHistory();
+    await historyRegion.getByRole('button', { name: `Delete ${confirmedTitle}` }).click();
     const deleteResponsePromise = mobilePage.waitForResponse(response =>
       response.request().method() === 'DELETE' && response.url().endsWith(`/api/jobs/${confirmedId}`));
     await mobilePage.getByRole('alertdialog').getByRole('button', { name: 'Delete track' }).click();
     const deleteStatus = (await deleteResponsePromise).status();
     expect(deleteStatus).toBe(204);
     await expect(mobilePage.getByText(confirmedTitle)).toHaveCount(0);
-    await expect(mobilePage.getByRole('heading', { name: 'Results' })).toHaveCount(0);
     expect((await mobilePage.request.get(`/api/jobs/${confirmedId}/original`)).status()).toBe(404);
     for (let output = 1; output <= 6; output++) {
       expect((await mobilePage.request.get(`/api/jobs/${confirmedId}/results/stem-${output}`)).status()).toBe(404);

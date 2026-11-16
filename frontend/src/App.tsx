@@ -1,9 +1,10 @@
 import { createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
+import * as Dialog from "@kobalte/core/dialog";
 import type { JobDTO } from "./api";
 import { getCurrentJob, listJobs } from "./api";
 import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
-import ResultsView from "./components/ResultsView";
+import ResultsView, { type HistoryScrollRequest } from "./components/ResultsView";
 import HistoryView from "./components/HistoryView";
 import { useAuth } from "./AuthProvider";
 import ProfileView from "./ProfileView";
@@ -13,10 +14,25 @@ import { Button } from "~/components/button";
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
   const [history, setHistory] = createSignal<JobDTO[]>([]);
+  const [historyScrollRequest, setHistoryScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
+  let historyScrollToken = 0;
   const deletedJobIds = new Set<number>();
   const auth = useAuth();
   const [tab, setTab] = createSignal<"workspace" | "profile" | "people">("workspace");
   const [accountError, setAccountError] = createSignal("");
+  const [mobileLibrary, setMobileLibrary] = createSignal(false);
+  const [libraryOpen, setLibraryOpen] = createSignal(false);
+  let libraryTrigger: HTMLButtonElement | undefined;
+  let selectedFromLibrary = false;
+
+  onMount(() => {
+    const query = window.matchMedia?.("(max-width: 1000px)");
+    if (!query) return;
+    const update = () => { setMobileLibrary(query.matches); if (!query.matches) setLibraryOpen(false); };
+    update();
+    query.addEventListener("change", update);
+    onCleanup(() => query.removeEventListener("change", update));
+  });
 
   onMount(() => {
     const pauseOtherAudio = (event: Event) => {
@@ -49,11 +65,27 @@ const App: Component = () => {
   });
 
   const onSubmitted = (newJob: JobDTO) => {
+    setLibraryOpen(false);
+    setHistoryScrollRequest(null);
     setJob(newJob);
     refreshHistory();
   };
 
+  const onHistorySelect = (selected: JobDTO) => {
+    setJob(selected);
+    if (libraryOpen()) {
+      selectedFromLibrary = true;
+      setLibraryOpen(false);
+    }
+    setHistoryScrollRequest({ jobId: selected.id, token: ++historyScrollToken });
+  };
+  const onReset = () => {
+    setHistoryScrollRequest(null);
+    setJob(null);
+  };
+
   const onTerminal = (finished: JobDTO) => {
+    setHistoryScrollRequest(null);
     setJob(finished);
     refreshHistory();
   };
@@ -64,8 +96,12 @@ const App: Component = () => {
   const onDeleted = (id: number) => {
     deletedJobIds.add(id);
     setHistory((items) => items.filter((item) => item.id !== id));
-    if (job()?.id === id) setJob(null);
+    if (job()?.id === id) {
+      setHistoryScrollRequest(null);
+      setJob(null);
+    }
   };
+  const LibraryHistory = () => <HistoryView jobs={history()} selectedId={job()?.id} onSelect={onHistorySelect} onRetried={onSubmitted} onDeleted={onDeleted} />;
 
   return (
     <main class="app-shell">
@@ -85,7 +121,30 @@ const App: Component = () => {
       <Show when={tab() === "profile"}><ProfileView profile={auth.profile()} refresh={auth.refresh} /></Show>
       <Show when={tab() === "people" && auth.profile().is_admin}><AdminView /></Show>
       <div hidden={tab() !== "workspace"}>
-
+      <div class="library-workspace">
+        <Show when={!mobileLibrary()}>
+          <aside class="library-rail" aria-label="Library"><h2>Library</h2><LibraryHistory /></aside>
+        </Show>
+        <div class="library-main">
+          <Show when={mobileLibrary()}>
+            <Dialog.Root open={libraryOpen()} onOpenChange={setLibraryOpen}>
+              <Dialog.Trigger as={Button} ref={libraryTrigger} type="button" variant="outline" class="library-trigger">Library <span aria-hidden="true">Browse ›</span></Dialog.Trigger>
+              <Dialog.Portal>
+                <Dialog.Overlay class="library-overlay" />
+                <Dialog.Content class="library-drawer" onCloseAutoFocus={event => {
+                  if (selectedFromLibrary) {
+                    event.preventDefault();
+                    selectedFromLibrary = false;
+                    libraryTrigger?.focus({ preventScroll: true });
+                  }
+                }}>
+                  <div class="library-drawer-header"><Dialog.Title>Library</Dialog.Title><Dialog.CloseButton as={Button} type="button" variant="outline" aria-label="Close library">Close</Dialog.CloseButton></div>
+                  <Dialog.Description class="sr-only">Choose a song to open its results.</Dialog.Description>
+                  <LibraryHistory />
+                </Dialog.Content>
+              </Dialog.Portal>
+            </Dialog.Root>
+          </Show>
       <SubmitForm onSubmitted={onSubmitted} />
 
       <Show when={isActive() || isDone()}>
@@ -95,12 +154,13 @@ const App: Component = () => {
           </Show>
 
           <Show when={isDone()}>
-            <ResultsView job={job()!} onReset={() => setJob(null)} />
+            <ResultsView job={job()!} onReset={onReset} scrollRequest={historyScrollRequest()} />
           </Show>
         </div>
       </Show>
+        </div>
+      </div>
 
-      <HistoryView jobs={history()} onSelect={setJob} onRetried={onSubmitted} onDeleted={onDeleted} />
 
       </div>
     </main>
