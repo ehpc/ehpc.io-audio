@@ -1,0 +1,96 @@
+name: One-time isolated mix-stage diagnostic
+
+on:
+  push:
+    branches: [diagnose-mix-43918418206]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-one-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: ehpc-audio
+      MODAL_APP_NAME: audio-separator-diag-${{ github.run_id }}-${{ github.run_attempt }}-smoke
+      E2E_MODAL_APP_NAME: audio-separator-diag-${{ github.run_id }}-${{ github.run_attempt }}-smoke
+      MODAL_TEST_GPU: L40S
+      MODAL_GPU_IDLE_SECONDS: '60'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install native audio tools
+        run: .github/scripts/install-ci-native-tools.sh
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Python dependencies
+        run: uv sync --frozen
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+      - name: Verify test-app isolation
+        run: |
+          test "$MODAL_ENVIRONMENT" = ehpc-audio
+          test "$MODAL_APP_NAME" = "audio-separator-diag-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-smoke"
+          test "$E2E_MODAL_APP_NAME" = "$MODAL_APP_NAME"
+          test "$MODAL_TEST_GPU" = L40S
+      - name: Provision verified shared model receipts
+        run: |
+          echo "PREPARED_MODELS_ROOT=$RUNNER_TEMP/audio-prepared-models" >> "$GITHUB_ENV"
+          uv run python -m separator.prepare_models \
+            --manifest separator/model_manifest.json \
+            --receipt separator/model_assets_receipt.json \
+            --volume audio-separator-models \
+            --environment "$MODAL_ENVIRONMENT" \
+            --prepared-models-root "$RUNNER_TEMP/audio-prepared-models"
+      - name: Deploy the exact isolated diagnostic app
+        run: uv run modal deploy separator/modal_app.py --name "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
+      - name: Run only the original mix-only smoke with thread dumps
+        timeout-minutes: 9
+        run: |
+          set -eu
+          umask 077
+          mkdir -p "$RUNNER_TEMP/mix-diagnostic"
+          timeout --signal=TERM --kill-after=5s 475s \
+            uv run python -u - "$RUNNER_TEMP/mix-diagnostic" > "$RUNNER_TEMP/mix-diagnostic/pytest.log" 2>&1 <<'PY'
+          import faulthandler
+          import pathlib
+          import sys
+          import pytest
+
+          root = pathlib.Path(sys.argv[1])
+          with (root / 'threads.log').open('w', buffering=1) as trace:
+              faulthandler.enable(file=trace, all_threads=True)
+              faulthandler.dump_traceback_later(30, repeat=True, file=trace)
+              try:
+                  result = pytest.main([
+                      '-p', 'no:faulthandler', '-x', '-m', 'smoke',
+                      '--log-cli-level=INFO', f'--basetemp={root / "pytest"}',
+                      'tests/test_smoke.py::test_deployed_function_separates_audio[mix-only-dry-vocals]',
+                  ])
+              finally:
+                  faulthandler.cancel_dump_traceback_later()
+              raise SystemExit(result)
+          PY
+      - name: Stop the exact isolated diagnostic app
+        if: always()
+        run: timeout --signal=TERM --kill-after=5s 30s uv run modal app stop -y "$MODAL_APP_NAME" --env "$MODAL_ENVIRONMENT"
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mix-stage-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mix-diagnostic/pytest.log
+            ${{ runner.temp }}/mix-diagnostic/threads.log
+          retention-days: 1
+          if-no-files-found: warn
