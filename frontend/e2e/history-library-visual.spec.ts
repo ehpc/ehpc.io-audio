@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect } from '@playwright/test';
+import { expect, type Locator } from '@playwright/test';
 import { test } from './auth-fixture';
 
 const insertLibraryTrack = String.raw`
@@ -23,6 +23,14 @@ const tracks = [
   { title: 'Library previous visual track', source: 'previous-visual.wav' },
 ];
 const fixedTime = new Date('2026-01-01T12:00:00Z');
+
+async function waitForFiniteAnimations(target: Locator) {
+  await target.evaluate(async element => {
+    await Promise.allSettled(element.getAnimations({ subtree: true })
+      .filter(animation => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+      .map(animation => animation.finished));
+  });
+}
 
 for (const viewport of [
   { name: 'dialog', width: 390, height: 844, isMobile: true },
@@ -77,6 +85,7 @@ for (const viewport of [
         await expect(dialog.getByRole('button', { name: currentTitle, exact: true })).toHaveAttribute('aria-current', 'true');
         await expect(dialog.getByRole('button', { name: tracks[1].title, exact: true })).not.toHaveAttribute('aria-current', 'true');
         await page.mouse.move(0, 0);
+        await waitForFiniteAnimations(dialog);
         await dialog.screenshot({ path: info.outputPath('library-dialog-390-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
         await expect.soft(dialog).toHaveScreenshot('library-dialog-390.png');
       } else {
@@ -89,6 +98,7 @@ for (const viewport of [
         await expect(page.getByRole('heading', { name: currentTitle, exact: true })).toBeVisible();
         await expect(history.getByRole('button', { name: currentTitle, exact: true })).toHaveAttribute('aria-current', 'true');
         await expect(history.getByRole('button', { name: tracks[1].title, exact: true })).not.toHaveAttribute('aria-current', 'true');
+        await waitForFiniteAnimations(rail);
         await rail.screenshot({ path: info.outputPath('library-rail-1440-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
         await expect.soft(rail).toHaveScreenshot('library-rail-1440.png');
       }

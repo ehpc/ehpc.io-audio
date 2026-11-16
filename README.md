@@ -1575,6 +1575,7 @@ visual tests; existing audio/key cases continue to use real native consumers.
 Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
 timezone, colors, fonts and CPU rasterization; native audio metadata is loaded
 before timeline capture. Animations are disabled and the caret hidden.
+Library captures wait for finite selection and hover transitions to finish before capture.
 Page and fullscreen captures keep the configured viewport. Isolated component
 captures may temporarily expand viewport height, while preserving width, to
 keep sticky navigation and the action footer outside the captured element; the
