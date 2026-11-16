@@ -112,17 +112,22 @@ reference audio, accounts and model weights remain intact. Active, queued or
 unresolved work can block clearing; the server reports that conflict without
 removing the selection.
 
-Administrators may also reprocess an explicitly chosen completed job from a
-cached song. The new queued job retains that job's owner and options, and
-appears in the original owner's Library; the existing job and results stay
-intact even if reprocessing fails. Only jobs with a verified retained original
-are offered; preview-only entries cannot be reprocessed. The original audio
-and URL metadata are snapshotted so a changed URL is not downloaded again.
-Retrying a reprocessed job also uses its verified saved snapshot, even if the
-original job has since been deleted.
-Current algorithms run again while compatible model artifacts are reused;
-missing or changed model stages may incur GPU charges. The admin view reports
-all active reprocessing jobs and the most recent 50 regeneration records.
+Administrators can regenerate one or more selected cached songs. After the same
+quiescence and attribution checks used by selective clearing, their reusable
+cache is evicted and every safely matched completed job is reprocessed using
+its saved options. Identical model stages are shared across those jobs; clearing
+can also remove shared artifacts and renewed processing may incur GPU charges.
+Each owner's existing Library entry, job ID, title, options and timestamps stay
+the same. Its previous results remain available until the replacement for that
+job is ready; a failed variant keeps its previous results even when other
+variants succeeded. Preview-only songs cannot be regenerated, and completed
+jobs whose original cannot be safely identified are counted separately rather
+than matched by title. The admin view shows durable progress and the latest 50
+operations. Legacy snapshot-backed jobs from earlier releases retain their
+original audio and metadata for ordinary manual retries.
+If source preparation is interrupted before its private copies are durable, the
+operation fails on restart without evicting the song's cache; an administrator
+can select it again. An interrupted cache-clear phase resumes before processing starts.
 
 Migration imports verified original bytes without relabeling unknown producers.
 Historical producer aliases require actual GPU-runtime evidence; a CPU image
@@ -290,6 +295,9 @@ retry; unresolved or unsafe data may require operator investigation. If file
 deletion encounters an I/O error, the job remains in History for retry, but some
 of its files may already have been removed. Queued, running, and failed jobs
 cannot be deleted.
+Deletion also reclaims completed maintenance copies and failed private staging
+when their dispatch is resolved. Unresolved dispatch ownership and its files
+remain available for reconciliation.
 The owner-protected `DELETE /api/jobs/{id}` returns **204** on success, **404**
 for a missing or other user's job, **409** for an ineligible or unsafe deletion,
 and **503** if file removal fails.
@@ -1575,7 +1583,9 @@ visual tests; existing audio/key cases continue to use real native consumers.
 Each case uses a fresh browser context and pinned viewport, scale, clock, locale,
 timezone, colors, fonts and CPU rasterization; native audio metadata is loaded
 before timeline capture. Animations are disabled and the caret hidden.
-Library captures wait for finite selection and hover transitions to finish before capture.
+Library screenshots seed the current track last so it is selected initially;
+track switching is tested separately. Captures wait for finite selection and
+hover transitions, without asserting a particular compositor cause.
 Page and fullscreen captures keep the configured viewport. Isolated component
 captures may temporarily expand viewport height, while preserving width, to
 keep sticky navigation and the action footer outside the captured element; the

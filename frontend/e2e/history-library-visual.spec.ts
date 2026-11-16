@@ -42,9 +42,11 @@ for (const viewport of [
     const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
     const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8')) as { pitch: unknown };
     const ids: number[] = [];
+    const trackIds = new Map<string, number>();
     const pitchJson = JSON.stringify(fixture.pitch);
     try {
-      for (const track of tracks) {
+      // The visual starts with the current track selected; switching is covered by history-library.spec.ts.
+      for (const track of [...tracks].reverse()) {
         let output: string;
         try {
           output = execFileSync('uv', ['run', 'python', '-c', insertLibraryTrack, identity.id, track.title, track.source, pitchJson], {
@@ -65,6 +67,7 @@ for (const viewport of [
         const id = Number(output);
         expect(Number.isSafeInteger(id) && id > 0).toBe(true);
         ids.push(id);
+        trackIds.set(track.title, id);
       }
 
       await page.goto('/');
@@ -77,10 +80,14 @@ for (const viewport of [
         const history = dialog.getByRole('region', { name: 'History', exact: true });
         await expect(history.getByRole('button', { name: currentTitle, exact: true })).toBeVisible();
         await expect(history.getByRole('button', { name: tracks[1].title, exact: true })).toBeVisible();
+        const selectedResponse = page.waitForResponse(response =>
+          response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${trackIds.get(currentTitle)}`);
         await history.getByRole('button', { name: currentTitle, exact: true }).click();
+        expect((await selectedResponse).ok()).toBe(true);
         await page.mouse.move(0, 0);
         await expect(dialog).toBeHidden();
         await expect(page.getByRole('heading', { name: currentTitle, exact: true })).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Karaoke with pitches' })).toBeInViewport();
         await trigger.click();
         await expect(dialog.getByRole('button', { name: currentTitle, exact: true })).toHaveAttribute('aria-current', 'true');
         await expect(dialog.getByRole('button', { name: tracks[1].title, exact: true })).not.toHaveAttribute('aria-current', 'true');
@@ -93,9 +100,13 @@ for (const viewport of [
         const history = rail.getByRole('region', { name: 'History', exact: true });
         await expect(history.getByRole('button', { name: currentTitle, exact: true })).toBeVisible();
         await expect(history.getByRole('button', { name: tracks[1].title, exact: true })).toBeVisible();
+        const selectedResponse = page.waitForResponse(response =>
+          response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${trackIds.get(currentTitle)}`);
         await history.getByRole('button', { name: currentTitle, exact: true }).click();
+        expect((await selectedResponse).ok()).toBe(true);
         await page.mouse.move(0, 0);
         await expect(page.getByRole('heading', { name: currentTitle, exact: true })).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Karaoke with pitches' })).toBeInViewport();
         await expect(history.getByRole('button', { name: currentTitle, exact: true })).toHaveAttribute('aria-current', 'true');
         await expect(history.getByRole('button', { name: tracks[1].title, exact: true })).not.toHaveAttribute('aria-current', 'true');
         await waitForFiniteAnimations(rail);

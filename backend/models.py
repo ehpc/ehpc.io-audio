@@ -193,6 +193,15 @@ class JobRecord:
     transcript: Transcript | None = None
     pitch_json: str | None = None
     active_stage_key: str | None = None
+    result_generation: str | None = None
+
+
+def result_directory(job: JobRecord) -> Path:
+    """Resolve the immutable result snapshot selected by this job record."""
+    directory = config.RESULTS_DIR / str(job.id)
+    if job.result_generation is not None:
+        return directory / "generations" / job.result_generation
+    return directory
 
 
 class JobDTO(BaseModel):
@@ -206,6 +215,7 @@ class JobDTO(BaseModel):
     title: str | None
     options: SeparationOptions
     manifest: list[ResultManifestEntry] | None
+    result_revision: str | None = None
     error_message: str | None
     created_at: int
     has_original: bool
@@ -233,7 +243,7 @@ def pitch_vocals_path(job: JobRecord) -> Path | None:
     """Resolve only persisted, output-clock full vocals for a completed timeline."""
     if job.status != JobStatus.DONE or job.pitch_json is None:
         return None
-    directory = config.RESULTS_DIR / str(job.id)
+    directory = result_directory(job)
     for entry in job.result_manifest or []:
         if entry.label == "vocals":
             path = directory / entry.filename
@@ -284,6 +294,7 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
             if job.result_manifest is not None
             else None
         ),
+        result_revision=job.result_generation,
         error_message=job.error_message,
         created_at=job.created_at,
         has_original=_has_original(job.id),

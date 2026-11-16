@@ -43,6 +43,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     },
     original_key: "C major",
     output_key: "C major",
+    result_revision: null,
     manifest: [],
     transcript: null,
     error_message: null,

@@ -35,15 +35,9 @@ class ClearRequest(BaseModel):
         return self
 
 
-class RegenerationSelection(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    song_id: str
-    job_id: int = Field(strict=True, gt=0)
-
-
 class RegenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    jobs: list[RegenerationSelection] = Field(min_length=1, max_length=50)
+    ids: list[str] = Field(min_length=1, max_length=50)
 
 
 class CacheConflict(Exception):
@@ -295,14 +289,19 @@ def _busy() -> bool:
     return False
 
 
-def _clear(body: ClearRequest) -> dict:
+def _clear(
+    body: ClearRequest,
+    *,
+    preserve_ids: set[str] | None = None,
+    clearing_operations: tuple[int, ...] = (),
+) -> dict:
     if (
         drain.state.draining
         or drain.state.active
         or any(not t.done() for t in drain.state.tracked)
     ):
         raise CacheConflict("Cache producers are active or server is draining")
-    busy, owners = db.cache_work_state()
+    busy, owners = db.cache_work_state(clearing_operations=clearing_operations)
     if busy:
         raise CacheConflict("Jobs or searches are queued or running")
     snapshot = cache_catalog.snapshot()
@@ -330,6 +329,7 @@ def _clear(body: ClearRequest) -> dict:
 
     removed: set[str] = set()
     reclaimed = 0
+    completed = False
     try:
         with contextlib.ExitStack() as stack:
             files = Files(stack)
@@ -362,6 +362,8 @@ def _clear(body: ClearRequest) -> dict:
                     if call_id is None:
                         raise CacheConflict("Inference ownership is uncertain")
                     retiring.append((job_id, key, call_id))
+            if preserve_ids:
+                cache_catalog.retain_songs(preserve_ids)
             db.retire_cache_stages(retiring, invalidate_search=bool(body.all))
             for key in sorted(keys):
                 if key in receipts:
@@ -373,11 +375,19 @@ def _clear(body: ClearRequest) -> dict:
                 removed.add(path)
                 file.unlink()
                 reclaimed += file.size
+        completed = True
     except (OSError, ValueError) as exc:
         raise CacheConflict("Cache or inference ledger changed or is unsafe") from exc
     finally:
-        if removed:
-            cache_catalog.forget_paths(removed)
+        if removed or completed:
+            cache_catalog.forget_paths(
+                removed,
+                preserve_ids=preserve_ids or set(),
+                discard_ids=set(body.ids or [])
+                if completed and not preserve_ids
+                else set(),
+                discard_all=bool(completed and body.all),
+            )
     return {"cleared": len(removed), "reclaimed_bytes": reclaimed}
 
 
@@ -425,14 +435,71 @@ async def list_regenerations(request: Request) -> list[db.RegenerationStatus]:
     return await asyncio.to_thread(db.regeneration_status)
 
 
+def _regenerate(ids: list[str]) -> regeneration.RegenerationResponse:
+    if _busy():
+        raise CacheConflict("Cache producers are active or require reconciliation")
+    if not cache_catalog.snapshot()["selective_ready"]:
+        raise CacheConflict("Historical cache attribution is incomplete")
+    operations = regeneration.prepare(ids)
+    try:
+        db.require_regeneration_sources(operations)
+        _clear(
+            ClearRequest(ids=ids),
+            preserve_ids=set(ids),
+            clearing_operations=tuple(operations),
+        )
+        db.activate_song_regenerations(operations)
+    except Exception as exc:
+        db.fail_song_clear(
+            operations, "Cache clearing failed; saved results are unchanged"
+        )
+        raise exc
+    selected = set(operations)
+    return {
+        "operations": [
+            status
+            for status in db.regeneration_status()
+            if status["operation_id"] in selected
+        ]
+    }
+
+
+def recover_song_clears() -> None:
+    """Resume a persisted pre-clear operation before queue workers start."""
+    db.fail_interrupted_source_preparations()
+    pending = db.pending_song_clears()
+    clearing = tuple(operation_id for operation_id, _ in pending)
+    cleared = []
+    for operation_id, song_id in pending:
+        try:
+            db.require_regeneration_sources([operation_id])
+            _clear(
+                ClearRequest(ids=[song_id]),
+                preserve_ids={song_id},
+                clearing_operations=clearing,
+            )
+            cleared.append(operation_id)
+        except Exception:
+            db.fail_song_clear(
+                [operation_id], "Cache clearing could not be resumed safely"
+            )
+    if cleared:
+        try:
+            db.activate_song_regenerations(cleared)
+        except Exception:
+            db.fail_song_clear(cleared, "Cache clearing could not be resumed safely")
+
+
 @router.post("/admin/cache/regenerate")
 async def regenerate(
     body: RegenerationRequest, request: Request
 ) -> regeneration.RegenerationResponse:
     admin(request)
     try:
-        return {"jobs": await _under_gate(regeneration.enqueue, body.jobs)}
+        return await _under_gate(_regenerate, body.ids)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from None
     except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except CacheConflict as exc:
         raise HTTPException(409, str(exc)) from None

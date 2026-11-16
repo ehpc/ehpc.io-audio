@@ -1,36 +1,22 @@
-"""Admin regeneration: prove source identity, then enqueue ordinary owned jobs."""
+"""Song-level regeneration and durable legacy source-snapshot retries."""
 
 import contextlib
 import hashlib
 import os
 import shutil
 import stat
-from collections.abc import Callable, Iterator, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Protocol, TypedDict
+from typing import BinaryIO, TypedDict
 
 from backend import cache_catalog, config, db, drain
 
 
-class SourceSelection(Protocol):
-    song_id: str
-    job_id: int
-
-
-@dataclass
-class RetrySelection:
-    song_id: str
-    job_id: int
-
-
-class Candidate(TypedDict):
-    job_id: int
-    options: dict[str, object]
-
-
 class CacheSong(cache_catalog.CacheSong):
-    candidates: list[Candidate]
+    regenerable: bool
+    matched_jobs: int
+    unavailable_reason: str | None
 
 
 class AdminCacheSnapshot(TypedDict):
@@ -39,10 +25,11 @@ class AdminCacheSnapshot(TypedDict):
     selective_ready: bool
     unsafe: bool
     busy: bool
+    unmatched_completed_jobs: int
 
 
 class RegenerationResponse(TypedDict):
-    jobs: list[db.RegenerationStatus]
+    operations: list[db.RegenerationStatus]
 
 
 @dataclass
@@ -51,9 +38,15 @@ class PreparedRegeneration:
     job: db.SourceJob
     filename: str
     digest: str
-    source: BinaryIO
-    metadata: BinaryIO | None
     metadata_digest: str | None
+
+
+@dataclass
+class PreparedSong:
+    song_id: str
+    title: str | None
+    digest: str
+    items: list[PreparedRegeneration]
 
 
 def _regular(directory: int, name: str) -> BinaryIO:
@@ -105,25 +98,40 @@ def _source(job: db.SourceJob) -> Iterator[tuple[str, BinaryIO, BinaryIO | None]
         yield filename, source, metadata
 
 
-def candidates(snapshot: cache_catalog.CacheSnapshot, busy: bool) -> AdminCacheSnapshot:
-    visible = {song["id"] for song in snapshot["songs"]}
-    digests = cache_catalog.song_digests(visible)
+def _discover(digests: dict[str, str]) -> tuple[dict[str, list[db.SourceJob]], int]:
     reverse = {digest: ident for ident, digest in digests.items()}
-    result: dict[str, list[Candidate]] = {ident: [] for ident in visible}
+    result: dict[str, list[db.SourceJob]] = {ident: [] for ident in digests}
+    unavailable = 0
     for job in db.completed_jobs():
         try:
             with _source(job) as (_, source, _):
                 ident = reverse.get(_digest(source))
-                options = job.options
+                _ = job.options
         except (OSError, ValueError):
+            unavailable += 1
             continue
         if ident is not None:
-            result[ident].append({"job_id": job.id, "options": asdict(options)})
+            result[ident].append(job)
+    return result, unavailable
+
+
+def candidates(snapshot: cache_catalog.CacheSnapshot, busy: bool) -> AdminCacheSnapshot:
+    visible = {song["id"] for song in snapshot["songs"]}
+    matches, unavailable = _discover(cache_catalog.song_digests(visible))
     return {
         **snapshot,
         "busy": busy,
+        "unmatched_completed_jobs": unavailable,
         "songs": [
-            {**song, "candidates": result[song["id"]]} for song in snapshot["songs"]
+            {
+                **song,
+                "regenerable": bool(matches[song["id"]]),
+                "matched_jobs": len(matches[song["id"]]),
+                "unavailable_reason": None
+                if matches[song["id"]]
+                else "No completed job with a verified original is available",
+            }
+            for song in snapshot["songs"]
         ],
     }
 
@@ -156,104 +164,106 @@ def _sync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def enqueue(selection: Sequence[SourceSelection]) -> list[db.RegenerationStatus]:
-    if drain.state.draining:
-        raise ValueError("Server is draining")
-    ids = [item.job_id for item in selection]
-    if len(set(ids)) != len(ids):
-        raise ValueError("Duplicate job selection")
-    snapshot = cache_catalog.snapshot()
-    visible = {song["id"] for song in snapshot["songs"]}
-    digests = cache_catalog.song_digests(visible)
-    return _enqueue(selection, digests)
-
-
-def retry(job_id: int, session_id: str) -> db.RegenerationStatus:
-    origin = db.regeneration_origin(job_id)
-    if origin is None:
-        raise ValueError("Regeneration snapshot unavailable")
-    song_id, digest = origin
-    return _enqueue([RetrySelection(song_id, job_id)], {song_id: digest}, session_id)[0]
-
-
-def _enqueue(
-    selection: Sequence[SourceSelection],
-    digests: dict[str, str],
-    retry_owner: str | None = None,
-) -> list[db.RegenerationStatus]:
-    if drain.state.draining:
-        raise ValueError("Server is draining")
+@contextlib.contextmanager
+def _installer() -> Iterator[Callable[[int, PreparedRegeneration], None]]:
     created: list[Path] = []
     sidecars: list[Path] = []
-    with contextlib.ExitStack() as stack:
-        items: list[PreparedRegeneration] = []
-        for item in selection:
-            if item.song_id not in digests:
-                raise LookupError("Unknown cached song")
-            job = db.source_job(item.job_id, completed=retry_owner is None)
-            if job is None or (
-                retry_owner is not None and job.session_id != retry_owner
-            ):
-                raise ValueError("Completed original job unavailable")
-            try:
-                _ = job.options  # Validate before any mutation.
-                filename, source, metadata = stack.enter_context(_source(job))
-                digest = _digest(source)
-                metadata_digest = _digest(metadata) if metadata is not None else None
-            except (OSError, ValueError) as exc:
-                raise ValueError("Original source unavailable") from exc
-            if digest != digests[item.song_id]:
-                raise ValueError("Job does not belong to selected song")
-            if retry_owner is not None and db.regeneration_snapshot(job.id) != (
-                filename,
-                digest,
-            ):
-                raise ValueError("Regeneration source snapshot changed")
-            items.append(
-                PreparedRegeneration(
-                    item.song_id,
-                    job,
-                    filename,
-                    digest,
-                    source,
-                    metadata,
-                    metadata_digest,
-                )
-            )
 
-        def install(job_id: int, item: PreparedRegeneration) -> None:
+    def install(job_id: int, item: PreparedRegeneration) -> None:
+        with _source(item.job) as (filename, source, metadata):
+            if filename != item.filename or (metadata is None) != (
+                item.metadata_digest is None
+            ):
+                raise ValueError("Original source changed during preparation")
             directory = config.UPLOADS_DIR / str(job_id)
             directory.mkdir(parents=True, exist_ok=False)
             created.append(directory)
-            _copy_verified(item.source, directory / item.filename, item.digest)
+            _copy_verified(source, directory / item.filename, item.digest)
             _sync_directory(directory)
             _sync_directory(config.UPLOADS_DIR)
             if item.job.source_type == "url":
                 root = config.DATA_DIR / "source-metadata"
                 root.mkdir(parents=True, exist_ok=True)
+                _sync_directory(config.DATA_DIR)
                 _sync_directory(root)
                 path = root / f"{job_id}.json"
-                if item.metadata is not None:
+                if metadata is not None:
                     assert item.metadata_digest is not None
                     _copy_verified(
-                        item.metadata, path, item.metadata_digest, sidecars.append
+                        metadata, path, item.metadata_digest, sidecars.append
                     )
                     _sync_directory(root)
                 elif path.exists() or path.is_symlink():
                     raise ValueError("Unexpected existing metadata")
 
-        try:
-            new_ids = (
-                db.enqueue_regenerations(items, install)
-                if retry_owner is None
-                else db.enqueue_regenerations(items, install, require_completed=False)
-            )
-        except BaseException:
-            for path in sidecars:
-                path.unlink(missing_ok=True)
-            for directory in created:
-                shutil.rmtree(directory)
-            raise
-    return [
-        record for record in db.regeneration_status() if record["job_id"] in new_ids
+    try:
+        yield install
+    except BaseException:
+        for path in sidecars:
+            path.unlink(missing_ok=True)
+        for directory in created:
+            shutil.rmtree(directory)
+        raise
+
+
+def _prepare_source(
+    song_id: str, job: db.SourceJob, expected: str
+) -> PreparedRegeneration:
+    try:
+        _ = job.options
+        with _source(job) as (filename, source, metadata):
+            digest = _digest(source)
+            metadata_digest = _digest(metadata) if metadata is not None else None
+    except (OSError, ValueError) as exc:
+        raise ValueError("Original source unavailable") from exc
+    if digest != expected:
+        raise ValueError("Job does not belong to selected song")
+    return PreparedRegeneration(song_id, job, filename, digest, metadata_digest)
+
+
+def prepare(ids: list[str]) -> list[int]:
+    if drain.state.draining:
+        raise ValueError("Server is draining")
+    if len(set(ids)) != len(ids):
+        raise ValueError("Duplicate song selection")
+    snapshot = cache_catalog.snapshot()
+    visible = {song["id"]: song for song in snapshot["songs"]}
+    if any(ident not in visible for ident in ids):
+        raise LookupError("Unknown cached song")
+    digests = cache_catalog.song_digests(set(ids))
+    matches, _unavailable = _discover(digests)
+    if any(not matches[ident] for ident in ids):
+        raise ValueError("No completed job with a verified original is available")
+    songs = [
+        PreparedSong(
+            ident,
+            visible[ident]["title"],
+            digests[ident],
+            [_prepare_source(ident, job, digests[ident]) for job in matches[ident]],
+        )
+        for ident in ids
     ]
+    with _installer() as install:
+        return db.prepare_song_regenerations(songs, install)
+
+
+class RetryStatus(TypedDict):
+    job_id: int
+    status: str
+    position: int
+
+
+def retry(job_id: int, session_id: str) -> RetryStatus:
+    if drain.state.draining:
+        raise ValueError("Server is draining")
+    origin = db.regeneration_origin(job_id)
+    job = db.source_job(job_id, completed=False)
+    if origin is None or job is None or job.session_id != session_id:
+        raise ValueError("Regeneration snapshot unavailable")
+    song_id, digest = origin
+    item = _prepare_source(song_id, job, digest)
+    if db.regeneration_snapshot(job.id) != (item.filename, item.digest):
+        raise ValueError("Regeneration source snapshot changed")
+    with _installer() as install:
+        new_id = db.enqueue_snapshot_retry([item], install)[0]
+    return {"job_id": new_id, "status": "queued", "position": db.queue_position(new_id)}

@@ -13,7 +13,7 @@ from separator.options import SeparationOptions
 from separator.song_search import SEARCH_TTL
 
 if TYPE_CHECKING:
-    from backend.regeneration import PreparedRegeneration
+    from backend.regeneration import PreparedRegeneration, PreparedSong
 
 _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
 # Renamed options in older stored jobs → current field names.
@@ -81,14 +81,30 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id, id DESC);
 {_SEARCH_SCHEMA}
-CREATE TABLE IF NOT EXISTS regenerations (
+CREATE TABLE IF NOT EXISTS job_source_snapshots (
     job_id INTEGER PRIMARY KEY,
     source_job_id INTEGER NOT NULL,
     song_id TEXT NOT NULL,
     filename TEXT NOT NULL,
-    source_sha256 TEXT NOT NULL
+    source_sha256 TEXT NOT NULL,
+    ready INTEGER NOT NULL DEFAULT 1
 );
-CREATE INDEX IF NOT EXISTS idx_regenerations_source ON regenerations(source_job_id);
+CREATE TABLE IF NOT EXISTS song_regeneration_operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id TEXT NOT NULL,
+    title TEXT,
+    digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS song_regeneration_items (
+    operation_id INTEGER NOT NULL REFERENCES song_regeneration_operations(id),
+    original_job_id INTEGER NOT NULL,
+    work_job_id INTEGER NOT NULL UNIQUE,
+    state TEXT NOT NULL DEFAULT 'pending',
+    PRIMARY KEY(operation_id, original_job_id)
+);
 """
 
 
@@ -104,6 +120,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN transcript_json TEXT")
     if "pitch_json" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN pitch_json TEXT")
+    if "result_generation" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN result_generation TEXT")
+    if "internal" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN internal INTEGER NOT NULL DEFAULT 0")
+    snapshot_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(job_source_snapshots)")
+    }
+    if "ready" not in snapshot_columns:
+        conn.execute(
+            "ALTER TABLE job_source_snapshots "
+            "ADD COLUMN ready INTEGER NOT NULL DEFAULT 1"
+        )
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='regenerations'"
+    ).fetchone():
+        conn.execute(
+            "INSERT OR IGNORE INTO job_source_snapshots "
+            "(job_id,source_job_id,song_id,filename,source_sha256) "
+            "SELECT job_id, source_job_id, song_id, filename, source_sha256 "
+            "FROM regenerations"
+        )
+        conn.execute("DROP TABLE regenerations")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_stage_key "
         "ON jobs(active_stage_key) WHERE active_stage_key IS NOT NULL"
@@ -210,6 +248,8 @@ def _check_queue_capacity(conn: sqlite3.Connection, session_id: str) -> None:
     counts = conn.execute(
         "SELECT COUNT(*) total, SUM(session_id = ?) own FROM ("
         "SELECT session_id FROM jobs WHERE status IN ('queued','running') "
+        "UNION ALL SELECT 'internal:song-regeneration' "
+        "FROM song_regeneration_operations WHERE status IN ('preparing','clearing') "
         "UNION ALL SELECT session_id FROM song_searches "
         "WHERE pending_query IS NOT NULL AND created_at > ?)",
         (session_id, int(time.time()) - SEARCH_TTL),
@@ -369,6 +409,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
             else None
         ),
         pitch_json=row["pitch_json"],
+        result_generation=row["result_generation"],
     )
 
 
@@ -416,11 +457,12 @@ class SourceJob(NamedTuple):
 
 
 class RegenerationStatus(TypedDict):
+    operation_id: int
     song_id: str
-    source_job_id: int
-    job_id: int
+    title: str | None
     status: str
-    position: int | None
+    completed_jobs: int
+    total_jobs: int
     error_message: str | None
 
 
@@ -433,7 +475,7 @@ def completed_jobs() -> list[SourceJob]:
             SourceJob(*row)
             for row in conn.execute(
                 f"SELECT {_SOURCE_COLUMNS} FROM jobs "
-                "WHERE status='done' ORDER BY id DESC"
+                "WHERE status='done' AND internal=0 ORDER BY id DESC"
             )
         ]
 
@@ -441,7 +483,7 @@ def completed_jobs() -> list[SourceJob]:
 def source_job(job_id: int, *, completed: bool = True) -> SourceJob | None:
     with _session() as conn:
         row = conn.execute(
-            f"SELECT {_SOURCE_COLUMNS} FROM jobs WHERE id=?"
+            f"SELECT {_SOURCE_COLUMNS} FROM jobs WHERE id=? AND internal=0"
             + (" AND status='done'" if completed else ""),
             (job_id,),
         ).fetchone()
@@ -451,7 +493,7 @@ def source_job(job_id: int, *, completed: bool = True) -> SourceJob | None:
 def regeneration_snapshot(job_id: int) -> tuple[str, str] | None:
     with _session() as conn:
         row = conn.execute(
-            "SELECT filename, source_sha256 FROM regenerations WHERE job_id=?",
+            "SELECT filename, source_sha256 FROM job_source_snapshots WHERE job_id=?",
             (job_id,),
         ).fetchone()
         return tuple(row) if row else None
@@ -460,7 +502,7 @@ def regeneration_snapshot(job_id: int) -> tuple[str, str] | None:
 def regeneration_origin(job_id: int) -> tuple[str, str] | None:
     with _session() as conn:
         row = conn.execute(
-            "SELECT song_id, source_sha256 FROM regenerations WHERE job_id=?",
+            "SELECT song_id, source_sha256 FROM job_source_snapshots WHERE job_id=?",
             (job_id,),
         ).fetchone()
         return (row["song_id"], row["source_sha256"]) if row else None
@@ -469,35 +511,35 @@ def regeneration_origin(job_id: int) -> tuple[str, str] | None:
 def regeneration_status() -> list[RegenerationStatus]:
     with _session() as conn:
         rows = conn.execute("""
-            SELECT r.song_id, r.source_job_id, j.id AS job_id, j.status,
-                CASE WHEN j.status='queued' THEN
-                    (SELECT COUNT(*) + 1 FROM jobs q
-                     WHERE q.status='queued' AND q.id < j.id)
-                ELSE NULL END AS position, j.error_message
-            FROM regenerations r JOIN jobs j ON j.id=r.job_id
-            WHERE j.status IN ('queued','running') OR j.id IN (
-                SELECT job_id FROM regenerations ORDER BY job_id DESC LIMIT 50
+            SELECT o.id AS operation_id, o.song_id, o.title,
+                   CASE WHEN o.status='preparing' THEN 'clearing' ELSE o.status END
+                       AS status, o.error_message,
+                   COUNT(i.work_job_id) AS total_jobs,
+                   SUM(CASE WHEN i.state='done' THEN 1 ELSE 0 END) AS completed_jobs
+            FROM song_regeneration_operations o
+            LEFT JOIN song_regeneration_items i ON i.operation_id=o.id
+            WHERE o.status IN ('preparing','queued','clearing','running') OR o.id IN (
+                SELECT id FROM song_regeneration_operations ORDER BY id DESC LIMIT 50
             )
-            ORDER BY j.id DESC
+            GROUP BY o.id ORDER BY o.id DESC
         """).fetchall()
         return [
             RegenerationStatus(
+                operation_id=row["operation_id"],
                 song_id=row["song_id"],
-                source_job_id=row["source_job_id"],
-                job_id=row["job_id"],
+                title=row["title"],
                 status=row["status"],
-                position=row["position"],
+                completed_jobs=row["completed_jobs"],
+                total_jobs=row["total_jobs"],
                 error_message=row["error_message"],
             )
             for row in rows
         ]
 
 
-def enqueue_regenerations(
+def enqueue_snapshot_retry(
     items: list["PreparedRegeneration"],
     install: Callable[[int, "PreparedRegeneration"], None],
-    *,
-    require_completed: bool = True,
 ) -> list[int]:
     """Validate the complete batch before installing files or publishing jobs."""
     with _session() as conn:
@@ -511,6 +553,10 @@ def enqueue_regenerations(
                 "WHERE pending_query IS NOT NULL AND created_at > ?",
                 (int(time.time()) - SEARCH_TTL,),
             ).fetchone()[0]
+            + conn.execute(
+                "SELECT COUNT(*) FROM song_regeneration_operations "
+                "WHERE status IN ('preparing','clearing')"
+            ).fetchone()[0]
         )
         global_limit = auth_store.setting(conn, "global_queue", 50)
         user_limit = auth_store.setting(conn, "user_queue", 5)
@@ -518,21 +564,11 @@ def enqueue_regenerations(
         for item in items:
             job = item.job
             row = conn.execute(
-                f"SELECT {_SOURCE_COLUMNS} FROM jobs WHERE id=?"
-                + (" AND status='done'" if require_completed else ""),
+                f"SELECT {_SOURCE_COLUMNS} FROM jobs WHERE id=? AND internal=0",
                 (job.id,),
             ).fetchone()
             if row is None or SourceJob(*row) != job:
                 raise ValueError("Original job changed")
-            if (
-                require_completed
-                and conn.execute(
-                    "SELECT 1 FROM regenerations r JOIN jobs j ON j.id=r.job_id "
-                    "WHERE r.source_job_id=? AND j.status IN ('queued','running')",
-                    (job.id,),
-                ).fetchone()
-            ):
-                raise ValueError("This job is already being regenerated")
             additions[job.session_id] = additions.get(job.session_id, 0) + 1
         if total + len(items) > global_limit:
             raise ValueError("Queue limit reached")
@@ -558,10 +594,9 @@ def enqueue_regenerations(
             job = item.job
             cursor = conn.execute(
                 "INSERT INTO jobs (session_id,status,source_type,source_value,"
-                "title,options_json,created_at) "
-                "VALUES (?,'queued',?,?,?,?,?)",
+                "title,options_json,created_at,internal) "
+                "VALUES ('internal:snapshot-retry','queued',?,?,?,?,?,1)",
                 (
-                    job.session_id,
                     job.source_type,
                     job.source_value,
                     job.title,
@@ -571,13 +606,320 @@ def enqueue_regenerations(
             )
             new_id = cursor.lastrowid
             assert new_id is not None
-            install(new_id, item)
             conn.execute(
-                "INSERT INTO regenerations VALUES (?,?,?,?,?)",
+                "INSERT INTO job_source_snapshots "
+                "(job_id,source_job_id,song_id,filename,source_sha256,ready) "
+                "VALUES (?,?,?,?,?,0)",
                 (new_id, job.id, item.song_id, item.filename, item.digest),
             )
             ids.append(new_id)
-        return ids
+    try:
+        for new_id, item in zip(ids, items, strict=True):
+            install(new_id, item)
+        with _session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for new_id, item in zip(ids, items, strict=True):
+                conn.execute(
+                    "UPDATE job_source_snapshots SET ready=1 WHERE job_id=?", (new_id,)
+                )
+                conn.execute(
+                    "UPDATE jobs SET internal=0,session_id=? WHERE id=?",
+                    (item.job.session_id, new_id),
+                )
+    except BaseException:
+        with _session() as conn:
+            conn.executemany(
+                "UPDATE jobs SET status='failed' WHERE id=? AND internal=1",
+                ((new_id,) for new_id in ids),
+            )
+        raise
+    return ids
+
+
+def prepare_song_regenerations(
+    songs: list["PreparedSong"],
+    install: Callable[[int, "PreparedRegeneration"], None],
+) -> list[int]:
+    """Persist private work and its source snapshots before any cache eviction."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        total = (
+            conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"
+            ).fetchone()[0]
+            + conn.execute(
+                "SELECT COUNT(*) FROM song_searches WHERE pending_query IS NOT NULL "
+                "AND created_at > ?",
+                (int(time.time()) - SEARCH_TTL,),
+            ).fetchone()[0]
+            + conn.execute(
+                "SELECT COUNT(*) FROM song_regeneration_operations "
+                "WHERE status IN ('preparing','clearing')"
+            ).fetchone()[0]
+        )
+        if total + len(songs) > auth_store.setting(conn, "global_queue", 50):
+            raise ValueError("Queue limit reached")
+        for song in songs:
+            if conn.execute(
+                "SELECT 1 FROM song_regeneration_operations WHERE song_id=? "
+                "AND status IN ('preparing','queued','clearing','running')",
+                (song.song_id,),
+            ).fetchone():
+                raise ValueError("Song is already being regenerated")
+            for item in song.items:
+                row = conn.execute(
+                    f"SELECT {_SOURCE_COLUMNS} FROM jobs "
+                    "WHERE id=? AND status='done' AND internal=0",
+                    (item.job.id,),
+                ).fetchone()
+                if row is None or SourceJob(*row) != item.job:
+                    raise ValueError("Original job changed")
+        operations = []
+        for song in songs:
+            cursor = conn.execute(
+                "INSERT INTO song_regeneration_operations "
+                "(song_id,title,digest,status,created_at) VALUES (?,?,?,'preparing',?)",
+                (song.song_id, song.title, song.digest, int(time.time())),
+            )
+            operation_id = cursor.lastrowid
+            assert operation_id is not None
+            operations.append(operation_id)
+            for item in song.items:
+                job = item.job
+                cursor = conn.execute(
+                    "INSERT INTO jobs (session_id,status,source_type,source_value,"
+                    "title,options_json,created_at,internal) VALUES "
+                    "('internal:song-regeneration','done',?,?,?,?,?,1)",
+                    (
+                        job.source_type,
+                        job.source_value,
+                        job.title,
+                        job.options_json,
+                        int(time.time()),
+                    ),
+                )
+                work_id = cursor.lastrowid
+                assert work_id is not None
+                conn.execute(
+                    "INSERT INTO job_source_snapshots "
+                    "(job_id,source_job_id,song_id,filename,source_sha256,ready) "
+                    "VALUES (?,?,?,?,?,0)",
+                    (work_id, job.id, song.song_id, item.filename, item.digest),
+                )
+                conn.execute(
+                    "INSERT INTO song_regeneration_items "
+                    "(operation_id,original_job_id,work_job_id) VALUES (?,?,?)",
+                    (operation_id, job.id, work_id),
+                )
+    try:
+        for operation_id, song in zip(operations, songs, strict=True):
+            with _session() as conn:
+                work_ids = [
+                    row["work_job_id"]
+                    for row in conn.execute(
+                        "SELECT work_job_id FROM song_regeneration_items "
+                        "WHERE operation_id=? ORDER BY work_job_id",
+                        (operation_id,),
+                    )
+                ]
+            for work_id, item in zip(work_ids, song.items, strict=True):
+                install(work_id, item)
+        with _session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for operation_id in operations:
+                conn.execute(
+                    "UPDATE job_source_snapshots SET ready=1 WHERE job_id IN "
+                    "(SELECT work_job_id FROM song_regeneration_items "
+                    "WHERE operation_id=?)",
+                    (operation_id,),
+                )
+                conn.execute(
+                    "UPDATE song_regeneration_operations SET status='clearing' "
+                    "WHERE id=? AND status='preparing'",
+                    (operation_id,),
+                )
+    except BaseException:
+        fail_song_clear(
+            operations, "Source preparation failed; saved results are unchanged"
+        )
+        raise
+    return operations
+
+
+def fail_interrupted_source_preparations() -> None:
+    """Never clear cache or run a job whose source copies were interrupted."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE song_regeneration_operations SET status='failed',error_message=? "
+            "WHERE status='preparing'",
+            ("Source preparation interrupted; saved results are unchanged",),
+        )
+        conn.execute(
+            "UPDATE jobs SET status='failed' WHERE internal=1 AND status='queued' "
+            "AND EXISTS (SELECT 1 FROM job_source_snapshots s "
+            "WHERE s.job_id=jobs.id AND s.ready=0)"
+        )
+
+
+def pending_song_clears() -> list[tuple[int, str]]:
+    with _session() as conn:
+        return [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT id,song_id FROM song_regeneration_operations "
+                "WHERE status='clearing'"
+            )
+        ]
+
+
+def _sources_ready(conn: sqlite3.Connection, operation_id: int) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN s.ready=1 THEN 0 ELSE 1 END) AS missing "
+        "FROM song_regeneration_items i LEFT JOIN job_source_snapshots s "
+        "ON s.job_id=i.work_job_id WHERE i.operation_id=?",
+        (operation_id,),
+    ).fetchone()
+    return row["total"] > 0 and row["missing"] == 0
+
+
+def require_regeneration_sources(operation_ids: list[int]) -> None:
+    with _session() as conn:
+        if any(
+            not _sources_ready(conn, operation_id) for operation_id in operation_ids
+        ):
+            raise ValueError("Regeneration sources are not ready")
+
+
+def activate_song_regenerations(operation_ids: list[int]) -> None:
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for operation_id in operation_ids:
+            if not _sources_ready(conn, operation_id):
+                raise ValueError("Regeneration sources are not ready")
+            changed = conn.execute(
+                "UPDATE song_regeneration_operations SET status='queued' "
+                "WHERE id=? AND status='clearing'",
+                (operation_id,),
+            ).rowcount
+            if changed != 1:
+                raise ValueError("Regeneration is not awaiting cache clear")
+            next_item = conn.execute(
+                "SELECT work_job_id FROM song_regeneration_items "
+                "WHERE operation_id=? AND state='pending' ORDER BY work_job_id LIMIT 1",
+                (operation_id,),
+            ).fetchone()
+            if next_item is not None:
+                conn.execute(
+                    "UPDATE jobs SET status='queued' WHERE id=?", (next_item[0],)
+                )
+                conn.execute(
+                    "UPDATE song_regeneration_items SET state='queued' "
+                    "WHERE work_job_id=?",
+                    (next_item[0],),
+                )
+
+
+def fail_song_clear(operation_ids: list[int], message: str) -> None:
+    with _session() as conn:
+        conn.executemany(
+            "UPDATE song_regeneration_operations SET status='failed',error_message=? "
+            "WHERE id=? AND status IN ('preparing','clearing')",
+            ((message, operation_id) for operation_id in operation_ids),
+        )
+
+
+def regeneration_work(job_id: int) -> tuple[int, int] | None:
+    with _session() as conn:
+        row = conn.execute(
+            "SELECT operation_id, original_job_id FROM song_regeneration_items "
+            "WHERE work_job_id=?",
+            (job_id,),
+        ).fetchone()
+        return (row["operation_id"], row["original_job_id"]) if row else None
+
+
+def _finish_regeneration_work(conn, job_id: int, message: str | None) -> None:
+    row = conn.execute(
+        "SELECT operation_id FROM song_regeneration_items "
+        "WHERE work_job_id=? AND state='running'",
+        (job_id,),
+    ).fetchone()
+    if row is None:
+        return
+    op = row["operation_id"]
+    conn.execute(
+        "UPDATE song_regeneration_items SET state=? WHERE work_job_id=?",
+        ("failed" if message else "done", job_id),
+    )
+    if message:
+        conn.execute(
+            "UPDATE song_regeneration_operations "
+            "SET error_message=COALESCE(error_message,?) WHERE id=?",
+            (message, op),
+        )
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM song_regeneration_items WHERE operation_id=? "
+        "AND state NOT IN ('done','failed')",
+        (op,),
+    ).fetchone()[0]
+    if not remaining:
+        conn.execute(
+            "UPDATE song_regeneration_operations SET status=CASE "
+            "WHEN error_message IS NULL THEN 'done' ELSE 'failed' END WHERE id=?",
+            (op,),
+        )
+    else:
+        next_item = conn.execute(
+            "SELECT work_job_id FROM song_regeneration_items "
+            "WHERE operation_id=? AND state='pending' ORDER BY work_job_id LIMIT 1",
+            (op,),
+        ).fetchone()
+        if next_item is not None:
+            conn.execute("UPDATE jobs SET status='queued' WHERE id=?", (next_item[0],))
+            conn.execute(
+                "UPDATE song_regeneration_items SET state='queued' WHERE work_job_id=?",
+                (next_item[0],),
+            )
+
+
+def publish_regeneration(
+    work_id: int,
+    original_id: int,
+    generation: str,
+    manifest: list[ResultManifestEntry],
+    transcript: Transcript | None,
+    pitch_json: str | None,
+    original_key: str | None,
+) -> None:
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        changed = conn.execute(
+            "UPDATE jobs SET result_generation=?,result_manifest_json=?,"
+            "transcript_json=?,pitch_json=?,original_key=? "
+            "WHERE id=? AND status='done' AND internal=0 AND EXISTS ("
+            "SELECT 1 FROM song_regeneration_items WHERE work_job_id=? "
+            "AND original_job_id=jobs.id AND state='running')",
+            (
+                generation,
+                json.dumps([entry.model_dump() for entry in manifest]),
+                json.dumps(asdict(transcript), ensure_ascii=False)
+                if transcript
+                else None,
+                pitch_json,
+                original_key,
+                original_id,
+                work_id,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise ValueError("Original job changed during regeneration")
+        conn.execute(
+            "UPDATE jobs SET status='done',finished_at=? WHERE id=? AND internal=1",
+            (int(time.time()), work_id),
+        )
+        _finish_regeneration_work(conn, work_id, None)
 
 
 def set_title(job_id: int, title: str) -> None:
@@ -602,7 +944,7 @@ def delete_completed_job(
     job_id: int,
     session_id: str,
     expected_stage: tuple[str | None, str | None],
-    remove_files: Callable[[], None],
+    remove_files: Callable[[list[StageOwner]], list[int]],
 ) -> bool:
     """Delete a finished owned job only if its dispatch ownership is unchanged."""
     with _session() as conn:
@@ -619,8 +961,33 @@ def delete_completed_job(
             or (row["active_stage_key"], row["modal_call_id"]) != expected_stage
         ):
             raise ValueError("Job is not ready for deletion")
-        remove_files()
-        conn.execute("DELETE FROM regenerations WHERE job_id = ?", (job_id,))
+        if conn.execute(
+            "SELECT 1 FROM song_regeneration_items i "
+            "JOIN song_regeneration_operations o ON o.id=i.operation_id "
+            "WHERE i.original_job_id=? "
+            "AND o.status IN ('preparing','queued','clearing','running')",
+            (job_id,),
+        ).fetchone():
+            raise ValueError("Job is being regenerated")
+        work = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT j.id,j.active_stage_key,j.modal_call_id "
+                "FROM song_regeneration_items i JOIN jobs j ON j.id=i.work_job_id "
+                "JOIN job_source_snapshots s ON s.job_id=j.id "
+                "AND s.source_job_id=i.original_job_id "
+                "WHERE i.original_job_id=? AND j.internal=1 "
+                "AND j.session_id='internal:song-regeneration' "
+                "AND j.status IN ('done','failed')",
+                (job_id,),
+            )
+        ]
+        removed_work = remove_files(work)
+        conn.executemany(
+            "DELETE FROM job_source_snapshots WHERE job_id=?",
+            ((work_id,) for work_id in removed_work),
+        )
+        conn.execute("DELETE FROM job_source_snapshots WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         return True
 
@@ -628,7 +995,8 @@ def delete_completed_job(
 def list_jobs_for_session(session_id: str, limit: int = 50) -> list[JobRecord]:
     with _session() as conn:
         rows = conn.execute(
-            "SELECT * FROM jobs WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM jobs WHERE session_id = ? AND internal=0 "
+            "ORDER BY id DESC LIMIT ?",
             (session_id, limit),
         ).fetchall()
         return [_row_to_job(row) for row in rows]
@@ -643,7 +1011,7 @@ def list_recent_jobs(limit: int = 50) -> list[JobRecord]:
     """All jobs across every session, newest first — for the ops status page."""
     with _session() as conn:
         rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT * FROM jobs WHERE internal=0 ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [_row_to_job(row) for row in rows]
 
@@ -651,7 +1019,8 @@ def list_recent_jobs(limit: int = 50) -> list[JobRecord]:
 def status_counts() -> dict[str, int]:
     with _session() as conn:
         rows = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM jobs GROUP BY status"
+            "SELECT status, COUNT(*) AS n FROM jobs "
+            "WHERE internal=0 OR status IN ('queued','running') GROUP BY status"
         ).fetchall()
         return {row["status"]: row["n"] for row in rows}
 
@@ -682,7 +1051,9 @@ def claim_oldest_queued() -> JobRecord | None:
     with _session() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
+            "SELECT id FROM jobs WHERE status = 'queued' AND NOT EXISTS "
+            "(SELECT 1 FROM job_source_snapshots s WHERE s.job_id=jobs.id "
+            "AND s.ready=0) ORDER BY id LIMIT 1"
         ).fetchone()
         if row is None:
             return None
@@ -690,6 +1061,16 @@ def claim_oldest_queued() -> JobRecord | None:
         conn.execute(
             "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
             (int(time.time()), job_id),
+        )
+        conn.execute(
+            "UPDATE song_regeneration_items SET state='running' WHERE work_job_id=?",
+            (job_id,),
+        )
+        conn.execute(
+            "UPDATE song_regeneration_operations SET status='running' "
+            "WHERE id=(SELECT operation_id FROM song_regeneration_items "
+            "WHERE work_job_id=?)",
+            (job_id,),
         )
         return _row_to_job(
             conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -749,7 +1130,9 @@ def release_inference_stage(job_id: int, stage_key: str) -> bool:
         )
 
 
-def cache_work_state() -> tuple[bool, list[StageOwner]]:
+def cache_work_state(
+    *, clearing_operations: tuple[int, ...] = ()
+) -> tuple[bool, list[StageOwner]]:
     """Return work and durable stage owners while cache admission is gated."""
     with _session() as conn:
         busy = conn.execute(
@@ -757,6 +1140,13 @@ def cache_work_state() -> tuple[bool, list[StageOwner]]:
             "OR EXISTS(SELECT 1 FROM song_searches "
             "WHERE pending_query IS NOT NULL OR claimed_at IS NOT NULL)"
         ).fetchone()[0]
+        busy = busy or any(
+            row["status"] == "preparing" or row["id"] not in clearing_operations
+            for row in conn.execute(
+                "SELECT id,status FROM song_regeneration_operations "
+                "WHERE status IN ('preparing','clearing')"
+            )
+        )
         owners = conn.execute(
             "SELECT id, active_stage_key, modal_call_id FROM jobs "
             "WHERE active_stage_key IS NOT NULL OR modal_call_id IS NOT NULL"
@@ -785,12 +1175,16 @@ def retire_cache_stages(
             conn.execute("UPDATE song_searches SET successful_at = NULL")
 
 
-def update_result_size(job_id: int, label: str, size_bytes: int) -> None:
+def update_result_size(
+    job_id: int, label: str, size_bytes: int, *, expected_generation: str | None = None
+) -> None:
     """Refresh one migrated result without losing concurrent manifest updates."""
     with _session() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT result_manifest_json FROM jobs WHERE id = ?", (job_id,)
+            "SELECT result_manifest_json FROM jobs "
+            "WHERE id = ? AND result_generation IS ?",
+            (job_id, expected_generation),
         ).fetchone()
         if row is None or row["result_manifest_json"] is None:
             return
@@ -834,6 +1228,7 @@ def mark_failed(job_id: int, error_message: str) -> None:
             "finished_at = ? WHERE id = ?",
             (error_message, int(time.time()), job_id),
         )
+        _finish_regeneration_work(conn, job_id, error_message)
 
 
 def requeue_job(job_id: int) -> None:
@@ -844,6 +1239,18 @@ def requeue_job(job_id: int) -> None:
             "WHERE id = ? AND status = 'running'",
             (job_id,),
         )
+        conn.execute(
+            "UPDATE song_regeneration_items SET state='queued' "
+            "WHERE work_job_id=? AND state='running'",
+            (job_id,),
+        )
+        conn.execute(
+            "UPDATE song_regeneration_operations SET status='queued' WHERE id=("
+            "SELECT operation_id FROM song_regeneration_items WHERE work_job_id=?) "
+            "AND NOT EXISTS (SELECT 1 FROM song_regeneration_items "
+            "WHERE operation_id=song_regeneration_operations.id AND state='running')",
+            (job_id,),
+        )
 
 
 def reap_running_to_queued() -> None:
@@ -851,4 +1258,11 @@ def reap_running_to_queued() -> None:
         conn.execute(
             "UPDATE jobs SET status = 'queued', started_at = NULL "
             "WHERE status = 'running'"
+        )
+        conn.execute(
+            "UPDATE song_regeneration_items SET state='queued' WHERE state='running'"
+        )
+        conn.execute(
+            "UPDATE song_regeneration_operations SET status='queued' "
+            "WHERE status='running'"
         )

@@ -1,7 +1,7 @@
 import { createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
 import * as Dialog from "@kobalte/core/dialog";
 import type { JobDTO } from "./api";
-import { getCurrentJob, listJobs } from "./api";
+import { getCurrentJob, getJob, listJobs } from "./api";
 import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
 import ResultsView, { type HistoryScrollRequest } from "./components/ResultsView";
@@ -17,6 +17,9 @@ const App: Component = () => {
   const [historyScrollRequest, setHistoryScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
   let historyScrollToken = 0;
   const deletedJobIds = new Set<number>();
+  let currentJobRevision = 0;
+  let historyRequestRevision = 0;
+  const [selectedJobRefreshError, setSelectedJobRefreshError] = createSignal<string | null>(null);
   const auth = useAuth();
   const [tab, setTab] = createSignal<"workspace" | "profile" | "people">("workspace");
   const [accountError, setAccountError] = createSignal("");
@@ -47,24 +50,51 @@ const App: Component = () => {
   });
 
   const refreshHistory = async () => {
+    const requestRevision = ++historyRequestRevision;
     try {
       const jobs = await listJobs();
+      if (requestRevision !== historyRequestRevision) return;
       setHistory(jobs.filter((item) => !deletedJobIds.has(item.id)));
     } catch {
       // leave the previous list in place if this refresh fails
     }
   };
 
-  onMount(async () => {
+  const refreshSelectedJob = async (id: number, scrollToken?: number) => {
+    const requestRevision = ++currentJobRevision;
+    setSelectedJobRefreshError(null);
     try {
-      setJob(await getCurrentJob());
-    } catch {
-      setJob(null);
+      const latest = await getJob(id);
+      if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
+      setJob(latest);
+      historyRequestRevision++;
+      setHistory(items => items.some(item => item.id === id)
+        ? items.map(item => item.id === id ? latest : item)
+        : [latest, ...items]);
+    } catch (error) {
+      if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
+      const detail = error instanceof Error ? ` ${error.message}` : "";
+      setSelectedJobRefreshError(`Could not refresh this result.${detail} The displayed version may be stale.`);
     }
-    refreshHistory();
+    if (scrollToken !== undefined && requestRevision === currentJobRevision && job()?.id === id) {
+      setHistoryScrollRequest({ jobId: id, token: scrollToken });
+    }
+  };
+
+  onMount(async () => {
+    const requestRevision = ++currentJobRevision;
+    try {
+      const current = await getCurrentJob();
+      if (requestRevision === currentJobRevision) setJob(current);
+    } catch {
+      if (requestRevision === currentJobRevision) setJob(null);
+    }
+    void refreshHistory();
   });
 
   const onSubmitted = (newJob: JobDTO) => {
+    currentJobRevision++;
+    setSelectedJobRefreshError(null);
     setLibraryOpen(false);
     setHistoryScrollRequest(null);
     setJob(newJob);
@@ -72,19 +102,25 @@ const App: Component = () => {
   };
 
   const onHistorySelect = (selected: JobDTO) => {
-    setJob(selected);
+    setHistoryScrollRequest(null);
+    setSelectedJobRefreshError(null);
+    if (job()?.id !== selected.id) setJob(selected);
     if (libraryOpen()) {
       selectedFromLibrary = true;
       setLibraryOpen(false);
     }
-    setHistoryScrollRequest({ jobId: selected.id, token: ++historyScrollToken });
+    void refreshSelectedJob(selected.id, ++historyScrollToken);
   };
   const onReset = () => {
+    currentJobRevision++;
+    setSelectedJobRefreshError(null);
     setHistoryScrollRequest(null);
     setJob(null);
   };
 
   const onTerminal = (finished: JobDTO) => {
+    currentJobRevision++;
+    setSelectedJobRefreshError(null);
     setHistoryScrollRequest(null);
     setJob(finished);
     refreshHistory();
@@ -95,11 +131,23 @@ const App: Component = () => {
 
   const onDeleted = (id: number) => {
     deletedJobIds.add(id);
+    historyRequestRevision++;
     setHistory((items) => items.filter((item) => item.id !== id));
     if (job()?.id === id) {
+      currentJobRevision++;
+      setSelectedJobRefreshError(null);
       setHistoryScrollRequest(null);
       setJob(null);
     }
+  };
+  const refreshWorkspace = async () => {
+    await refreshHistory();
+    const current = job();
+    if (current?.status === "done" && job()?.id === current.id) await refreshSelectedJob(current.id);
+  };
+  const selectTab = (next: "workspace" | "profile" | "people") => {
+    setTab(next);
+    if (next === "workspace") void refreshWorkspace();
   };
   const LibraryHistory = () => <HistoryView jobs={history()} selectedId={job()?.id} onSelect={onHistorySelect} onRetried={onSubmitted} onDeleted={onDeleted} />;
 
@@ -111,9 +159,9 @@ const App: Component = () => {
       </header>
       <nav class="account-nav" aria-label="Account navigation">
         <div class="account-tabs">
-          <Button variant={tab() === "workspace" ? "secondary" : "ghost"} aria-pressed={tab() === "workspace"} onClick={() => setTab("workspace")}>Workspace</Button>
-          <Button variant={tab() === "profile" ? "secondary" : "ghost"} aria-pressed={tab() === "profile"} onClick={() => setTab("profile")}>Profile</Button>
-          <Show when={auth.profile().is_admin}><Button variant={tab() === "people" ? "secondary" : "ghost"} aria-pressed={tab() === "people"} onClick={() => setTab("people")}>People</Button></Show>
+          <Button variant={tab() === "workspace" ? "secondary" : "ghost"} aria-pressed={tab() === "workspace"} onClick={() => selectTab("workspace")}>Workspace</Button>
+          <Button variant={tab() === "profile" ? "secondary" : "ghost"} aria-pressed={tab() === "profile"} onClick={() => selectTab("profile")}>Profile</Button>
+          <Show when={auth.profile().is_admin}><Button variant={tab() === "people" ? "secondary" : "ghost"} aria-pressed={tab() === "people"} onClick={() => selectTab("people")}>People</Button></Show>
         </div>
         <div class="account-actions"><span>{auth.profile().email}</span><Button variant="outline" onClick={() => { setAccountError(""); void auth.logout().catch((error) => setAccountError(error instanceof Error ? error.message : "Could not sign out.")); }}>Sign out</Button></div>
       </nav>
@@ -145,6 +193,7 @@ const App: Component = () => {
               </Dialog.Portal>
             </Dialog.Root>
           </Show>
+          <Show when={selectedJobRefreshError()}><p role="alert" class="auth-error">{selectedJobRefreshError()}</p></Show>
       <SubmitForm onSubmitted={onSubmitted} />
 
       <Show when={isActive() || isDone()}>

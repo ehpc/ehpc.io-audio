@@ -105,7 +105,7 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
         </details>
       </Show>
       <Show when={transcript()?.reference}>
-        <a href={lyricsJsonDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download lyrics JSON + original ASR</a>
+        <a href={lyricsJsonDownloadUrl(props.job.id, props.job.result_revision)} download="" class="text-sm font-medium text-primary hover:underline">Download lyrics JSON + original ASR</a>
       </Show>
     </>
   );
@@ -118,7 +118,7 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h3 class="text-base font-semibold">Lyrics</h3>
         <a
-          href={lyricsDownloadUrl(props.job.id)}
+          href={lyricsDownloadUrl(props.job.id, props.job.result_revision)}
           download=""
           class="text-sm font-medium text-primary underline-offset-4 hover:underline"
         >

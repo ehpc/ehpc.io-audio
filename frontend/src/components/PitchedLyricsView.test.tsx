@@ -15,7 +15,7 @@ beforeEach(() => {
 
 const job: JobDTO = {
   id: 9, status: "done", position: null, source_type: "upload", source_value: "song.ogg", title: "song.ogg",
-  original_key: null, output_key: null, manifest: [], error_message: null, created_at: 1, has_original: true,
+  original_key: null, output_key: null, result_revision: "build-3", manifest: [], error_message: null, created_at: 1, has_original: true,
   has_pitch_vocals: false,
   options: { extract_vocals: false, extract_instruments: false, extract_lyrics: false, detect_pitch: false,
     extract_pitched_lyrics: true, mixes: [], decrowd: false, decrowd_vocals: false,
@@ -39,13 +39,13 @@ it("uses canonical server text verbatim and switches both protected stem formats
   expect(text).toHaveAttribute("tabindex", "0");
   expect(document.querySelector("img")).toBeNull();
   const link = screen.getByRole("link", { name: "Download lyrics with pitches TXT" });
-  expect(link).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/lead/download");
+  expect(link).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/lead/download?revision=build-3");
   const odt = screen.getByRole("link", { name: "Download lyrics with pitches ODT" });
-  expect(odt).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/lead/download?format=odt");
+  expect(odt).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/lead/download?format=odt&revision=build-3");
   fireEvent.change(screen.getByRole("combobox", { name: "Pitched lyrics vocal stem" }), { target: { value: "backing" } });
   expect(text.textContent).toBe(job.pitched_lyrics![1].text);
-  expect(link).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/backing/download");
-  expect(odt).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/backing/download?format=odt");
+  expect(link).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/backing/download?revision=build-3");
+  expect(odt).toHaveAttribute("href", "/api/jobs/9/pitched-lyrics/backing/download?format=odt&revision=build-3");
 });
 
 it("reserves server-defined wide glyph columns without splitting ordinary text into characters", () => {

@@ -33,7 +33,8 @@ def _fresh_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
         "DELETE FROM auth_sends; DELETE FROM auth_challenges; "
         "DELETE FROM auth_sessions; DELETE FROM auth_invites; "
         "DELETE FROM auth_users; DELETE FROM auth_settings; "
-        "DELETE FROM song_searches; DELETE FROM regenerations; "
+        "DELETE FROM song_searches; DELETE FROM song_regeneration_items; "
+        "DELETE FROM song_regeneration_operations; DELETE FROM job_source_snapshots; "
         "DELETE FROM jobs; DELETE FROM sqlite_sequence WHERE name = 'jobs';"
     )
     conn.commit()
@@ -42,6 +43,7 @@ def _fresh_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
     shutil.rmtree(config.RESULTS_DIR, ignore_errors=True)
     shutil.rmtree(config.DATA_DIR / "artifacts", ignore_errors=True)
     shutil.rmtree(config.DATA_DIR / "source-metadata", ignore_errors=True)
+    (config.DATA_DIR / "cache-catalog.sqlite").unlink(missing_ok=True)
     monkeypatch.setattr(
         mailer, "send_code", lambda email, code: _codes.__setitem__(email, code)
     )

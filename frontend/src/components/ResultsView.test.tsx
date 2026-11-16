@@ -1,4 +1,5 @@
 import { render, screen } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { JobDTO } from "~/api";
 import ResultsView from "./ResultsView";
@@ -33,6 +34,7 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
     },
     original_key: "C major",
     output_key: "D major",
+    result_revision: null,
     manifest: [{
       label: "song",
       display_name: "song",
@@ -61,7 +63,8 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
     has_original: true,
     has_pitch_vocals: false,
   };
-  render(() => <ResultsView job={job} onReset={vi.fn()} />);
+  const [currentJob, setCurrentJob] = createSignal(job);
+  render(() => <ResultsView job={currentJob()} onReset={vi.fn()} />);
 
   expect(screen.getByText("C major")).toBeInTheDocument();
   expect(screen.getByText("D major")).toBeInTheDocument();
@@ -69,5 +72,14 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
   expect(screen.queryByText("Source key: D major")).toBeNull();
   expect(screen.getByText("[00:00] <img src=x onerror=alert(1)>")).toBeInTheDocument();
   expect(document.querySelector("img")).toBeNull();
+
+  const outputPlayer = document.querySelector<HTMLAudioElement>('audio[src*="/results/song"]')!;
+  const originalPlayer = document.querySelector<HTMLAudioElement>('audio[src*="/original"]')!;
+  expect(outputPlayer.getAttribute("src")).toBe("/api/jobs/1/results/song?playback=1");
+  setCurrentJob({ ...currentJob(), result_revision: "publish-2" });
+  expect(outputPlayer.getAttribute("src")).toBe("/api/jobs/1/results/song?revision=publish-2&playback=1");
+  expect(screen.getByRole("link", { name: "Download song - song - source-key-C-major - pitch+2st - tempo120pct.mp3" }))
+    .toHaveAttribute("href", "/api/jobs/1/results/song?revision=publish-2");
+  expect(originalPlayer.getAttribute("src")).toBe("/api/jobs/1/original?playback=1");
 });
 

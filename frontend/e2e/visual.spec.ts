@@ -3,9 +3,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { test } from './auth-fixture';
-import type { PitchAnalysisDTO } from '../src/api';
+import type { AdminCache, PitchAnalysisDTO } from '../src/api';
 import { songArtwork, songVersions } from './song-fixtures';
-import { cleanupRegenerationFixtures, seedCachedSongs, seedRegenerationCandidates } from './cache-fixture';
+import { cleanupSongRegenerationFixture, seedCachedSongs, seedSongRegenerationFixture, type SongRegenerationFixture } from './cache-fixture';
 
 const mobile = { width: 390, height: 844 };
 const desktop = { width: 1440, height: 1000 };
@@ -72,6 +72,17 @@ with db._session() as c:
     c.execute("INSERT OR REPLACE INTO song_searches (id,session_id,created_at,result_json,activity_query) VALUES (?,?,?,?,?)", ("visual-search",member,t,"[]","Fixture song query"))
     c.execute("INSERT OR REPLACE INTO song_searches (id,session_id,created_at,result_json,activity_query) VALUES (?,?,?,?,?)", ("visual-search-unknown",member,t-30,"[]",None))
 `;
+const cleanupAccountActivity = String.raw`
+import sys
+from backend import config, db
+assert config.QUEUE_CONCURRENCY == 0
+member = sys.argv[1]
+with db._session() as c:
+    c.execute("DELETE FROM jobs WHERE id=-1 AND session_id=? AND title='Queued fixture track'", (member,))
+    c.execute("DELETE FROM jobs WHERE id=-2 AND session_id=? AND title='Completed fixture track'", (member,))
+    c.execute("DELETE FROM song_searches WHERE id IN ('visual-search','visual-search-unknown') AND session_id=?", (member,))
+    c.execute("DELETE FROM auth_invites WHERE id IN ('visual-pending','visual-activated') AND owner_id=?", (member,))
+`;
 
 
 for (const viewport of [desktop, mobile]) {
@@ -127,19 +138,25 @@ for (const viewport of [desktop, mobile]) {
     execFileSync('uv', ['run', 'python', '-c', seedAccountActivity, admin.id, member.id], {
       cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
     });
-    const memberCard = page.locator('div').filter({ has: page.getByRole('heading', { name: member.email, exact: true }) }).filter({ has: page.getByRole('button', { name: 'View activity' }) }).last();
-    await memberCard.getByRole('button', { name: 'View activity' }).click();
-    const activity = memberCard.getByRole('region', { name: 'Activity' });
-    await expect(activity.getByText(/Registered:/)).toBeVisible();
-    await expect(activity.getByText(/Last login:/)).toBeVisible();
-    await expect(activity.getByText(/Completed fixture track.*done/)).toBeVisible();
-    await expect(activity.getByText(/Queued fixture track.*queued/)).toBeVisible();
-    await expect(activity.getByText(/Fixture song query.*completed/)).toBeVisible();
-    await expect(activity.getByText(/Query unavailable/)).toBeVisible();
-    await expect(activity.getByText(/e2e-admin@example.test.*activated/)).toBeVisible();
-    await expect(activity.getByRole('button', { name: 'Withdraw unused invitation' })).toBeVisible();
-    await compare(activity, info, `people-activity-${viewport.width}.png`);
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    try {
+      const memberCard = page.locator('div').filter({ has: page.getByRole('heading', { name: member.email, exact: true }) }).filter({ has: page.getByRole('button', { name: 'View activity' }) }).last();
+      await memberCard.getByRole('button', { name: 'View activity' }).click();
+      const activity = memberCard.getByRole('region', { name: 'Activity' });
+      await expect(activity.getByText(/Registered:/)).toBeVisible();
+      await expect(activity.getByText(/Last login:/)).toBeVisible();
+      await expect(activity.getByText(/Completed fixture track.*done/)).toBeVisible();
+      await expect(activity.getByText(/Queued fixture track.*queued/)).toBeVisible();
+      await expect(activity.getByText(/Fixture song query.*completed/)).toBeVisible();
+      await expect(activity.getByText(/Query unavailable/)).toBeVisible();
+      await expect(activity.getByText(/e2e-admin@example.test.*activated/)).toBeVisible();
+      await expect(activity.getByRole('button', { name: 'Withdraw unused invitation' })).toBeVisible();
+      await compare(activity, info, `people-activity-${viewport.width}.png`);
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    } finally {
+      execFileSync('uv', ['run', 'python', '-c', cleanupAccountActivity, member.id], {
+        cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+    }
   });
 }
 
@@ -469,7 +486,7 @@ for (const viewport of [mobile, desktop]) {
 // real upload/API/storage/native transform/rendering path without another GPU.
 const publishTimeline = String.raw`
 import json,sys
-from backend import config,db
+from backend import cache_catalog,config,db
 from backend.queue import _persist_results
 from separator.lyrics import transcript_from_json
 from separator.pitch import pitch_from_json,pitch_to_json
@@ -480,7 +497,9 @@ assert job is not None
 source=(config.UPLOADS_DIR / str(job.id) / job.source_value).read_bytes()
 assert config.QUEUE_CONCURRENCY == 0
 # Geometry fixtures reuse the original recording for each player, not inference.
-manifest=_persist_results(job,{label:StemResult(source,0) for label in value.get('playback_labels',['song'])})
+with cache_catalog.capture() as recorder:
+ recorder.bind(source,job.title)
+ manifest=_persist_results(job,{label:StemResult(source,0) for label in value.get('playback_labels',['song'])})
 db.mark_done(job.id,manifest,transcript_from_json(json.dumps(value['transcript'])),
     pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 `;
@@ -851,31 +870,50 @@ for (const viewport of [mobile, desktop]) {
     });
   });
 }
-for (const viewport of [mobile, desktop]) {
-  test(`admin regeneration choices ${viewport.width}`, async ({ page }, info) => {
-    cleanupRegenerationFixtures();
+// Fixture teardown gets its own timeout even if a visual action times out.
+const regenerationVisual = test.extend<{ regenerationFixture: SongRegenerationFixture }>({
+  regenerationFixture: async ({}, use) => {
+    const fixture = seedSongRegenerationFixture();
     try {
-      seedCachedSongs();
-      seedRegenerationCandidates([800001, 800002]);
-      await page.setViewportSize(viewport);
-      await page.goto('/');
-      await page.getByRole('button', { name: 'People', exact: true }).click();
-      await page.getByRole('button', { name: 'Manage cached songs' }).click();
-      const cache = page.getByRole('region', { name: 'Cached songs' });
-      await expect(cache.getByText('Silver harbor')).toBeVisible();
-      await cache.getByRole('button', { name: 'Regenerate Silver harbor' }).click();
-      const dialog = page.getByRole('alertdialog');
-      await expect(dialog.getByRole('checkbox')).toHaveCount(2);
-      await expect(dialog).toContainText('Karaoke with pitches');
-      await expect(dialog).toContainText('pitch +2 st · tempo 90%');
-      await expect(dialog).toContainText('original owners’ Library');
-      await expect(dialog.getByRole('button', { name: 'Queue regeneration' })).toBeDisabled();
-      await expect(dialog.getByRole('checkbox').nth(0)).not.toBeChecked();
-      await expect(dialog.getByRole('checkbox').nth(1)).not.toBeChecked();
-      await compare(dialog, info, `admin-cache-regeneration-${viewport.width}.png`);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await use(fixture);
     } finally {
-      cleanupRegenerationFixtures();
+      cleanupSongRegenerationFixture(fixture);
     }
+  },
+});
+for (const viewport of [mobile, desktop]) {
+  regenerationVisual(`admin song regeneration confirmation ${viewport.width}`, async ({ page, regenerationFixture: fixture }, info) => {
+    await page.setViewportSize(viewport);
+    // Isolate the visual list, but preserve every real admission/safety field.
+    // The full seeded HTTP tests exercise the unfiltered endpoint separately.
+    await page.route('**/api/admin/cache', async route => {
+      const response = await route.fetch();
+      const snapshot = await response.json() as AdminCache;
+      await route.fulfill({
+        response,
+        json: { ...snapshot, songs: snapshot.songs.filter(song => song.id === fixture.songId) },
+      });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'People', exact: true }).click();
+    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    const cache = page.getByRole('region', { name: 'Cached songs' });
+    await expect(cache.getByText(fixture.title)).toBeVisible();
+    await expect(cache.getByText('2 saved job variants will be regenerated.')).toBeVisible();
+    await cache.getByRole('button', { name: `Regenerate ${fixture.title}` }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('all owners and settings');
+    await expect(dialog).toContainText('same Library entry is updated without duplicates');
+    await expect(dialog).toContainText('Existing results remain available until their replacement is published');
+    await expect(dialog.getByRole('button', { name: 'Clear cache and regenerate' })).toBeEnabled();
+    await compare(dialog, info, `admin-cache-regeneration-${viewport.width}.png`);
+    const accepted = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/admin/cache/regenerate');
+    await dialog.getByRole('button', { name: 'Clear cache and regenerate' }).click();
+    expect((await accepted).status()).toBe(200);
+    const activity = page.getByRole('region', { name: 'Regeneration status' });
+    await expect(activity.getByText('Queued')).toBeVisible();
+    await compare(activity, info, `admin-cache-regeneration-progress-${viewport.width}.png`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }

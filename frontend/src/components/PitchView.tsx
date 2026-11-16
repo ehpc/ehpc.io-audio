@@ -290,9 +290,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const sourceClock = (label = reference()) => label === "song" && !hasOutput("song");
   const referenceUrl = (label = reference()) => {
     const url = label === "song"
-      ? hasOutput("song") ? resultUrl(props.job.id, "song") : props.job.has_original ? originalUrl(props.job.id) : undefined
-      : label === "vocals" ? pitchVocalsUrl(props.job.id)
-        : resultUrl(props.job.id, label);
+      ? hasOutput("song") ? resultUrl(props.job.id, "song", props.job.result_revision) : props.job.has_original ? originalUrl(props.job.id) : undefined
+      : label === "vocals" ? pitchVocalsUrl(props.job.id, props.job.result_revision)
+        : resultUrl(props.job.id, label, props.job.result_revision);
     return url ? playbackUrl(url) : undefined;
   };
   const referenceLabel = () => reference() === "song"
@@ -567,7 +567,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     <section class="pitch-view" aria-label="Karaoke with pitches" inert={karaokeFullscreen()}>
       <div class="pitch-heading">
         <h3 class="text-base font-semibold">Karaoke with pitches</h3>
-        <a href={pitchDownloadUrl(props.job.id)} download="" class="text-sm font-medium text-primary hover:underline">Download pitch JSON</a>
+        <a href={pitchDownloadUrl(props.job.id, props.job.result_revision)} download="" class="text-sm font-medium text-primary hover:underline">Download pitch JSON</a>
       </div>
       <p class="text-sm text-muted-foreground">Time → · musical pitch ↑ · output audio clock and pitch. Notes are detected on original vocal stems, then projected by {analysis().pitch_shift_semitones >= 0 ? "+" : ""}{analysis().pitch_shift_semitones} semitones and {analysis().tempo_percent}% tempo; not re-measured after processing.</p>
       <p class="text-xs text-muted-foreground">CREPE full · monophonic melody estimate, not a score. Harmonies, bleed and octave errors can be wrong; silence and low-confidence frames are omitted.</p>
@@ -786,7 +786,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
 // History/current-job navigation reuses the parent view. Keep every playback,
 // recovery and inspection state local to one job, not one component lifetime.
 const PitchView: Component<{ job: JobDTO }> = (props) => (
-  <Show when={props.job.id} keyed>{(_id) => <PitchTimeline job={props.job} />}</Show>
+  <For each={[`${props.job.id}:${props.job.result_revision ?? "legacy"}`]}>
+    {() => <PitchTimeline job={props.job} />}
+  </For>
 );
 
 export default PitchView;

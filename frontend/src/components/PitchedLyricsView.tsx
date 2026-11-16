@@ -33,9 +33,9 @@ const PitchedLyricsView: Component<{ job: JobDTO }> = (props) => {
             <For each={props.job.pitched_lyrics}>{item => <option value={item.label}>{displayOutputLabel(item.label, props.job.options)}</option>}</For>
           </select>
         </label>
-        <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "")} download=""
+        <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "", "txt", props.job.result_revision)} download=""
           class="text-sm font-medium text-primary hover:underline">Download lyrics with pitches TXT</a>
-        <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "", "odt")} download=""
+        <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "", "odt", props.job.result_revision)} download=""
           class="text-sm font-medium text-primary hover:underline">Download lyrics with pitches ODT</a>
       </div>
       <p class="text-sm text-muted-foreground">Output clock · pitch {props.job.options.pitch_semitones >= 0 ? "+" : ""}{props.job.options.pitch_semitones} semitones · tempo {props.job.options.tempo_percent}%. Source detections projected, not re-measured.</p>

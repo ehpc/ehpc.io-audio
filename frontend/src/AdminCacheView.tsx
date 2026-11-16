@@ -6,41 +6,21 @@ import {
   clearAdminCache,
   regenerateAdminCache,
   type AdminCache,
-  type AdminCacheRegeneration,
-  type AdminCacheRegenerationChoice,
   type AdminCacheSong,
-  type SeparationOptions,
+  type SongRegeneration,
 } from "./api";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
 
 type Target = { ids: string[]; label: string } | { all: true; label: string };
 type RegenerationTarget = { songs: AdminCacheSong[] };
-const REGEN_UNAVAILABLE = "No completed job with a verified saved original is available.";
 const REGEN_POLL_INTERVAL_MS = 3_000;
 
-const candidateSummary = (options: SeparationOptions) => {
-  const enabled = [
-    options.extract_vocals && "Vocals",
-    options.extract_instruments && "Instruments",
-    options.extract_lyrics && "Lyrics",
-    options.detect_pitch && "Karaoke with pitches",
-    options.extract_pitched_lyrics && "Pitched lyrics",
-    options.decrowd && "Decrowd",
-    options.decrowd_vocals && "Decrowd vocals",
-    options.dereverb && "Dereverb",
-    options.genders && "Gender splits",
-    options.lead_backing && "Lead/backing",
-    options.drums && "Drums",
-    ...options.mixes.map(mix => `Mix: ${mix.name}`),
-  ].filter((label): label is string => Boolean(label));
-  const outputs = enabled.length ? enabled.join(", ") : "Original only";
-  const pitch = `${options.pitch_semitones > 0 ? "+" : ""}${options.pitch_semitones} st`;
-  return `${outputs} · pitch ${pitch} · tempo ${options.tempo_percent}%`;
-};
-const statusLabel = (job: AdminCacheRegeneration) => {
-  if (job.status === "queued") return `Queued${job.position === null ? "" : ` · position ${job.position}`}`;
-  return job.status === "running" ? "Running" : job.status === "done" ? "Completed" : "Failed";
+const statusLabel = (operation: SongRegeneration) => {
+  if (operation.status === "queued") return "Queued";
+  if (operation.status === "clearing") return "Clearing cache";
+  if (operation.status === "running") return "Regenerating";
+  return operation.status === "done" ? "Completed" : "Failed";
 };
 const bytes = (value: number) => value < 1024 ? `${value} B` : value < 1024 * 1024
   ? `${(value / 1024).toFixed(1)} KiB` : `${(value / (1024 * 1024)).toFixed(1)} MiB`;
@@ -54,10 +34,9 @@ const AdminCacheView: Component = () => {
   const [error, setError] = createSignal<string | null>(null);
   const [notice, setNotice] = createSignal<string | null>(null);
   const [regenTarget, setRegenTarget] = createSignal<RegenerationTarget | null>(null);
-  const [regenChoices, setRegenChoices] = createSignal<AdminCacheRegenerationChoice[]>([]);
   const [regenerating, setRegenerating] = createSignal(false);
   const [regenError, setRegenError] = createSignal<string | null>(null);
-  const [regenerations, setRegenerations] = createSignal<AdminCacheRegeneration[]>([]);
+  const [regenerations, setRegenerations] = createSignal<SongRegeneration[]>([]);
   const [refreshingRegenerations, setRefreshingRegenerations] = createSignal(false);
   const [regenerationStatusError, setRegenerationStatusError] = createSignal<string | null>(null);
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -78,10 +57,12 @@ const AdminCacheView: Component = () => {
       setLoading(false);
     }
   };
+  const operationActive = (operation: SongRegeneration) => operation.status === "queued"
+    || operation.status === "clearing" || operation.status === "running";
   const scheduleRegenerationRefresh = () => {
     clearTimeout(statusTimer);
     statusTimer = undefined;
-    if (!disposed && regenerations().some(item => item.status === "queued" || item.status === "running")) {
+    if (!disposed && regenerations().some(operationActive)) {
       statusTimer = setTimeout(() => {
         statusTimer = undefined;
         void refreshRegenerations();
@@ -99,14 +80,13 @@ const AdminCacheView: Component = () => {
       const previous = regenerations();
       const refreshed = await adminCacheRegenerations();
       if (requestRevision !== regenerationRevision) return;
-      const completedActiveJob = refreshed.some(job => {
-        const old = previous.find(item => item.job_id === job.job_id);
-        return old && (old.status === "queued" || old.status === "running")
-          && (job.status === "done" || job.status === "failed");
+      const completedActiveOperation = refreshed.some(operation => {
+        const old = previous.find(item => item.operation_id === operation.operation_id);
+        return old && operationActive(old) && !operationActive(operation);
       });
       setRegenerations(refreshed);
       setRegenerationStatusError(null);
-      if (completedActiveJob) await load();
+      if (completedActiveOperation) await load();
     } catch (err) {
       if (requestRevision === regenerationRevision) {
         setRegenerationStatusError(err instanceof Error ? err.message : "Could not refresh regeneration status.");
@@ -146,35 +126,33 @@ const AdminCacheView: Component = () => {
   };
   const blocked = () => loading() || clearing() || regenerating() || !cache() || cache()!.busy || cache()!.unsafe;
   const selectiveBlocked = () => blocked() || !cache()!.selective_ready;
-  const regenerationBlocked = () => loading() || clearing() || regenerating() || !cache() || cache()!.unsafe;
+  const regenerationBlocked = () => blocked() || !cache()!.selective_ready;
   const selectedSongs = () => cache()?.songs.filter(song => selected().includes(song.id)) ?? [];
+  const selectedSongsRegenerable = () => {
+    const songs = selectedSongs();
+    return songs.length > 0 && songs.every(song => song.regenerable && song.matched_jobs > 0);
+  };
   const openRegeneration = (songs: AdminCacheSong[]) => {
     setRegenTarget({ songs });
-    setRegenChoices([]);
     setRegenError(null);
-  };
-  const toggleCandidate = (song: AdminCacheSong, jobId: number, checked: boolean) => {
-    setRegenChoices(current => checked
-      ? [...current, { song_id: song.id, job_id: jobId }]
-      : current.filter(choice => choice.song_id !== song.id || choice.job_id !== jobId));
   };
   const confirmRegeneration = async () => {
     const currentTarget = regenTarget();
-    const choices = regenChoices();
-    if (!currentTarget || !choices.length || regenerationBlocked()) return;
+    const ids = currentTarget?.songs.map(song => song.id) ?? [];
+    if (!currentTarget || ids.length === 0 || currentTarget.songs.some(song => !song.regenerable || song.matched_jobs === 0)
+      || regenerationBlocked()) return;
     setRegenerating(true);
     setRegenError(null);
     try {
-      const created = await regenerateAdminCache({ jobs: choices });
-      regenerationRevision += 1;
-      const newIds = new Set(created.map(job => job.job_id));
-      setRegenerations(current => [...created, ...current.filter(job => !newIds.has(job.job_id))]);
+      const created = await regenerateAdminCache({ ids });
+      const requestRevision = ++regenerationRevision;
+      const newIds = new Set(created.map(operation => operation.operation_id));
+      setRegenerations(current => [...created, ...current.filter(operation => !newIds.has(operation.operation_id))]);
       setRegenTarget(null);
-      setRegenChoices([]);
       await load();
-      scheduleRegenerationRefresh();
+      if (requestRevision === regenerationRevision) scheduleRegenerationRefresh();
     } catch (err) {
-      setRegenError(err instanceof Error ? err.message : "Could not queue regeneration.");
+      setRegenError(err instanceof Error ? err.message : "Could not start song regeneration.");
     } finally {
       setRegenerating(false);
     }
@@ -194,9 +172,14 @@ const AdminCacheView: Component = () => {
         <Show when={data.busy}><p class="text-sm" role="status">Active, queued or unresolved work must finish or be reconciled before clearing cache.</p></Show>
         <Show when={data.unsafe}><p class="text-sm text-destructive" role="alert">Cache cannot be safely cleared. Operator attention is required.</p></Show>
         <Show when={!data.selective_ready && !data.unsafe}><p class="text-sm">Some older cache data cannot be attributed to individual songs ({bytes(data.unattributed_bytes)}). Clear all cache before clearing individual songs.</p></Show>
+        <Show when={data.unmatched_completed_jobs > 0}>
+          <p role="status" class="text-sm text-muted-foreground">
+            {data.unmatched_completed_jobs} completed job{data.unmatched_completed_jobs === 1 ? " has" : "s have"} no safely matched original and cannot be regenerated from this list.
+          </p>
+        </Show>
         <div class="flex flex-wrap gap-2">
           <Button type="button" variant="outline" class="min-h-11" disabled={selectiveBlocked() || selected().length === 0} onClick={() => setTarget({ ids: [...selected()], label: `${selected().length} selected song${selected().length === 1 ? "" : "s"}` })}>Clear selected ({selected().length})</Button>
-          <Button type="button" variant="outline" class="min-h-11" disabled={regenerationBlocked() || !selectedSongs().some(song => song.candidates.length > 0)} onClick={() => openRegeneration(selectedSongs())}>Regenerate selected ({selected().length})</Button>
+          <Button type="button" variant="outline" class="min-h-11" disabled={regenerationBlocked() || !selectedSongsRegenerable()} onClick={() => openRegeneration(selectedSongs())}>Regenerate selected ({selected().length})</Button>
           <Button type="button" variant="outline" class="min-h-11" disabled={blocked()} onClick={() => setTarget({ all: true, label: `all reusable cache (${data.songs.length} listed songs and any unattributed data)` })}>Clear all cache</Button>
         </div>
         <Show when={data.songs.length} fallback={<p class="text-sm text-muted-foreground">No cached songs.</p>}>
@@ -208,10 +191,15 @@ const AdminCacheView: Component = () => {
                 <span class="min-w-0 break-words"><span class="block font-medium">{song.title ?? "Untitled audio"}</span><span class="block text-sm text-muted-foreground">{song.artist ?? "Unknown artist"} · {bytes(song.bytes)}</span></span>
               </label>
               <div class="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" size="sm" class="min-h-11" disabled={regenerationBlocked() || song.candidates.length === 0} onClick={() => openRegeneration([song])} aria-label={`Regenerate ${song.title ?? "Untitled audio"}`}>Regenerate</Button>
+                <Button type="button" variant="outline" size="sm" class="min-h-11" disabled={regenerationBlocked() || !song.regenerable || song.matched_jobs === 0} onClick={() => openRegeneration([song])} aria-label={`Regenerate ${song.title ?? "Untitled audio"}`}>Regenerate</Button>
                 <Button type="button" variant="outline" size="sm" class="min-h-11" disabled={selectiveBlocked()} onClick={() => setTarget({ ids: [song.id], label: song.title ?? "Untitled audio" })} aria-label={`Clear ${song.title ?? "Untitled audio"}`}>Clear</Button>
               </div>
-              <Show when={song.candidates.length === 0}><p class="w-full text-xs text-muted-foreground">{REGEN_UNAVAILABLE}</p></Show>
+              <Show when={song.regenerable && song.matched_jobs > 0}>
+                <p class="w-full text-xs text-muted-foreground">{song.matched_jobs} saved job variant{song.matched_jobs === 1 ? "" : "s"} will be regenerated.</p>
+              </Show>
+              <Show when={!song.regenerable}>
+                <p class="w-full text-xs text-muted-foreground">{song.unavailable_reason ?? "No verified saved original is available for this song."}</p>
+              </Show>
             </CardContent></Card>
           </li>}</For></ul>
         </Show>
@@ -226,13 +214,14 @@ const AdminCacheView: Component = () => {
           </div>
           <Show when={regenerationStatusError()}><p role="alert" class="text-sm text-destructive">{regenerationStatusError()}</p></Show>
           <ul class="space-y-2">
-            <For each={regenerations()}>{job => {
-              const title = () => cache()?.songs.find(song => song.id === job.song_id)?.title ?? "Cached song";
+            <For each={regenerations()}>{operation => {
+              const title = () => operation.title ?? cache()?.songs.find(song => song.id === operation.song_id)?.title ?? "Cached song";
               return <li class="rounded-md bg-muted/40 p-2">
                 <p class="font-medium">{title()}</p>
-                <p role="status" class="text-sm text-muted-foreground">Job #{job.job_id} · {statusLabel(job)}</p>
-                <Show when={job.status === "failed" && job.error_message}>
-                  <p role="alert" class="text-sm text-destructive">{job.error_message}</p>
+                <p role="status" class="text-sm text-muted-foreground">{statusLabel(operation)}</p>
+                <p class="text-xs text-muted-foreground">{operation.completed_jobs} of {operation.total_jobs} saved job variant{operation.total_jobs === 1 ? "" : "s"} completed.</p>
+                <Show when={operation.status === "failed" && operation.error_message}>
+                  <p role="alert" class="text-sm text-destructive">{operation.error_message}</p>
                 </Show>
               </li>;
             }}</For>
@@ -259,53 +248,36 @@ const AdminCacheView: Component = () => {
       <AlertDialog.Root open onOpenChange={open => {
         if (!open && !regenerating()) {
           setRegenTarget(null);
-          setRegenChoices([]);
           setRegenError(null);
         }
       }}>
         <AlertDialog.Portal>
           <AlertDialog.Overlay class="fixed inset-0 z-50 bg-black/70" />
           <AlertDialog.Content class="fixed left-1/2 top-1/2 z-50 max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 space-y-4 overflow-y-auto rounded-lg border border-border bg-background p-5 shadow-lg">
-            <AlertDialog.Title class="text-lg font-semibold">Choose configurations to regenerate</AlertDialog.Title>
+            <AlertDialog.Title class="text-lg font-semibold">
+              Regenerate {regenTarget()?.songs.length ?? 0} song{regenTarget()?.songs.length === 1 ? "" : "s"}?
+            </AlertDialog.Title>
             <AlertDialog.Description class="text-sm text-muted-foreground">
-              This queues new jobs from the selected completed configurations and their verified saved originals. New versions appear in the original owners’ Library; existing jobs and downloads stay. Compatible caches are reused; changed or missing versions may incur GPU costs.
+              This clears reusable cache for the selected songs and regenerates every safely matched saved variant across all owners and settings. Each successful result atomically replaces the existing job’s outputs, so the same Library entry is updated without duplicates. Existing results remain available until their replacement is published; if a variant fails, its previous result remains. Shared cached work may be evicted, and rebuilding it may incur GPU costs.
             </AlertDialog.Description>
-            <div class="space-y-3">
+            <ul class="space-y-2">
               <For each={regenTarget()?.songs ?? []}>{song =>
-                <fieldset class="space-y-2 rounded-md border border-border p-3">
-                  <legend class="px-1 font-medium">{song.title ?? "Untitled audio"} · {song.artist ?? "Unknown artist"}</legend>
-                  <Show when={song.candidates.length > 0} fallback={<p class="text-sm text-muted-foreground">{REGEN_UNAVAILABLE}</p>}>
-                    <div class="space-y-2">
-                      <For each={song.candidates}>{candidate =>
-                        <label class="flex min-w-0 cursor-pointer items-start gap-3 rounded-md bg-muted/40 p-3">
-                          <input
-                            type="checkbox"
-                            class="mt-1 h-5 w-5 shrink-0 accent-primary"
-                            checked={regenChoices().some(choice => choice.song_id === song.id && choice.job_id === candidate.job_id)}
-                            disabled={regenerationBlocked()}
-                            aria-label={`Regenerate ${song.title ?? "Untitled audio"} from job ${candidate.job_id}: ${candidateSummary(candidate.options)}`}
-                            onChange={event => toggleCandidate(song, candidate.job_id, event.currentTarget.checked)}
-                          />
-                          <span class="min-w-0 break-words">
-                            <span class="block font-medium">Completed job #{candidate.job_id}</span>
-                            <span class="block text-sm text-muted-foreground">{candidateSummary(candidate.options)}</span>
-                          </span>
-                        </label>
-                      }</For>
-                    </div>
-                  </Show>
-                </fieldset>
+                <li class="rounded-md border border-border p-3">
+                  <p class="font-medium">{song.title ?? "Untitled audio"} · {song.artist ?? "Unknown artist"}</p>
+                  <p class="text-sm text-muted-foreground">{song.matched_jobs} saved job variant{song.matched_jobs === 1 ? "" : "s"} across all owners and settings.</p>
+                </li>
               }</For>
-            </div>
+            </ul>
             <Show when={regenError()}><p role="alert" class="text-sm text-destructive">{regenError()}</p></Show>
             <div class="flex flex-wrap justify-end gap-2">
               <Button type="button" variant="outline" class="min-h-11" disabled={regenerating()} onClick={() => {
                 setRegenTarget(null);
-                setRegenChoices([]);
                 setRegenError(null);
               }}>Cancel</Button>
-              <Button type="button" variant="default" class="min-h-11" disabled={regenerationBlocked() || regenChoices().length === 0} onClick={() => void confirmRegeneration()}>
-                {regenerating() ? "Queueing..." : "Queue regeneration"}
+              <Button type="button" variant="default" class="min-h-11"
+                disabled={regenerationBlocked() || (regenTarget()?.songs.some(song => !song.regenerable || song.matched_jobs === 0) ?? true)}
+                onClick={() => void confirmRegeneration()}>
+                {regenerating() ? "Starting..." : "Clear cache and regenerate"}
               </Button>
             </div>
           </AlertDialog.Content>

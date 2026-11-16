@@ -2,7 +2,9 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import os
 import threading
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -80,8 +82,9 @@ def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
 
 
 def _persist_results(
-    job: JobRecord, result: SeparationResult
+    job: JobRecord, result: SeparationResult, display_job: JobRecord | None = None
 ) -> list[ResultManifestEntry]:
+    display_job = display_job or job
     out_dir = config.RESULTS_DIR / str(job.id)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = []
@@ -93,7 +96,11 @@ def _persist_results(
         path = out_dir / filename
         path.write_bytes(audio)
         download_name = download_filename(
-            job.title, job.id, label, job.options, job.original_key
+            display_job.title,
+            display_job.id,
+            label,
+            display_job.options,
+            job.original_key,
         )
         size_bytes = ensure_download_title(path, download_name)
         manifest.append(
@@ -107,6 +114,37 @@ def _persist_results(
             )
         )
     return manifest
+
+
+def _install_generation(work_id: int, original_id: int, generation: str) -> None:
+    source = config.RESULTS_DIR / str(work_id)
+    target_root = config.RESULTS_DIR / str(original_id) / "generations"
+    target_root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        target_root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    for path in source.iterdir():
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    descriptor = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    source.rename(target_root / generation)
+    for directory in (target_root, config.RESULTS_DIR):
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 async def _cache_thread(function, *args):
@@ -143,6 +181,7 @@ async def _run_job(job: JobRecord) -> None:
 
 
 async def _run_job_captured(job: JobRecord, recorder) -> None:
+    work = await asyncio.to_thread(db.regeneration_work, job.id)
     await _publish_status(job.id)
     try:
         log.info(
@@ -218,12 +257,38 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
             # Transform the complete source, not a separated/reconstructed mix.
             # Persisting applies pitch and tempo together once, as for each stem.
             result = {"song": StemResult(audio_bytes, 0.0), **result}
-        manifest = await _cache_thread(_persist_results, job, result)
+        original = await asyncio.to_thread(db.get_job, work[1]) if work else None
+        if work and original is None:
+            raise ValueError("Original job no longer exists")
+        manifest = (
+            await _cache_thread(_persist_results, job, result, original)
+            if work
+            else await _cache_thread(_persist_results, job, result)
+        )
         if processed.pitch_vocals is not None:
             await _cache_thread(persist_pitch_vocals, job, processed.pitch_vocals)
-        await asyncio.to_thread(
-            db.mark_done, job.id, manifest, processed.transcript, processed.pitch_json
-        )
+        if work:
+            assert original is not None
+            generation = uuid.uuid4().hex
+            await _cache_thread(_install_generation, job.id, original.id, generation)
+            await asyncio.to_thread(
+                db.publish_regeneration,
+                job.id,
+                original.id,
+                generation,
+                manifest,
+                processed.transcript,
+                processed.pitch_json,
+                job.original_key,
+            )
+        else:
+            await asyncio.to_thread(
+                db.mark_done,
+                job.id,
+                manifest,
+                processed.transcript,
+                processed.pitch_json,
+            )
         log.info("job %s done", job.id)
     except drain.DrainDeferred:
         log.info("job %s deferred for rollout", job.id)
@@ -277,6 +342,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             await asyncio.to_thread(db.init_db)
             await asyncio.to_thread(db.reap_running_to_queued)
+            from backend.routes import admin_cache  # noqa: PLC0415
+
+            await asyncio.to_thread(admin_cache.recover_song_clears)
             for i in range(config.QUEUE_CONCURRENCY):
                 drain.state.workers.append(asyncio.create_task(_worker_loop(i)))
             if config.QUEUE_CONCURRENCY > 0:

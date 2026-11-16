@@ -266,6 +266,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         title: usingUrl ? null : chosenFile!.name,
         original_key: null,
         output_key: null,
+        result_revision: null,
         options: submittedOptions,
         manifest: null,
         transcript: null,

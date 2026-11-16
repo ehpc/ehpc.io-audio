@@ -197,6 +197,8 @@ export interface JobDTO {
   title: string | null;
   original_key: string | null;
   output_key: string | null;
+  /** Changes when in-place regeneration publishes replacement outputs. */
+  result_revision: string | null;
   options: SeparationOptions;
   manifest: StemManifestEntry[] | null;
   transcript: TranscriptDTO | null;
@@ -306,17 +308,14 @@ export interface AdminUserActivity {
   searches: { id: string; query: string | null; status: "pending" | "completed" | "expired" | "failed"; created_at: number }[];
 }
 
-export interface AdminCacheCandidate {
-  job_id: number;
-  options: SeparationOptions;
-}
-
 export interface AdminCacheSong {
   id: string;
   title: string | null;
   artist: string | null;
   bytes: number;
-  candidates: AdminCacheCandidate[];
+  regenerable: boolean;
+  matched_jobs: number;
+  unavailable_reason: string | null;
 }
 
 export interface AdminCache {
@@ -325,26 +324,27 @@ export interface AdminCache {
   selective_ready: boolean;
   busy: boolean;
   unsafe: boolean;
+  unmatched_completed_jobs: number;
 }
 
-export interface AdminCacheRegenerationChoice {
+export type SongRegenerationStatus = "queued" | "clearing" | "running" | "done" | "failed";
+
+export interface SongRegeneration {
+  operation_id: number;
   song_id: string;
-  job_id: number;
-}
-
-export interface AdminCacheRegenerationRequest {
-  jobs: AdminCacheRegenerationChoice[];
-}
-
-export type AdminCacheRegenerationStatus = "queued" | "running" | "done" | "failed";
-
-export interface AdminCacheRegeneration {
-  song_id: string;
-  source_job_id: number;
-  job_id: number;
-  status: AdminCacheRegenerationStatus;
-  position: number | null;
+  title: string | null;
+  status: SongRegenerationStatus;
+  completed_jobs: number;
+  total_jobs: number;
   error_message: string | null;
+}
+
+export interface SongRegenerationRequest {
+  ids: string[];
+}
+
+export interface SongRegenerationResponse {
+  operations: SongRegeneration[];
 }
 
 export function adminCache(): Promise<AdminCache> {
@@ -356,13 +356,13 @@ export function clearAdminCache(target: { ids: string[] } | { all: true }): Prom
   return authRequest("/admin/cache/clear", jsonRequest("POST", target));
 }
 
-export function adminCacheRegenerations(): Promise<AdminCacheRegeneration[]> {
+export function adminCacheRegenerations(): Promise<SongRegeneration[]> {
   return authRequest("/admin/cache/regenerations");
 }
 
-export function regenerateAdminCache(request: AdminCacheRegenerationRequest): Promise<AdminCacheRegeneration[]> {
-  return authRequest<{ jobs: AdminCacheRegeneration[] }>("/admin/cache/regenerate", jsonRequest("POST", request))
-    .then(result => result.jobs);
+export function regenerateAdminCache(request: SongRegenerationRequest): Promise<SongRegeneration[]> {
+  return authRequest<SongRegenerationResponse>("/admin/cache/regenerate", jsonRequest("POST", request))
+    .then(result => result.operations);
 }
 
 export interface AuthProfile extends Omit<AdminUser, "disabled"> {
@@ -620,24 +620,29 @@ export async function getStatus(): Promise<StatusDTO> {
   return (await res.json()) as StatusDTO;
 }
 
-export function lyricsUrl(id: number): string {
-  return `${API_BASE}/jobs/${id}/lyrics`;
+const withRevision = (url: string, revision?: string | null): string => {
+  if (!revision) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}revision=${encodeURIComponent(revision)}`;
+};
+
+export function lyricsUrl(id: number, revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/lyrics`, revision);
 }
 
-export function lyricsDownloadUrl(id: number): string {
-  return `${lyricsUrl(id)}/download`;
+export function lyricsDownloadUrl(id: number, revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/lyrics/download`, revision);
 }
 
-export function lyricsJsonDownloadUrl(id: number): string {
-  return `${lyricsUrl(id)}/download.json`;
+export function lyricsJsonDownloadUrl(id: number, revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/lyrics/download.json`, revision);
 }
 
-export function pitchDownloadUrl(id: number): string {
-  return `${API_BASE}/jobs/${id}/pitch`;
+export function pitchDownloadUrl(id: number, revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/pitch`, revision);
 }
 
-export function pitchVocalsUrl(id: number): string {
-  return `${API_BASE}/jobs/${id}/pitch-reference/vocals`;
+export function pitchVocalsUrl(id: number, revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/pitch-reference/vocals`, revision);
 }
 
 export async function recoverPitchVocals(id: number): Promise<void> {
@@ -645,12 +650,12 @@ export async function recoverPitchVocals(id: number): Promise<void> {
   if (!response.ok) throw await responseError(response);
 }
 
-export function pitchedLyricsDownloadUrl(id: number, label: string, format: "txt" | "odt" = "txt"): string {
-  return `${API_BASE}/jobs/${id}/pitched-lyrics/${encodeURIComponent(label)}/download${format === "odt" ? "?format=odt" : ""}`;
+export function pitchedLyricsDownloadUrl(id: number, label: string, format: "txt" | "odt" = "txt", revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/pitched-lyrics/${encodeURIComponent(label)}/download${format === "odt" ? "?format=odt" : ""}`, revision);
 }
 
-export function resultUrl(id: number, label: string): string {
-  return `${API_BASE}/jobs/${id}/results/${encodeURIComponent(label)}`;
+export function resultUrl(id: number, label: string, revision?: string | null): string {
+  return withRevision(`${API_BASE}/jobs/${id}/results/${encodeURIComponent(label)}`, revision);
 }
 
 
@@ -659,7 +664,7 @@ export function originalUrl(id: number): string {
 }
 
 export function playbackUrl(audioUrl: string): string {
-  return `${audioUrl}?playback=1`;
+  return `${audioUrl}${audioUrl.includes("?") ? "&" : "?"}playback=1`;
 }
 
 export function subscribeToJob(
@@ -681,8 +686,8 @@ export function subscribeToJob(
   source.onmessage = (event) => {
     const job = JSON.parse(event.data) as JobDTO;
     onUpdate(job);
-    // The server ends the stream after a terminal event; close proactively so a
-    // reconnect is never attempted for a job that will not change again.
+    // The server closes after a terminal event; the app reloads an explicit
+    // selection or workspace visit to observe later in-place result revisions.
     if (isTerminal(job.status)) {
       close();
     }

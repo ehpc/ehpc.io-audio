@@ -98,51 +98,6 @@ def trace(root):
     )
 
 
-def test_admin_regeneration_real_http_queue_cpu(tmp_path):
-    source = tone_wav((440, 660), 1, channels=2)
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    with server(tmp_path, port, admin=True) as client:
-        original = finish(
-            client,
-            client.post(
-                "/api/jobs",
-                files={"file": ("song.wav", source, "audio/wav")},
-                data={"extract_vocals": "true"},
-            ),
-        )
-        before = trace(tmp_path)
-        songs = client.get("/api/admin/cache").json()["songs"]
-        song = next(
-            s
-            for s in songs
-            if any(c["job_id"] == original["id"] for c in s["candidates"])
-        )
-        response = client.post(
-            "/api/admin/cache/regenerate",
-            json={"jobs": [{"song_id": song["id"], "job_id": original["id"]}]},
-        )
-        assert response.status_code == 200, response.text
-        new_id = response.json()["jobs"][0]["job_id"]
-        deadline = time.monotonic() + 30
-        while True:
-            result = client.get(f"/api/jobs/{new_id}").json()
-            if result["status"] in {"done", "failed"}:
-                assert result["status"] == "done", result.get("error_message")
-                break
-            assert time.monotonic() < deadline
-            time.sleep(0.05)
-        assert client.get(f"/api/jobs/{original['id']}").json()["status"] == "done"
-        assert client.get(f"/api/jobs/{original['id']}/original").content == source
-        assert trace(tmp_path) == before
-        assert any(
-            r["job_id"] == new_id and r["status"] == "done"
-            for r in client.get("/api/admin/cache/regenerations").json()
-        )
-        print("REGENERATION_HTTP_CPU_SMOKE", original["id"], new_id, dict(before))
-
-
 def test_http_cross_session_restart_reuses_native_artifacts(tmp_path):
     (tmp_path / "source.wav").write_bytes(tone_wav((440, 660), 1, channels=2))
     with socket.socket() as listener:

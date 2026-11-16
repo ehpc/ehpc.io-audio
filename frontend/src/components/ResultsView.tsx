@@ -114,10 +114,10 @@ const ResultsView: Component<{ job: JobDTO; onReset: () => void; scrollRequest?:
                   controls
                   preload="none"
                   class="w-full"
-                  src={playbackUrl(resultUrl(props.job.id, stem.label))}
+                  src={playbackUrl(resultUrl(props.job.id, stem.label, props.job.result_revision))}
                 />
                 <a
-                  href={resultUrl(props.job.id, stem.label)}
+                  href={resultUrl(props.job.id, stem.label, props.job.result_revision)}
                   download={stem.download_name}
                   class="inline-block text-sm font-medium text-primary underline-offset-4 hover:underline"
                 >

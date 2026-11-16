@@ -55,7 +55,7 @@ function karaokeJob(): JobDTO {
     'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments'];
   return {
     id: 9401, status: 'done', position: null, source_type: 'upload', source_value: 'karaoke-ui.ogg',
-    title: 'Karaoke native-media UI fixture', original_key: 'C major', output_key: 'C# major',
+    title: 'Karaoke native-media UI fixture', original_key: 'C major', output_key: 'C# major', result_revision: null,
     error_message: null, created_at: 1, has_original: true, has_pitch_vocals: true,
     options: { extract_vocals: true, extract_instruments: true, extract_lyrics: true, detect_pitch: true,
       extract_pitched_lyrics: false, mixes: [], decrowd: true, decrowd_vocals: true, dereverb: true,

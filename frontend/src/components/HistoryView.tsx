@@ -59,6 +59,7 @@ const HistoryView: Component<{
         title: job.title,
         original_key: null,
         output_key: null,
+        result_revision: null,
         options: job.options,
         manifest: null,
         transcript: null,

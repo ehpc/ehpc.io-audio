@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -20,7 +20,7 @@ const pitch: PitchAnalysisDTO = {
 function job(): JobDTO {
   return {
     id: 7, status: "done", position: null, source_type: "upload", source_value: "voice.ogg", title: "voice.ogg",
-    original_key: null, output_key: null, transcript: null, error_message: null, created_at: 1, has_original: true,
+    original_key: null, output_key: null, result_revision: null, transcript: null, error_message: null, created_at: 1, has_original: true,
     has_pitch_vocals: true,
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,
       extract_pitched_lyrics: false,
@@ -34,6 +34,24 @@ function job(): JobDTO {
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+});
+it("reloads same-job pitch media and downloads when regenerated output revision changes", async () => {
+  const base = job();
+  const initial: JobDTO = {
+    ...base,
+    result_revision: "revision-before",
+    manifest: [...(base.manifest ?? []), {
+      label: "song", filename: "song.mp3", download_name: "song.mp3", size_bytes: 100, duration_s: 1,
+    }],
+  };
+  const [currentJob, setCurrentJob] = createSignal(initial);
+  render(() => <PitchView job={currentJob()} />);
+  const source = document.querySelector<HTMLAudioElement>('audio[src*="/results/song"]')!;
+  expect(source.getAttribute("src")).toBe("/api/jobs/7/results/song?revision=revision-before&playback=1");
+  setCurrentJob({ ...initial, result_revision: "revision-after" });
+  await waitFor(() => expect(document.querySelector<HTMLAudioElement>('audio[src*="/results/song"]')?.getAttribute("src"))
+    .toBe("/api/jobs/7/results/song?revision=revision-after&playback=1"));
+  expect(screen.getByRole("link", { name: "Download pitch JSON" })).toHaveAttribute("href", "/api/jobs/7/pitch?revision=revision-after");
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -815,7 +833,7 @@ it("uses a real available backing when the full song is unavailable", () => {
   expect(screen.getByRole("button", { name: "Full song" })).toBeDisabled();
   expect(screen.getByRole("button", { name: /Drums \+ Vocals/ })).toHaveAttribute("aria-pressed", "true");
 });
-it("resets recovered reference and cursor when a different pitch job is mounted into the same view", () => {
+it("resets recovered reference and cursor when a different pitch job is mounted into the same view", async () => {
   const first = job();
   first.manifest = [];
   first.has_pitch_vocals = true;
@@ -828,8 +846,8 @@ it("resets recovered reference and cursor when a different pitch job is mounted 
   expect(document.querySelector(".pitch-playhead")).toHaveAttribute("x1", "400");
 
   setActive(second);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Full song" })).toHaveAttribute("aria-pressed", "true"));
   const nextAudio = document.querySelector<HTMLAudioElement>("audio")!;
-  expect(screen.getByRole("button", { name: "Full song" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("button", { name: "Just vocals" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Recover cached vocals" })).toBeInTheDocument();
   expect(nextAudio.currentTime).toBe(0);

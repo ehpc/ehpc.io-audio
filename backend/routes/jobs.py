@@ -215,6 +215,39 @@ def _remove_job_files(job_id: int) -> None:
     metadata.unlink(missing_ok=True)
 
 
+def _remove_maintenance_files(work: list[db.StageOwner]) -> list[int]:
+    """Retain dispatch owners and any files still needed for reconciliation."""
+    removed = []
+    for work_id, key, call_id in work:
+        with contextlib.ExitStack() as stack:
+            if key is not None or call_id is not None:
+                if (
+                    key is None
+                    or call_id is None
+                    or not admin_cache._KEY.fullmatch(key)
+                ):
+                    continue
+                try:
+                    lock_path = (
+                        config.DATA_DIR / "artifacts" / "inference" / f"{key}.lock"
+                    )
+                    fd = os.open(
+                        lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
+                    )
+                    handle = stack.enter_context(os.fdopen(fd, "r+b"))
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    stack.callback(fcntl.flock, handle, fcntl.LOCK_UN)
+                    files = admin_cache.Files(stack)
+                    admin_cache._ledger(files, [(work_id, key, call_id)], only_key=key)[
+                        key
+                    ]
+                except (admin_cache.CacheConflict, OSError, KeyError):
+                    continue
+            _remove_job_files(work_id)
+            removed.append(work_id)
+    return removed
+
+
 def _delete_job(job_id: int, session_id: str) -> None:
     job = db.get_job(job_id)
     if job is None or job.session_id != session_id:
@@ -246,8 +279,14 @@ def _delete_job(job_id: int, session_id: str) -> None:
                 )[key]
                 if entry.artifact is None:
                     raise admin_cache.CacheConflict("Inference did not complete")
+
+            def remove_owned(work: list[db.StageOwner]) -> list[int]:
+                removed = _remove_maintenance_files(work)
+                _remove_job_files(job_id)
+                return removed
+
             deleted = db.delete_completed_job(
-                job_id, session_id, (key, call_id), lambda: _remove_job_files(job_id)
+                job_id, session_id, (key, call_id), remove_owned
             )
     except admin_cache.CacheConflict as exc:
         raise HTTPException(409, "Inference ownership is unresolved") from exc

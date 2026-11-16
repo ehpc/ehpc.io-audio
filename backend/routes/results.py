@@ -25,6 +25,7 @@ from backend.models import (
     pitch_vocals_path,
     pitched_lyrics_available,
     pitched_lyrics_filename,
+    result_directory,
 )
 from backend.pitch_reference import persist_pitch_vocals
 from backend.playback import listening_path
@@ -91,7 +92,11 @@ async def _tracked_thread(function, *args):
 
 
 async def _listening_response(
-    job: JobRecord, path: Path, media_type: str | None = None
+    job: JobRecord,
+    path: Path,
+    media_type: str | None = None,
+    *,
+    revalidate: bool = False,
 ) -> FileResponse:
     try:
         indexed = await _tracked_thread(
@@ -110,7 +115,10 @@ async def _listening_response(
     return FileResponse(
         indexed or path,
         media_type="audio/mp4" if indexed is not None else media_type,
-        headers={"Content-Disposition": "inline", "Cache-Control": "private"},
+        headers={
+            "Content-Disposition": "inline",
+            "Cache-Control": "private, no-cache" if revalidate else "private",
+        },
     )
 
 
@@ -154,8 +162,10 @@ async def get_pitch_vocals(
     if path is None:
         raise HTTPException(404, "pitch reference not found")
     if playback:
-        return await _listening_response(job, path, "audio/mpeg")
-    return FileResponse(path, media_type="audio/mpeg")
+        return await _listening_response(job, path, "audio/mpeg", revalidate=True)
+    return FileResponse(
+        path, media_type="audio/mpeg", headers={"Cache-Control": "private, no-cache"}
+    )
 
 
 @router.post("/jobs/{job_id}/pitch-reference/vocals", status_code=204)
@@ -170,7 +180,7 @@ async def recover_pitch_vocals(
         or job.pitch_json is None
     ):
         raise HTTPException(404, "pitch reference not found")
-    async with async_locked(config.RESULTS_DIR / str(job.id) / ".pitch-vocals.lock"):
+    async with async_locked(result_directory(job) / ".pitch-vocals.lock"):
         if pitch_vocals_path(job) is not None:
             return Response(status_code=204)
         source_dir = config.UPLOADS_DIR / str(job.id)
@@ -218,23 +228,30 @@ async def get_result(
     if entry is None:
         raise HTTPException(404, "result not found")
 
-    path = config.RESULTS_DIR / str(job_id) / entry.filename
+    path = result_directory(job) / entry.filename
     if not path.is_file():
         raise HTTPException(404, "result not found")
     if playback:
-        return await _listening_response(job, path, "audio/mpeg")
+        return await _listening_response(job, path, "audio/mpeg", revalidate=True)
     download_name = download_filename(
         job.title, job_id, label, job.options, job.original_key
     )
-    # Old persisted results predate canonical titles (and source-key filenames).
-    # Reconcile tags without re-encoding, and skip writes once they match.
-    size_bytes = await _tracked_thread(ensure_download_title, path, download_name)
-    if entry.size_bytes != size_bytes:
-        await asyncio.to_thread(db.update_result_size, job_id, label, size_bytes)
+    # Only legacy results need title migration; published generations are immutable.
+    if job.result_generation is None:
+        size_bytes = await _tracked_thread(ensure_download_title, path, download_name)
+        if entry.size_bytes != size_bytes:
+            await asyncio.to_thread(
+                db.update_result_size,
+                job_id,
+                label,
+                size_bytes,
+                expected_generation=job.result_generation,
+            )
     return FileResponse(
         path,
         media_type="audio/mpeg",
         filename=download_name,
+        headers={"Cache-Control": "private, no-cache"},
     )
 
 

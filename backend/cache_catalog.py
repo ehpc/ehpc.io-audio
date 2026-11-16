@@ -77,6 +77,9 @@ def _connection():
             parent TEXT NOT NULL, child TEXT NOT NULL,
             PRIMARY KEY(parent, child)
         );
+        CREATE TABLE IF NOT EXISTS retained_songs (
+            digest TEXT PRIMARY KEY REFERENCES songs(digest) ON DELETE CASCADE
+        );
     """)
     try:
         with db:
@@ -417,6 +420,9 @@ def snapshot() -> CacheSnapshot:
         songs = db.execute("SELECT digest, id, title, artist FROM songs").fetchall()
         associations = _associations(db)
         complete = {path for (path,) in db.execute("SELECT path FROM complete_paths")}
+        retained = {
+            digest for (digest,) in db.execute("SELECT digest FROM retained_songs")
+        }
     by_song = {}
     attributed = set()
     for digest, path in associations:
@@ -438,12 +444,21 @@ def snapshot() -> CacheSnapshot:
                 "bytes": sum(sizes[p] for p in by_song.get(digest, set())),
             }
             for digest, ident, title, artist in songs
-            if digest in by_song
+            if digest in by_song or digest in retained
         ],
         "unattributed_bytes": sum(sizes[p] for p in unknown),
         "selective_ready": not unsafe_cache and not unknown,
         "unsafe": unsafe_cache,
     }
+
+
+def retain_songs(ids: set[str]) -> None:
+    """Keep selected identities visible even if a failed clear removes every path."""
+    with _connection() as db:
+        db.executemany(
+            "INSERT OR IGNORE INTO retained_songs SELECT digest FROM songs WHERE id=?",
+            ((ident,) for ident in ids),
+        )
 
 
 def song_digests(ids: set[str]) -> dict[str, str]:
@@ -469,7 +484,13 @@ def select_paths(ids: list[str]) -> set[str]:
     return paths & all_paths()
 
 
-def forget_paths(paths: set[str]) -> None:
+def forget_paths(
+    paths: set[str],
+    *,
+    preserve_ids: set[str] | frozenset[str] = frozenset(),
+    discard_ids: set[str] | frozenset[str] = frozenset(),
+    discard_all: bool = False,
+) -> None:
     with _connection() as db:
         db.executemany("DELETE FROM paths WHERE path=?", ((path,) for path in paths))
         db.executemany(
@@ -481,7 +502,12 @@ def forget_paths(paths: set[str]) -> None:
         db.executemany(
             "DELETE FROM dependencies WHERE parent=?", ((path,) for path in paths)
         )
-        db.execute(
-            "DELETE FROM songs WHERE NOT EXISTS "
+        for ident, retained in db.execute(
+            "SELECT songs.id, EXISTS(SELECT 1 FROM retained_songs "
+            "WHERE retained_songs.digest=songs.digest) FROM songs WHERE NOT EXISTS "
             "(SELECT 1 FROM paths WHERE paths.digest=songs.digest)"
-        )
+        ).fetchall():
+            if ident not in preserve_ids and (
+                not retained or discard_all or ident in discard_ids
+            ):
+                db.execute("DELETE FROM songs WHERE id=?", (ident,))
