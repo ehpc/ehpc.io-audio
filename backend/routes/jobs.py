@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
-from backend import auth_store, config, db, events
+from backend import auth_store, config, db, events, regeneration
 from backend.models import JobDTO, JobRecord, JobStatus, job_to_dto
 from backend.routes import admin_cache
 from backend.routes.auth import cookie_name
@@ -119,6 +119,20 @@ async def retry_job(
     job = await asyncio.to_thread(db.get_job, job_id)
     if job is None or job.session_id != session_id:
         raise HTTPException(404, "job not found")
+
+    if await asyncio.to_thread(db.regeneration_snapshot, job.id) is not None:
+        try:
+            entry = await admin_cache._under_gate(
+                regeneration.retry, job.id, session_id
+            )
+        except ValueError as exc:
+            status = 429 if str(exc) == "Queue limit reached" else 409
+            raise HTTPException(status, str(exc)) from None
+        return {
+            "id": entry["job_id"],
+            "status": entry["status"],
+            "position": entry["position"],
+        }
 
     try:
         new_job_id = await asyncio.to_thread(

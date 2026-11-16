@@ -32,7 +32,13 @@ logging.basicConfig(
 def _expensive_work(request: Request) -> bool:
     path = request.url.path
     return request.method not in {"GET", "HEAD", "OPTIONS"} and (
-        path in {"/api/jobs", "/api/song-search", "/api/key-analysis"}
+        path
+        in {
+            "/api/jobs",
+            "/api/song-search",
+            "/api/key-analysis",
+            "/api/admin/cache/regenerate",
+        }
         or path.endswith("/retry")
         or path.endswith("/pitch-reference/vocals")
     )

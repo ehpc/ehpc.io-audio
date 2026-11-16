@@ -12,16 +12,12 @@ from dataclasses import dataclass
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend import cache_catalog, config, db, drain
+from backend import cache_catalog, config, db, drain, regeneration
 from backend.models import JobStatus
 from backend.routes.auth import admin
 from separator.inference_transport import validate_output_id
 
 router = APIRouter(tags=["admin-cache"])
-
-
-class AdminCacheSnapshot(cache_catalog.CacheSnapshot):
-    busy: bool
 
 
 _KEY = re.compile(r"[0-9a-f]{64}\Z")
@@ -37,6 +33,17 @@ class ClearRequest(BaseModel):
         if (self.ids is None) == (self.all is not True) or self.all is False:
             raise ValueError("Specify either ids or all=true")
         return self
+
+
+class RegenerationSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    song_id: str
+    job_id: int = Field(strict=True, gt=0)
+
+
+class RegenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    jobs: list[RegenerationSelection] = Field(min_length=1, max_length=50)
 
 
 class CacheConflict(Exception):
@@ -394,11 +401,11 @@ async def _under_gate(function, *args):
 
 
 @router.get("/admin/cache")
-async def list_cache(request: Request) -> AdminCacheSnapshot:
+async def list_cache(request: Request) -> regeneration.AdminCacheSnapshot:
     admin(request)
 
-    def read_snapshot() -> AdminCacheSnapshot:
-        return {**cache_catalog.snapshot(), "busy": _busy()}
+    def read_snapshot() -> regeneration.AdminCacheSnapshot:
+        return regeneration.candidates(cache_catalog.snapshot(), _busy())
 
     return await _under_gate(read_snapshot)
 
@@ -409,4 +416,23 @@ async def clear_cache(body: ClearRequest, request: Request) -> dict:
     try:
         return await _under_gate(_clear, body)
     except CacheConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@router.get("/admin/cache/regenerations")
+async def list_regenerations(request: Request) -> list[db.RegenerationStatus]:
+    admin(request)
+    return await asyncio.to_thread(db.regeneration_status)
+
+
+@router.post("/admin/cache/regenerate")
+async def regenerate(
+    body: RegenerationRequest, request: Request
+) -> regeneration.RegenerationResponse:
+    admin(request)
+    try:
+        return {"jobs": await _under_gate(regeneration.enqueue, body.jobs)}
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except ValueError as exc:
         raise HTTPException(409, str(exc)) from None

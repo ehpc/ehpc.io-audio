@@ -306,12 +306,45 @@ export interface AdminUserActivity {
   searches: { id: string; query: string | null; status: "pending" | "completed" | "expired" | "failed"; created_at: number }[];
 }
 
+export interface AdminCacheCandidate {
+  job_id: number;
+  options: SeparationOptions;
+}
+
+export interface AdminCacheSong {
+  id: string;
+  title: string | null;
+  artist: string | null;
+  bytes: number;
+  candidates: AdminCacheCandidate[];
+}
+
 export interface AdminCache {
-  songs: { id: string; title: string | null; artist: string | null; bytes: number }[];
+  songs: AdminCacheSong[];
   unattributed_bytes: number;
   selective_ready: boolean;
   busy: boolean;
   unsafe: boolean;
+}
+
+export interface AdminCacheRegenerationChoice {
+  song_id: string;
+  job_id: number;
+}
+
+export interface AdminCacheRegenerationRequest {
+  jobs: AdminCacheRegenerationChoice[];
+}
+
+export type AdminCacheRegenerationStatus = "queued" | "running" | "done" | "failed";
+
+export interface AdminCacheRegeneration {
+  song_id: string;
+  source_job_id: number;
+  job_id: number;
+  status: AdminCacheRegenerationStatus;
+  position: number | null;
+  error_message: string | null;
 }
 
 export function adminCache(): Promise<AdminCache> {
@@ -321,6 +354,15 @@ export function adminCache(): Promise<AdminCache> {
 /** `cleared` counts removed cache files, not selected songs. */
 export function clearAdminCache(target: { ids: string[] } | { all: true }): Promise<{ cleared: number; reclaimed_bytes: number }> {
   return authRequest("/admin/cache/clear", jsonRequest("POST", target));
+}
+
+export function adminCacheRegenerations(): Promise<AdminCacheRegeneration[]> {
+  return authRequest("/admin/cache/regenerations");
+}
+
+export function regenerateAdminCache(request: AdminCacheRegenerationRequest): Promise<AdminCacheRegeneration[]> {
+  return authRequest<{ jobs: AdminCacheRegeneration[] }>("/admin/cache/regenerate", jsonRequest("POST", request))
+    .then(result => result.jobs);
 }
 
 export interface AuthProfile extends Omit<AdminUser, "disabled"> {

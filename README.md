@@ -112,6 +112,18 @@ reference audio, accounts and model weights remain intact. Active, queued or
 unresolved work can block clearing; the server reports that conflict without
 removing the selection.
 
+Administrators may also reprocess an explicitly chosen completed job from a
+cached song. The new queued job retains that job's owner and options, and
+appears in the original owner's Library; the existing job and results stay
+intact even if reprocessing fails. Only jobs with a verified retained original
+are offered; preview-only entries cannot be reprocessed. The original audio
+and URL metadata are snapshotted so a changed URL is not downloaded again.
+Retrying a reprocessed job also uses its verified saved snapshot, even if the
+original job has since been deleted.
+Current algorithms run again while compatible model artifacts are reused;
+missing or changed model stages may incur GPU charges. The admin view reports
+all active reprocessing jobs and the most recent 50 regeneration records.
+
 Migration imports verified original bytes without relabeling unknown producers.
 Historical producer aliases require actual GPU-runtime evidence; a CPU image
 inspection alone is insufficient. Raw historical Qwen reuse additionally needs

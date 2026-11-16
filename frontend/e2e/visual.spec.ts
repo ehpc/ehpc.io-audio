@@ -5,7 +5,7 @@ import { expect, type Locator, type Page, type TestInfo } from '@playwright/test
 import { test } from './auth-fixture';
 import type { PitchAnalysisDTO } from '../src/api';
 import { songArtwork, songVersions } from './song-fixtures';
-import { seedCachedSongs } from './cache-fixture';
+import { cleanupRegenerationFixtures, seedCachedSongs, seedRegenerationCandidates } from './cache-fixture';
 
 const mobile = { width: 390, height: 844 };
 const desktop = { width: 1440, height: 1000 };
@@ -96,6 +96,7 @@ for (const viewport of [desktop, mobile]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
+
 
 for (const viewport of [desktop, mobile]) {
   test(`account screens ${viewport.width}`, async ({ page, context }, info) => {
@@ -848,5 +849,33 @@ for (const viewport of [mobile, desktop]) {
       await expect(view.getByRole('slider', { name: 'Pitch timeline position' })).toHaveAttribute('aria-valuenow', '0');
       await page.screenshot({ path: info.outputPath('responsive-controls.png') });
     });
+  });
+}
+for (const viewport of [mobile, desktop]) {
+  test(`admin regeneration choices ${viewport.width}`, async ({ page }, info) => {
+    cleanupRegenerationFixtures();
+    try {
+      seedCachedSongs();
+      seedRegenerationCandidates([800001, 800002]);
+      await page.setViewportSize(viewport);
+      await page.goto('/');
+      await page.getByRole('button', { name: 'People', exact: true }).click();
+      await page.getByRole('button', { name: 'Manage cached songs' }).click();
+      const cache = page.getByRole('region', { name: 'Cached songs' });
+      await expect(cache.getByText('Silver harbor')).toBeVisible();
+      await cache.getByRole('button', { name: 'Regenerate Silver harbor' }).click();
+      const dialog = page.getByRole('alertdialog');
+      await expect(dialog.getByRole('checkbox')).toHaveCount(2);
+      await expect(dialog).toContainText('Karaoke with pitches');
+      await expect(dialog).toContainText('pitch +2 st · tempo 90%');
+      await expect(dialog).toContainText('original owners’ Library');
+      await expect(dialog.getByRole('button', { name: 'Queue regeneration' })).toBeDisabled();
+      await expect(dialog.getByRole('checkbox').nth(0)).not.toBeChecked();
+      await expect(dialog.getByRole('checkbox').nth(1)).not.toBeChecked();
+      await compare(dialog, info, `admin-cache-regeneration-${viewport.width}.png`);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    } finally {
+      cleanupRegenerationFixtures();
+    }
   });
 }

@@ -446,6 +446,16 @@ def snapshot() -> CacheSnapshot:
     }
 
 
+def song_digests(ids: set[str]) -> dict[str, str]:
+    """Resolve only identifiers from the currently visible catalog snapshot."""
+    with _connection() as db:
+        return {
+            ident: digest
+            for digest, ident in db.execute("SELECT digest, id FROM songs")
+            if ident in ids
+        }
+
+
 def select_paths(ids: list[str]) -> set[str]:
     with _connection() as db:
         songs = {

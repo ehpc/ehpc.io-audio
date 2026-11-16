@@ -15,6 +15,7 @@ COPY backend/ backend/
 COPY separator/ separator/
 COPY frontend/ frontend/
 COPY tests/fixtures/auld-lang-syne-full.ogg tests/fixtures/auld-lang-syne-full.ogg
+COPY tests/inference_fixture.py tests/pitched_lyrics_odt_fixture.py tests/
 ENV E2E_VISUAL_RUNTIME=playwright-1.64.1-noble
 WORKDIR /app/frontend
 ENTRYPOINT ["node", "e2e/run.mjs", "--visual", "--config=playwright.visual.config.ts"]

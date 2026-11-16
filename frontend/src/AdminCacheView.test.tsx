@@ -4,10 +4,16 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as api from "./api";
 import AdminCacheView from "./AdminCacheView";
 
-vi.mock("./api", async original => ({ ...await original<typeof api>(), adminCache: vi.fn(), clearAdminCache: vi.fn() }));
+vi.mock("./api", async original => ({
+  ...await original<typeof api>(),
+  adminCache: vi.fn(),
+  adminCacheRegenerations: vi.fn(),
+  clearAdminCache: vi.fn(),
+  regenerateAdminCache: vi.fn(),
+}));
 const songs = [
-  { id: "a", title: "Silver harbor", artist: "Example singer", bytes: 4096 },
-  { id: "b", title: "Quiet morning", artist: null, bytes: 2048 },
+  { id: "a", title: "Silver harbor", artist: "Example singer", bytes: 4096, candidates: [] },
+  { id: "b", title: "Quiet morning", artist: null, bytes: 2048, candidates: [] },
 ];
 const ready: api.AdminCache = { songs, unattributed_bytes: 0, selective_ready: true, busy: false, unsafe: false };
 
@@ -15,6 +21,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.stubGlobal("scrollTo", vi.fn());
   vi.mocked(api.adminCache).mockResolvedValue(ready);
+  vi.mocked(api.adminCacheRegenerations).mockResolvedValue([]);
+  vi.mocked(api.regenerateAdminCache).mockResolvedValue([]);
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 

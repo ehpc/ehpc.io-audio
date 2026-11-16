@@ -51,6 +51,13 @@ async def _publish_status(job_id: int) -> None:
 
 
 def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
+    snapshot = db.regeneration_snapshot(job.id)
+    if snapshot is not None:
+        filename, expected = snapshot
+        audio = (config.UPLOADS_DIR / str(job.id) / filename).read_bytes()
+        if digest(audio) != expected:
+            raise ValueError("Regeneration source snapshot changed")
+        return audio, filename
     if job.source_type == "upload":
         path = config.UPLOADS_DIR / str(job.id) / job.source_value
         return path.read_bytes(), job.source_value
@@ -147,7 +154,10 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
         )
         log.info("job %s loading source", job.id)
         audio_bytes, filename = await _cache_thread(_load_source_bytes, job)
-        if job.source_type == "upload":
+        if (
+            job.source_type == "upload"
+            or await asyncio.to_thread(db.regeneration_snapshot, job.id) is not None
+        ):
             recorder.bind(audio_bytes, job.title or Path(filename).stem)
         log.info(
             "job %s source ready (%s, %.1f MB)",

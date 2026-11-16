@@ -4,13 +4,16 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, fields
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 from backend import auth_store, config
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
 from separator.lyrics import Transcript, transcript_from_json
 from separator.options import SeparationOptions
 from separator.song_search import SEARCH_TTL
+
+if TYPE_CHECKING:
+    from backend.regeneration import PreparedRegeneration
 
 _OPTION_FIELDS = {f.name for f in fields(SeparationOptions)}
 # Renamed options in older stored jobs → current field names.
@@ -78,6 +81,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id, id DESC);
 {_SEARCH_SCHEMA}
+CREATE TABLE IF NOT EXISTS regenerations (
+    job_id INTEGER PRIMARY KEY,
+    source_job_id INTEGER NOT NULL,
+    song_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    source_sha256 TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regenerations_source ON regenerations(source_job_id);
 """
 
 
@@ -391,6 +402,184 @@ def insert_job(
         return cursor.lastrowid
 
 
+class SourceJob(NamedTuple):
+    id: int
+    session_id: str
+    source_type: str
+    source_value: str
+    title: str | None
+    options_json: str
+
+    @property
+    def options(self) -> SeparationOptions:
+        return _load_options(self.options_json)
+
+
+class RegenerationStatus(TypedDict):
+    song_id: str
+    source_job_id: int
+    job_id: int
+    status: str
+    position: int | None
+    error_message: str | None
+
+
+_SOURCE_COLUMNS = "id, session_id, source_type, source_value, title, options_json"
+
+
+def completed_jobs() -> list[SourceJob]:
+    with _session() as conn:
+        return [
+            SourceJob(*row)
+            for row in conn.execute(
+                f"SELECT {_SOURCE_COLUMNS} FROM jobs "
+                "WHERE status='done' ORDER BY id DESC"
+            )
+        ]
+
+
+def source_job(job_id: int, *, completed: bool = True) -> SourceJob | None:
+    with _session() as conn:
+        row = conn.execute(
+            f"SELECT {_SOURCE_COLUMNS} FROM jobs WHERE id=?"
+            + (" AND status='done'" if completed else ""),
+            (job_id,),
+        ).fetchone()
+        return SourceJob(*row) if row else None
+
+
+def regeneration_snapshot(job_id: int) -> tuple[str, str] | None:
+    with _session() as conn:
+        row = conn.execute(
+            "SELECT filename, source_sha256 FROM regenerations WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        return tuple(row) if row else None
+
+
+def regeneration_origin(job_id: int) -> tuple[str, str] | None:
+    with _session() as conn:
+        row = conn.execute(
+            "SELECT song_id, source_sha256 FROM regenerations WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        return (row["song_id"], row["source_sha256"]) if row else None
+
+
+def regeneration_status() -> list[RegenerationStatus]:
+    with _session() as conn:
+        rows = conn.execute("""
+            SELECT r.song_id, r.source_job_id, j.id AS job_id, j.status,
+                CASE WHEN j.status='queued' THEN
+                    (SELECT COUNT(*) + 1 FROM jobs q
+                     WHERE q.status='queued' AND q.id < j.id)
+                ELSE NULL END AS position, j.error_message
+            FROM regenerations r JOIN jobs j ON j.id=r.job_id
+            WHERE j.status IN ('queued','running') OR j.id IN (
+                SELECT job_id FROM regenerations ORDER BY job_id DESC LIMIT 50
+            )
+            ORDER BY j.id DESC
+        """).fetchall()
+        return [
+            RegenerationStatus(
+                song_id=row["song_id"],
+                source_job_id=row["source_job_id"],
+                job_id=row["job_id"],
+                status=row["status"],
+                position=row["position"],
+                error_message=row["error_message"],
+            )
+            for row in rows
+        ]
+
+
+def enqueue_regenerations(
+    items: list["PreparedRegeneration"],
+    install: Callable[[int, "PreparedRegeneration"], None],
+    *,
+    require_completed: bool = True,
+) -> list[int]:
+    """Validate the complete batch before installing files or publishing jobs."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        total = (
+            conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"
+            ).fetchone()[0]
+            + conn.execute(
+                "SELECT COUNT(*) FROM song_searches "
+                "WHERE pending_query IS NOT NULL AND created_at > ?",
+                (int(time.time()) - SEARCH_TTL,),
+            ).fetchone()[0]
+        )
+        global_limit = auth_store.setting(conn, "global_queue", 50)
+        user_limit = auth_store.setting(conn, "user_queue", 5)
+        additions = {}
+        for item in items:
+            job = item.job
+            row = conn.execute(
+                f"SELECT {_SOURCE_COLUMNS} FROM jobs WHERE id=?"
+                + (" AND status='done'" if require_completed else ""),
+                (job.id,),
+            ).fetchone()
+            if row is None or SourceJob(*row) != job:
+                raise ValueError("Original job changed")
+            if (
+                require_completed
+                and conn.execute(
+                    "SELECT 1 FROM regenerations r JOIN jobs j ON j.id=r.job_id "
+                    "WHERE r.source_job_id=? AND j.status IN ('queued','running')",
+                    (job.id,),
+                ).fetchone()
+            ):
+                raise ValueError("This job is already being regenerated")
+            additions[job.session_id] = additions.get(job.session_id, 0) + 1
+        if total + len(items) > global_limit:
+            raise ValueError("Queue limit reached")
+        for session_id, count in additions.items():
+            if not session_id.startswith("acct:"):
+                continue
+            own = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE session_id=? "
+                    "AND status IN ('queued','running')",
+                    (session_id,),
+                ).fetchone()[0]
+                + conn.execute(
+                    "SELECT COUNT(*) FROM song_searches WHERE session_id=? "
+                    "AND pending_query IS NOT NULL AND created_at > ?",
+                    (session_id, int(time.time()) - SEARCH_TTL),
+                ).fetchone()[0]
+            )
+            if own + count > user_limit:
+                raise ValueError("Queue limit reached")
+        ids = []
+        for item in items:
+            job = item.job
+            cursor = conn.execute(
+                "INSERT INTO jobs (session_id,status,source_type,source_value,"
+                "title,options_json,created_at) "
+                "VALUES (?,'queued',?,?,?,?,?)",
+                (
+                    job.session_id,
+                    job.source_type,
+                    job.source_value,
+                    job.title,
+                    job.options_json,
+                    int(time.time()),
+                ),
+            )
+            new_id = cursor.lastrowid
+            assert new_id is not None
+            install(new_id, item)
+            conn.execute(
+                "INSERT INTO regenerations VALUES (?,?,?,?,?)",
+                (new_id, job.id, item.song_id, item.filename, item.digest),
+            )
+            ids.append(new_id)
+        return ids
+
+
 def set_title(job_id: int, title: str) -> None:
     with _session() as conn:
         conn.execute("UPDATE jobs SET title = ? WHERE id = ?", (title, job_id))
@@ -431,6 +620,7 @@ def delete_completed_job(
         ):
             raise ValueError("Job is not ready for deletion")
         remove_files()
+        conn.execute("DELETE FROM regenerations WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         return True
 
