@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { test as authenticatedTest } from './auth-fixture';
 
-// All API traffic is intercepted; these tests never enqueue a real job.
+// These layout cases intercept API traffic and never enqueue a real job.
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test(`accepted job dock remains usable at ${viewport.width}px`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
@@ -102,3 +106,79 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     expect(errors).toEqual([]);
   });
 }
+
+// Run with the real authenticated backend and key analyzer, but no worker.
+// Complete each accepted job in the isolated database before its real POST
+// response reaches the UI, so the real SSE snapshot observes completion.
+authenticatedTest('completed dock does not prevent another source analysis and submission', async ({ page }) => {
+  expect(process.env.QUEUE_CONCURRENCY).toBe('0');
+  const createdIds: number[] = [];
+  const releaseAnalysis = Promise.withResolvers<void>();
+  const analysisFetched = Promise.withResolvers<void>();
+  await page.route('**/api/jobs', async route => {
+    if (route.request().method() !== 'POST') { await route.continue(); return; }
+    const response = await route.fetch();
+    if (response.ok()) {
+      const created = await response.json() as { id: number };
+      createdIds.push(created.id);
+      execFileSync('uv', ['run', 'python', '-c', String.raw`
+import os,sys
+from backend import config,db
+assert config.QUEUE_CONCURRENCY == 0
+assert str(config.DATA_DIR.resolve()) == os.environ['E2E_DATA_DIR']
+job=db.get_job(int(sys.argv[1]))
+assert job is not None and job.status == 'queued' and job.modal_call_id is None
+db.mark_done(job.id,[],None)
+`, String(created.id)], { cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! } });
+    }
+    await route.fulfill({ response });
+  });
+  try {
+    await page.goto('/');
+    const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
+    await page.getByRole('button', { name: 'Upload audio', exact: true }).click();
+    const input = page.getByLabel('Audio file', { exact: true });
+    const analysisStatus = page.getByRole('region', { name: 'Audio source', exact: true }).getByRole('status');
+    const firstAnalysis = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
+    await input.setInputFiles({ name: 'first-tone.wav', mimeType: 'audio/wav', buffer: source });
+    expect((await firstAnalysis).ok()).toBe(true);
+    await expect(analysisStatus).toHaveCount(0);
+    const firstPost = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
+    await page.getByRole('button', { name: 'Download song', exact: true }).click();
+    expect((await firstPost).ok()).toBe(true);
+    const dock = page.locator('.job-dock');
+    await expect(dock).toContainText('Complete');
+    await page.route('**/api/key-analysis', async route => {
+      const response = await route.fetch();
+      analysisFetched.resolve();
+      await releaseAnalysis.promise;
+      await route.fulfill({ response });
+    });
+
+    const secondAnalysis = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
+    await input.setInputFiles({ name: 'second-tone.wav', mimeType: 'audio/wav', buffer: source });
+    await analysisFetched.promise;
+    await expect(analysisStatus).toBeVisible();
+    await expect(dock).toContainText('Complete');
+    releaseAnalysis.resolve();
+    expect((await secondAnalysis).ok()).toBe(true);
+    await expect(analysisStatus).toHaveCount(0);
+    await expect(dock).toContainText('Complete');
+    await page.getByRole('checkbox', { name: 'Extract vocals', exact: true }).check();
+    const processButton = page.getByRole('button', { name: 'Process audio', exact: true });
+    await expect(processButton).toBeEnabled();
+    const secondPost = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
+    await processButton.click();
+    expect((await secondPost).ok()).toBe(true);
+    expect(createdIds).toHaveLength(2);
+    await expect(dock).toContainText('second-tone.wav');
+    await expect(dock).toContainText('Complete');
+  } finally {
+    releaseAnalysis.resolve();
+    await page.goto('about:blank');
+    for (const id of createdIds) {
+      const response = await page.request.delete(`/api/jobs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      expect(response.status()).toBe(204);
+    }
+  }
+});

@@ -16,7 +16,7 @@ async function submitJfk(page: Page, options: { vocals?: boolean; pitch?: number
   const analysisPromise = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
   await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'jfk.flac', mimeType: 'audio/flac', buffer: input });
   expect((await analysisPromise).ok()).toBe(true);
-  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Audio source', exact: true }).getByRole('status')).toHaveCount(0);
   await page.getByRole('checkbox', { name: 'Extract lyrics', exact: true }).check();
   if (options.vocals) await page.getByRole('checkbox', { name: 'Extract vocals', exact: true }).check();
   if (options.pitch !== undefined) await page.getByLabel('Pitch shift (semitones)', { exact: true }).fill(String(options.pitch));
