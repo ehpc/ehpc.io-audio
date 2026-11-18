@@ -128,13 +128,13 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
           const otherButton = selectedHistory.getByRole('button', { name: otherTitle, exact: true });
           await expect(selectedButton).toHaveAttribute('aria-current', 'true');
           await expect(otherButton).not.toHaveAttribute('aria-current', 'true');
-          const selectedPrecedesOther = await selectedButton.evaluate((selected, title) => {
-            const history = selected.closest('[aria-label="History"]');
-            const other = [...(history?.querySelectorAll('button') ?? [])]
-              .find(button => button.textContent?.trim() === title);
-            return other !== undefined
+          const selectedPrecedesOther = await selectedHistory.evaluate((history, titles) => {
+            const buttons = [...history.querySelectorAll('button')];
+            const selected = buttons.find(button => button.textContent?.trim() === titles.selected);
+            const other = buttons.find(button => button.textContent?.trim() === titles.other);
+            return selected !== undefined && other !== undefined
               && Boolean(selected.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING);
-          }, otherTitle);
+          }, { selected: selectedTitle, other: otherTitle });
           expect(selectedPrecedesOther).toBe(true);
           if (viewport.isMobile) {
             await viewportPage.keyboard.press('Escape');
