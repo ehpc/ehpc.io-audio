@@ -55,6 +55,56 @@ for (const viewport of [mobile, desktop]) {
     }
   });
 }
+// A private, queue-disabled fixture exercises the real accepted-job dock.
+const seedQueuedDock = String.raw`
+import sys
+from backend import config, db
+assert config.QUEUE_CONCURRENCY == 0
+with db._session() as c:
+    cursor = c.execute("INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                       (sys.argv[1], "queued", "upload", "fixture.wav", "Queued visual fixture song", "{}", 1767268800))
+    print(cursor.lastrowid)
+`;
+for (const viewport of [mobile, desktop]) {
+  test(`queued job dock ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
+    const id = execFileSync('uv', ['run', 'python', '-c', seedQueuedDock, identity.id], {
+      cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! }, encoding: 'utf8',
+    }).trim();
+    try {
+      await page.goto('/');
+      const dock = page.locator('.job-dock');
+      await expect(dock).toContainText('Queued visual fixture song');
+      await expect(dock).toContainText('Queued · Waiting to start');
+      await expect(dock.getByRole('button', { name: 'View progress' })).toBeVisible();
+      const geometry = await dock.evaluate(node => {
+        const bounds = node.getBoundingClientRect();
+        const action = document.querySelector<HTMLElement>('.workspace-action')?.getBoundingClientRect();
+        return { left: bounds.left, right: bounds.right, bottom: bounds.bottom, actionTop: action?.top, viewport: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth };
+      });
+      expect(geometry.left).toBeGreaterThanOrEqual(0);
+      expect(geometry.right).toBeLessThanOrEqual(geometry.viewport);
+      expect(geometry.bottom).toBeLessThanOrEqual(geometry.height);
+      expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewport);
+      if (viewport.width === mobile.width && geometry.actionTop !== undefined) expect(geometry.bottom).toBeLessThanOrEqual(geometry.actionTop);
+      await page.screenshot({ path: info.outputPath(`queued-dock-context-${viewport.width}.png`), animations: 'disabled' });
+      await compare(dock, info, `queued-job-dock-${viewport.width}.png`);
+    } finally {
+      await page.goto('about:blank');
+      execFileSync('uv', ['run', 'python', '-c', String.raw`
+import sys
+from backend import config, db
+assert config.QUEUE_CONCURRENCY == 0
+with db._session() as c:
+    c.execute("DELETE FROM jobs WHERE id=? AND session_id=? AND status='queued' AND title='Queued visual fixture song'", (int(sys.argv[1]), sys.argv[2]))
+`, id, identity.id], {
+        cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+    }
+  });
+}
+
 // Fixed, synthetic metadata in the isolated database exercises the actual admin
 // activity UI without sending searches, mail, or inference requests.
 const seedAccountActivity = String.raw`

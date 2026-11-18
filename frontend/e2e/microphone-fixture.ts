@@ -6,14 +6,23 @@ import { test as base } from './auth-fixture';
 
 export const wavePath = resolve(process.env.E2E_FIXTURE_DIR!, 'microphone-tones.wav');
 const seed = String.raw`
-import json,os,sys
+import json,os,sys,subprocess
 from pathlib import Path
-from backend import config,db
+from backend import cache_catalog,config,db
+from backend.queue import _persist_results
+from separator.stems import StemResult
 from separator.pitch import pitch_from_json,pitch_to_json
 assert config.QUEUE_CONCURRENCY == 0
 assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
 job=db.get_job(int(sys.argv[1]))
-db.mark_done(job.id,[],None,pitch_to_json(pitch_from_json(json.dumps(json.load(sys.stdin)['pitch']))))
+manifest=[]
+if sys.argv[2] == 'backing':
+ wav=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-f','lavfi','-i','sine=frequency=220:duration=30:sample_rate=24000','-f','wav','pipe:1'],stdin=subprocess.DEVNULL,capture_output=True,check=True).stdout
+ source=(config.UPLOADS_DIR / str(job.id) / job.source_value).read_bytes()
+ with cache_catalog.capture() as recorder:
+  recorder.bind(source,job.title)
+  manifest=_persist_results(job,{'instruments':StemResult(wav,0)})
+db.mark_done(job.id,manifest,None,pitch_to_json(pitch_from_json(json.dumps(json.load(sys.stdin)['pitch']))))
 `;
 
 const cleanup = String.raw`
@@ -35,7 +44,7 @@ if row:
 `;
 
 export async function writeMicrophoneWave() {
-  const rate = 48000, seconds = 3, frequencies = [329.6275569, 329.6275569 * 2 ** (10 / 1200), 329.6275569 * 2 ** (35 / 1200), 0, 220 * 2 ** (-30 / 1200)];
+  const rate = 48000, seconds = 3, frequencies = [329.6275569, 329.6275569 * 2 ** (10 / 1200), 329.6275569 * 2 ** (35 / 1200), 0, 220 * 2 ** (-30 / 1200), 277.1826309];
   const count = rate * seconds * frequencies.length;
   const wav = Buffer.alloc(44 + count * 2);
   wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8);
@@ -49,13 +58,13 @@ export async function writeMicrophoneWave() {
   await writeFile(wavePath, wav);
 }
 
-export const test = base.extend<{ openPitchJob: () => Promise<void> }>({
+export const test = base.extend<{ openPitchJob: (backing?: boolean) => Promise<void> }>({
   openPitchJob: async ({ page }, use) => {
-    let jobId: number | undefined;
+    const jobIds: number[] = [];
     let owner: string | undefined;
     const root = process.env.E2E_REPO_ROOT!;
     const env = { ...process.env, UV_NO_SYNC: '1', DATA_DIR: process.env.E2E_DATA_DIR! };
-    await use(async () => {
+    await use(async (backing = false) => {
       await page.goto('/');
       owner = (await (await page.request.get('/api/auth/me')).json()).id;
       const audio = await readFile(resolve(root, 'tests/fixtures/auld-lang-syne-full.ogg'));
@@ -64,10 +73,11 @@ export const test = base.extend<{ openPitchJob: () => Promise<void> }>({
         file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: audio }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
       } });
       expect(response.ok()).toBe(true);
-      jobId = (await response.json()).id;
-      execFileSync('uv', ['run', 'python', '-c', seed, String(jobId)], { cwd: root, input: fixture, env });
+      const jobId: number = (await response.json()).id;
+      jobIds.push(jobId);
+      execFileSync('uv', ['run', 'python', '-c', seed, String(jobId), backing ? 'backing' : 'none'], { cwd: root, input: fixture, env });
       await page.reload();
     });
-    if (jobId !== undefined) execFileSync('uv', ['run', 'python', '-c', cleanup, String(jobId), owner!], { cwd: root, env });
+    for (const jobId of jobIds) execFileSync('uv', ['run', 'python', '-c', cleanup, String(jobId), owner!], { cwd: root, env });
   },
 });

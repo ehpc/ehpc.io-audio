@@ -4,6 +4,8 @@ import type { JobDTO, PitchNoteDTO } from "~/api";
 import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, recoverPitchVocals, resultUrl } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
 import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
+import { LivePitchTrace } from "~/lib/livePitchTrace";
+import type { MicrophonePitch } from "~/lib/microphonePitch";
 import { Button } from "~/components/button";
 import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
 import PianoKeyboard from "./PianoKeyboard";
@@ -66,6 +68,20 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const dismissTooltip = () => setTooltip(null);
   let audio!: HTMLAudioElement;
   let viewport!: HTMLDivElement;
+  const trace = new LivePitchTrace(analysis().duration_s);
+  const [traceRevision, setTraceRevision] = createSignal(0);
+  const [visibleLeft, setVisibleLeft] = createSignal(0);
+  const [visibleWidth, setVisibleWidth] = createSignal(0);
+  let mediaAdvancing = false;
+  const sampleVoice = (pitch: MicrophonePitch | null, listening: boolean) => {
+    if (!listening || !audio || !mediaAdvancing || audio.paused || audio.ended || audio.seeking || audio.error) {
+      trace.break();
+      return;
+    }
+    if (trace.sample(fromAudioTime(audio.currentTime), pitch ? pitch.midi + pitch.cents / 100 : null)) {
+      setTraceRevision(value => value + 1);
+    }
+  };
   let lastScrollLeft = 0;
   let lastScrollTop = 0;
   let programmedScroll: { left: number; top: number } | undefined;
@@ -134,6 +150,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     viewport.scrollLeft = Math.max(0, left);
     viewport.scrollTop = Math.max(0, top);
     lastScrollLeft = viewport.scrollLeft;
+    setVisibleLeft(viewport.scrollLeft);
     lastScrollTop = viewport.scrollTop;
     programmedScroll = { left: lastScrollLeft, top: lastScrollTop };
   };
@@ -141,6 +158,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     const left = viewport.scrollLeft;
     const top = viewport.scrollTop;
     const previousLeft = lastScrollLeft;
+    setVisibleLeft(left);
     const previousTop = lastScrollTop;
     lastScrollLeft = left;
     lastScrollTop = top;
@@ -170,6 +188,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const stopPlaybackClock = () => {
     if (playbackFrame !== undefined) cancelAnimationFrame(playbackFrame);
     playbackFrame = undefined;
+    mediaAdvancing = false;
+    trace.break();
     if (audio) syncNativePlayback();
   };
   const startPlaybackClock = () => {
@@ -202,6 +222,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     showTooltip(target, note, note.word_indices.map(index => analysis().words[index]?.text).filter(Boolean).join(" "), note.note);
   };
   onMount(() => {
+    const resize = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => setVisibleWidth(viewport?.clientWidth ?? 0));
+    if (viewport) { setVisibleWidth(viewport.clientWidth); resize?.observe(viewport); }
     window.addEventListener("scroll", dismissTooltip, true);
     window.addEventListener("resize", dismissTooltip);
     const pointerEnded = (event: PointerEvent) => {
@@ -238,6 +260,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     window.addEventListener("keyup", keyEnded);
     window.addEventListener("scrollend", scrollEnded, true);
     onCleanup(() => {
+      resize?.disconnect();
       playAttempt++;
       cancelReference(false);
       audio.pause();
@@ -356,6 +379,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     const oldSlot = activeSlot();
     pending = undefined;
     playAttempt++;
+    trace.break();
     stopPlaybackClock();
     previous.pause();
     audio = slots[candidate.slot];
@@ -374,7 +398,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     setReferenceError("");
     syncNativePlayback();
     updatePosition();
-    if (!audio.paused) startPlaybackClock();
+    if (!audio.paused) {
+      startPlaybackClock();
+      mediaAdvancing = audio.readyState >= 3 && !audio.seeking;
+    }
   };
   const prepareReference = (index: number) => {
     const candidate = pending;
@@ -423,6 +450,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     slots[slot].load();
   };
   const seek = (seconds: number, maximum = analysis().duration_s) => {
+    trace.break();
     const next = Math.max(0, Math.min(maximum, seconds));
     setSeekRevision(value => value + 1);
     if (audio && Math.abs(audio.currentTime - toAudioTime(next)) > 0.001) setSeeking(true);
@@ -606,7 +634,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <p class="text-xs text-muted-foreground">Original-speed playback uses its original clock, mapped to the output timeline. Select Just vocals for matching transformed playback when available.</p>
       </Show>
       <p class="text-xs text-muted-foreground">Swipe or scroll horizontally; zoom for short notes. Tap the time ruler to seek, or tap a note to seek and inspect it. Focus the ruler and use arrow keys (1 second), Page Up/Down (10 seconds), or Home/End. Playback position: {timeLabel(position())} (output time).</p>
-      <MicrophoneTuner />
+      <MicrophoneTuner onSample={sampleVoice} />
+      <p class="pitch-voice-legend text-xs text-muted-foreground">Your voice · live microphone pitch while playback advances; capture and analysis add a small delay.</p>
       <Show when={analysis().word_alignment && analysis().words.length === 0}>
         <p class="text-sm text-muted-foreground">No sung words were recognized; pitch notes remain available.</p>
       </Show>
@@ -679,6 +708,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
                       textLength={Math.min(note.note.length * 7.2, Math.max(1, noteWidth() - 2))} lengthAdjust="spacingAndGlyphs">{note.note}</text>
                   </g>;
                 }}</For>
+                <svg x={visibleLeft()} y="0" width={Math.max(0, visibleWidth() - AXIS_WIDTH)} height={pitchHeight()} overflow="hidden" aria-hidden="true" pointer-events="none">
+                  <path class="pitch-voice-trace" d={(() => {
+                    traceRevision();
+                    const start = visibleLeft() / zoom();
+                    return trace.path(start, start + Math.max(0, visibleWidth() - AXIS_WIDTH) / zoom(), zoom(), rows()[0], ROW_HEIGHT);
+                  })()} />
+                </svg>
                 <line x1={position() * zoom()} x2={position() * zoom()} y1="0" y2={pitchHeight()} class="pitch-playhead" />
               </svg>
             </div>
@@ -744,6 +780,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             style={{ display: activeSlot() === index ? "block" : "none" }} class="w-full" src={source.url}
             onSeeking={event => {
               if (event.currentTarget !== audio) return;
+              trace.break();
               setSeeking(true);
               setSeekRevision(value => value + 1);
               nativeSeekPending = internalSeekTime === null || Math.abs(audio.currentTime - internalSeekTime) > 0.01;
@@ -754,6 +791,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
               if (pending?.phase === "playing") cancelReference(false);
               startPlaybackClock();
             }}
+            onPlaying={event => { if (event.currentTarget === audio) mediaAdvancing = true; }}
+            onWaiting={event => { if (event.currentTarget === audio) { mediaAdvancing = false; trace.break(); } }}
             onPause={event => { if (event.currentTarget === audio) stopPlaybackClock(); }}
             onEnded={event => { if (event.currentTarget === audio) stopPlaybackClock(); }}
             onEmptied={event => { if (event.currentTarget === audio) stopPlaybackClock(); }}

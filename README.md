@@ -286,6 +286,12 @@ lyrics remain visible while online-alignment and raw-recognition diagnostics are
 initially collapsed in the **Online alignment and raw recognition details**
 disclosure.
 
+A fixed status dock follows the latest accepted job independently of which
+History entry is open. It distinguishes waiting in the queue from actual
+processing and reports completion or failure; **View progress**, **View result**
+or **View error** returns to that job. The layout measures dock height to preserve
+space for controls, including the mobile action. It does not play a chime.
+
 Each signed-in user can delete their own completed History entries after a
 confirmation. Deletion permanently removes that job's history, original upload
 or download, saved outputs, and private karaoke vocal reference; it does not
@@ -697,11 +703,21 @@ jobs apply this rule using cached raw CREPE frames.
 
 A separate, default-off microphone tuner uses local browser Web Audio and
 Pitchy 4.1.0 to show the nearest equal-tempered note from A440 and signed cents.
-Only activating its button requests microphone access. The gauge clamps visually
-at ±25 cents while retaining the measured deviation; silence or unvoiced input
-shows a listening state, not a note. Turning it off, hiding the page or unmounting
-stops microphone tracks. It measures microphone input rather than scoring or
-matching the song; headphones help reduce backing-audio bleed.
+Only activating its button requests microphone access; after permission the input
+selector can show available named devices and switch microphones. The note and
+gauge keep a stable-sized reading area. The gauge clamps visually at ±25 cents
+while retaining the measured deviation; silence or unvoiced input shows a
+listening state, not a note. Turning it off, hiding the page or unmounting stops
+microphone tracks. It measures input rather than scoring or matching the song;
+headphones help reduce backing-audio bleed.
+
+While microphone capture and playback are both active, **Your voice** draws the
+live fractional pitch on the output-time timeline in 50 ms cells. Silence leaves
+gaps. Pausing preserves the trace, and seeking preserves it until playback
+revisits a span; a new take overwrites only the visited span, leaving its future
+intact. Opening a different song or result, changing the result revision or reloading clears this
+in-memory trace. Capture and rendering have approximate latency; this is not a
+score.
 
 Both the [torchcrepe implementation/license](https://github.com/maxrmorrison/torchcrepe/blob/master/LICENSE)
 and the original [CREPE model repository/license](https://github.com/marl/crepe/blob/master/LICENSE)

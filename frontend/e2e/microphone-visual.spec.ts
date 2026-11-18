@@ -19,11 +19,12 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 1000
     await page.setViewportSize(viewport);
     await openPitchJob();
     const tuner = page.getByRole('region', { name: 'Live microphone pitch' });
-    await tuner.screenshot({ path: info.outputPath('microphone-off-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
-    await expect(tuner).toHaveScreenshot(`microphone-off-${viewport.width}.png`);
+    const display = tuner.locator('.mic-tuner-display');
+    await display.screenshot({ path: info.outputPath('microphone-reading-off-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect(display).toHaveScreenshot(`microphone-reading-off-${viewport.width}.png`);
     await tuner.getByRole('button', { name: 'Start microphone pitch detection' }).click();
     await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/E4\s*\+35 cents/, { timeout: 15_000 });
-    await tuner.screenshot({ path: info.outputPath('microphone-sharp-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
-    await expect(tuner).toHaveScreenshot(`microphone-sharp-${viewport.width}.png`);
+    await display.screenshot({ path: info.outputPath('microphone-reading-sharp-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect(display).toHaveScreenshot(`microphone-reading-sharp-${viewport.width}.png`);
   });
 }

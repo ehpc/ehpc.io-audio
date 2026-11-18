@@ -232,6 +232,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
 
   const handleSubmit = async (event: Event) => {
     event.preventDefault();
+    if (submitting()) return;
     const invalid = validationError();
     if (invalid) {
       setError(invalid);

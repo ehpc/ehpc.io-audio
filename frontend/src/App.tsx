@@ -1,9 +1,10 @@
-import { createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
 import * as Dialog from "@kobalte/core/dialog";
 import type { JobDTO } from "./api";
-import { getCurrentJob, getJob, listJobs } from "./api";
+import { getCurrentJob, getJob, listJobs, subscribeToJob } from "./api";
 import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
+import JobStatusDock from "./components/JobStatusDock";
 import ResultsView, { type HistoryScrollRequest } from "./components/ResultsView";
 import HistoryView from "./components/HistoryView";
 import { useAuth } from "./AuthProvider";
@@ -13,6 +14,9 @@ import { Button } from "~/components/button";
 
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
+  const [trackedJob, setTrackedJob] = createSignal<JobDTO | null>(null);
+  const subscriptions = new Map<number, () => void>();
+  let progressTarget: HTMLDivElement | undefined;
   const [history, setHistory] = createSignal<JobDTO[]>([]);
   const [historyScrollRequest, setHistoryScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
   let historyScrollToken = 0;
@@ -27,6 +31,7 @@ const App: Component = () => {
   const [libraryOpen, setLibraryOpen] = createSignal(false);
   let libraryTrigger: HTMLButtonElement | undefined;
   let selectedFromLibrary = false;
+  let viewingFromLibrary = false;
 
   onMount(() => {
     const query = window.matchMedia?.("(max-width: 1000px)");
@@ -67,6 +72,7 @@ const App: Component = () => {
       const latest = await getJob(id);
       if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
       setJob(latest);
+      if (trackedJob()?.id === id) setTrackedJob(latest);
       historyRequestRevision++;
       setHistory(items => items.some(item => item.id === id)
         ? items.map(item => item.id === id ? latest : item)
@@ -80,12 +86,112 @@ const App: Component = () => {
       setHistoryScrollRequest({ jobId: id, token: scrollToken });
     }
   };
+  // One stream per active ID, shared by the selected view and the latest
+  // accepted job. A late fallback is ignored once that ID is no longer watched.
+  createEffect(() => {
+    const selected = job();
+    const tracked = trackedJob();
+    const wanted = new Set<number>();
+    if (selected && (selected.status === "queued" || selected.status === "running")) wanted.add(selected.id);
+    if (tracked && (tracked.status === "queued" || tracked.status === "running")) wanted.add(tracked.id);
+    for (const [id, unsubscribe] of subscriptions) {
+      if (!wanted.has(id)) {
+        subscriptions.delete(id);
+        unsubscribe();
+      }
+    }
+    for (const id of wanted) {
+      if (subscriptions.has(id)) continue;
+      let valid = true;
+      const apply = (next: JobDTO) => {
+        if (!valid || next.id !== id || deletedJobIds.has(id)) return;
+        if (job()?.id === id) {
+          currentJobRevision++;
+          setSelectedJobRefreshError(null);
+          setJob(next);
+        }
+        if (trackedJob()?.id === id) setTrackedJob(next);
+        if (next.status === "done" || next.status === "failed") void refreshHistory();
+      };
+      const close = subscribeToJob(id, apply, async () => {
+        try { apply(await getJob(id)); } catch { /* Keep the last known status. */ }
+      });
+      subscriptions.set(id, () => { valid = false; close(); });
+    }
+  });
+  onCleanup(() => {
+    for (const unsubscribe of subscriptions.values()) unsubscribe();
+    subscriptions.clear();
+  });
+
+  onMount(() => {
+    const root = document.documentElement;
+    const action = document.querySelector<HTMLElement>(".workspace-action");
+    const updateAction = () => {
+      const rect = action?.getBoundingClientRect();
+      const sticky = action && rect && getComputedStyle(action).position === "sticky" &&
+        rect.bottom >= innerHeight - 1 && rect.top < innerHeight && rect.bottom <= innerHeight + 1;
+      root.style.setProperty("--job-action-height", sticky ? `${rect.height}px` : "0px");
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateAction);
+    if (action) observer?.observe(action);
+    window.addEventListener("scroll", updateAction, { passive: true });
+    window.addEventListener("resize", updateAction);
+    let focusFrame = 0;
+    const updateAfterFocus = () => {
+      cancelAnimationFrame(focusFrame);
+      focusFrame = requestAnimationFrame(updateAction);
+    };
+    document.addEventListener("focusin", updateAfterFocus);
+    document.addEventListener("focusout", updateAfterFocus);
+    updateAction();
+    createEffect(() => {
+      tab();
+      const frame = requestAnimationFrame(updateAction);
+      onCleanup(() => cancelAnimationFrame(frame));
+    });
+    onCleanup(() => {
+      observer?.disconnect();
+      window.removeEventListener("scroll", updateAction);
+      window.removeEventListener("resize", updateAction);
+      cancelAnimationFrame(focusFrame);
+      document.removeEventListener("focusin", updateAfterFocus);
+      document.removeEventListener("focusout", updateAfterFocus);
+      root.style.removeProperty("--job-action-height");
+    });
+  });
+
+  const viewTrackedJob = () => {
+    const tracked = trackedJob();
+    if (!tracked || deletedJobIds.has(tracked.id)) return;
+    currentJobRevision++;
+    setSelectedJobRefreshError(null);
+    setHistoryScrollRequest(null);
+    setTab("workspace");
+    if (libraryOpen()) {
+      viewingFromLibrary = true;
+      selectedFromLibrary = false;
+      setLibraryOpen(false);
+    }
+    setJob(tracked);
+    if (tracked.status === "done" || tracked.status === "failed") void refreshSelectedJob(tracked.id);
+    if (!viewingFromLibrary) {
+      requestAnimationFrame(() => {
+        progressTarget?.scrollIntoView({ block: "start", behavior: "auto" });
+        progressTarget?.focus({ preventScroll: true });
+      });
+    }
+  };
+
 
   onMount(async () => {
     const requestRevision = ++currentJobRevision;
     try {
       const current = await getCurrentJob();
-      if (requestRevision === currentJobRevision) setJob(current);
+      if (requestRevision === currentJobRevision) {
+        setJob(current);
+        if (current && (current.status === "queued" || current.status === "running")) setTrackedJob(current);
+      }
     } catch {
       if (requestRevision === currentJobRevision) setJob(null);
     }
@@ -97,6 +203,7 @@ const App: Component = () => {
     setSelectedJobRefreshError(null);
     setLibraryOpen(false);
     setHistoryScrollRequest(null);
+    setTrackedJob(newJob);
     setJob(newJob);
     refreshHistory();
   };
@@ -104,7 +211,7 @@ const App: Component = () => {
   const onHistorySelect = (selected: JobDTO) => {
     setHistoryScrollRequest(null);
     setSelectedJobRefreshError(null);
-    if (job()?.id !== selected.id) setJob(selected);
+    if (job()?.id !== selected.id) setJob(trackedJob()?.id === selected.id ? trackedJob()! : selected);
     if (libraryOpen()) {
       selectedFromLibrary = true;
       setLibraryOpen(false);
@@ -115,16 +222,10 @@ const App: Component = () => {
     currentJobRevision++;
     setSelectedJobRefreshError(null);
     setHistoryScrollRequest(null);
+    if (trackedJob()?.id === job()?.id && trackedJob()?.status !== "queued" && trackedJob()?.status !== "running") setTrackedJob(null);
     setJob(null);
   };
 
-  const onTerminal = (finished: JobDTO) => {
-    currentJobRevision++;
-    setSelectedJobRefreshError(null);
-    setHistoryScrollRequest(null);
-    setJob(finished);
-    refreshHistory();
-  };
 
   const isActive = () => job()?.status === "queued" || job()?.status === "running";
   const isDone = () => job()?.status === "done";
@@ -133,6 +234,7 @@ const App: Component = () => {
     deletedJobIds.add(id);
     historyRequestRevision++;
     setHistory((items) => items.filter((item) => item.id !== id));
+    if (trackedJob()?.id === id) setTrackedJob(null);
     if (job()?.id === id) {
       currentJobRevision++;
       setSelectedJobRefreshError(null);
@@ -180,7 +282,14 @@ const App: Component = () => {
               <Dialog.Portal>
                 <Dialog.Overlay class="library-overlay" />
                 <Dialog.Content class="library-drawer" onCloseAutoFocus={event => {
-                  if (selectedFromLibrary) {
+                  if (viewingFromLibrary) {
+                    event.preventDefault();
+                    viewingFromLibrary = false;
+                    requestAnimationFrame(() => {
+                      progressTarget?.scrollIntoView({ block: "start", behavior: "auto" });
+                      progressTarget?.focus({ preventScroll: true });
+                    });
+                  } else if (selectedFromLibrary) {
                     event.preventDefault();
                     selectedFromLibrary = false;
                     libraryTrigger?.focus({ preventScroll: true });
@@ -188,6 +297,7 @@ const App: Component = () => {
                 }}>
                   <div class="library-drawer-header"><Dialog.Title>Library</Dialog.Title><Dialog.CloseButton as={Button} type="button" variant="outline" aria-label="Close library">Close</Dialog.CloseButton></div>
                   <Dialog.Description class="sr-only">Choose a song to open its results.</Dialog.Description>
+                  <Show when={trackedJob()}>{tracked => <Button type="button" variant="outline" onClick={viewTrackedJob}>View {tracked().status === "done" ? "result" : tracked().status === "failed" ? "error" : "progress"}</Button>}</Show>
                   <LibraryHistory />
                 </Dialog.Content>
               </Dialog.Portal>
@@ -196,14 +306,17 @@ const App: Component = () => {
           <Show when={selectedJobRefreshError()}><p role="alert" class="auth-error">{selectedJobRefreshError()}</p></Show>
       <SubmitForm onSubmitted={onSubmitted} />
 
-      <Show when={isActive() || isDone()}>
-        <div class="processing-results">
+      <Show when={job()}>
+        <div class="processing-results" ref={progressTarget} tabIndex={-1}>
           <Show when={isActive()}>
-            <QueueStatus job={job()!} onTerminal={onTerminal} />
+            <QueueStatus job={job()!} />
           </Show>
 
           <Show when={isDone()}>
             <ResultsView job={job()!} onReset={onReset} scrollRequest={historyScrollRequest()} />
+          </Show>
+          <Show when={job()?.status === "failed"}>
+            <section role="alert"><h2>Processing failed</h2><p>{job()?.error_message || "The job failed."}</p></section>
           </Show>
         </div>
       </Show>
@@ -212,6 +325,7 @@ const App: Component = () => {
 
 
       </div>
+      <Show when={trackedJob()}>{tracked => <JobStatusDock job={tracked()} onView={viewTrackedJob} />}</Show>
     </main>
   );
 };

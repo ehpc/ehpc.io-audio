@@ -18,6 +18,23 @@ describe("SubmitForm", () => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: null });
   });
 
+  it("only reports an accepted job and ignores duplicate submits while pending", async () => {
+    const pending = Promise.withResolvers<api.SubmitResult>();
+    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise);
+    const onSubmitted = vi.fn();
+    const { container } = render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/song" } });
+    const form = container.querySelector("form")!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(api.submitJob).toHaveBeenCalledTimes(1);
+    expect(onSubmitted).not.toHaveBeenCalled();
+    pending.reject(new Error("Queue unavailable"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Queue unavailable");
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Track URL")).toHaveValue("https://example.com/song");
+  });
+
   it("blocks submit and shows an error when neither URL nor file is given", async () => {
     const onSubmitted = vi.fn();
     render(() => <SubmitForm onSubmitted={onSubmitted} />);

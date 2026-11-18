@@ -15,7 +15,7 @@ async function expectGauge(tuner: Locator, cents: number) {
 
 test.use({
   permissions: ['microphone'],
-  launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${wavePath}`] },
+  launchOptions: { ...(process.env.E2E_CHROMIUM_EXECUTABLE ? { executablePath: process.env.E2E_CHROMIUM_EXECUTABLE } : {}), args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${wavePath}`] },
 });
 
 for (const width of [390, 1440]) {
@@ -76,6 +76,87 @@ for (const width of [390, 1440]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 }
+
+for (const width of [390, 1440]) {
+  test(`microphone readout keeps karaoke geometry stable ${width}px`, async ({ page, openPitchJob }, info) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width, height: 844 });
+    await openPitchJob();
+    const tuner = page.getByRole('region', { name: 'Live microphone pitch' });
+    const reading = tuner.locator('.mic-tuner-reading');
+    const karaoke = page.getByRole('region', { name: 'Current karaoke line' });
+    await tuner.getByRole('button', { name: 'Start microphone pitch detection' }).click();
+    const geometry = async () => ({
+      tuner: await tuner.boundingBox(),
+      reading: await reading.boundingBox(),
+      karaoke: await karaoke.boundingBox(),
+    });
+    await expect(reading).toHaveText(/E4\s*0 cents/, { timeout: 12_000 });
+    const note = await geometry();
+    await page.screenshot({ path: info.outputPath(`microphone-note-${width}.png`), fullPage: true, animations: 'disabled' });
+    await expect(reading).toHaveText(/E4\s*\+3[4-6] cents/, { timeout: 12_000 });
+    const sharp = await geometry();
+    await expect(reading).toHaveText('Listening for a clear note…', { timeout: 12_000 });
+    const silence = await geometry();
+    await page.screenshot({ path: info.outputPath(`microphone-silence-${width}.png`), fullPage: true, animations: 'disabled' });
+    await expect(reading).toHaveText(/C#4\s*0 cents/, { timeout: 12_000 });
+    const longName = await geometry();
+    await page.screenshot({ path: info.outputPath(`microphone-sharp-name-${width}.png`), fullPage: true, animations: 'disabled' });
+    await info.attach('microphone-geometry', { body: JSON.stringify({ note, sharp, silence, longName }), contentType: 'application/json' });
+    console.log(`microphone geometry ${width}:`, JSON.stringify({ note, sharp, silence, longName }));
+    for (const sample of [sharp, silence, longName]) {
+      expect(sample.reading!.height).toBeCloseTo(note.reading!.height, 1);
+      expect(sample.tuner!.height).toBeCloseTo(note.tuner!.height, 1);
+      expect(sample.karaoke!.y).toBeCloseTo(note.karaoke!.y, 1);
+      expect(sample.karaoke!.height).toBeCloseTo(note.karaoke!.height, 1);
+    }
+  });
+}
+
+test('switches live input and stops the previous capture', async ({ page, openPitchJob }) => {
+  test.setTimeout(120_000);
+  await page.addInitScript(() => {
+    const calls: MediaStreamConstraints[] = [], streams: MediaStream[] = [];
+    Object.defineProperty(window, '__selectedMicTest', { value: { calls, streams } });
+    navigator.mediaDevices.enumerateDevices = async () => [
+      { kind: 'audioinput', deviceId: 'default', label: 'Default', groupId: '', toJSON() {} },
+      { kind: 'audioinput', deviceId: 'synthetic-one', label: 'Studio input', groupId: 'one', toJSON() {} },
+    ] as MediaDeviceInfo[];
+    navigator.mediaDevices.getUserMedia = async constraints => {
+      calls.push(constraints);
+      const audio = constraints.audio as MediaTrackConstraints;
+      const id = (audio.deviceId as ConstrainDOMStringParameters | undefined)?.exact;
+      const context = new AudioContext();
+      const oscillator = context.createOscillator(), gain = context.createGain(), destination = context.createMediaStreamDestination();
+      oscillator.frequency.value = id === 'synthetic-one' ? 277.1826309 : 329.6275569;
+      gain.gain.value = 0.25;
+      oscillator.connect(gain).connect(destination);
+      oscillator.start();
+      await context.resume();
+      streams.push(destination.stream);
+      return destination.stream;
+    };
+  });
+  await openPitchJob();
+  const tuner = page.getByRole('region', { name: 'Live microphone pitch' });
+  const picker = tuner.getByRole('combobox', { name: 'Microphone input' });
+  expect(await page.evaluate(() => (window as unknown as { __selectedMicTest: { calls: MediaStreamConstraints[] } }).__selectedMicTest.calls.length)).toBe(0);
+  await tuner.getByRole('button', { name: 'Start microphone pitch detection' }).click();
+  await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/E4\s*0 cents/, { timeout: 12_000 });
+  const backing = page.locator('audio:not([hidden])').first();
+  await backing.evaluate(audio => (audio as HTMLAudioElement).play());
+  const beforeSwitch = await backing.evaluate(audio => (audio as HTMLAudioElement).currentTime);
+  await picker.selectOption('synthetic-one');
+  await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/C#4\s*0 cents/, { timeout: 12_000 });
+  await expect.poll(() => backing.evaluate(audio => (audio as HTMLAudioElement).currentTime)).toBeGreaterThan(beforeSwitch + 0.1);
+  expect(await backing.evaluate(audio => (audio as HTMLAudioElement).paused)).toBe(false);
+  expect(await page.evaluate(() => {
+    const state = (window as unknown as { __selectedMicTest: { calls: MediaStreamConstraints[]; streams: MediaStream[] } }).__selectedMicTest;
+    return { firstStopped: state.streams[0].getTracks().every(track => track.readyState === 'ended'), constraints: state.calls[1] };
+  })).toMatchObject({ firstStopped: true, constraints: { audio: { deviceId: { exact: 'synthetic-one' } } } });
+  await tuner.getByRole('button', { name: 'Stop microphone pitch detection' }).click();
+  expect(await page.evaluate(() => (window as unknown as { __selectedMicTest: { streams: MediaStream[] } }).__selectedMicTest.streams[1].getTracks().every(track => track.readyState === 'ended'))).toBe(true);
+});
 
 test('reports browser microphone policy denial without recording', async ({ page, openPitchJob }) => {
   test.setTimeout(120_000);
