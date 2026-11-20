@@ -1,5 +1,7 @@
 import asyncio
 import multiprocessing
+import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -8,8 +10,9 @@ from audio_samples import mp3_measurements, tone_wav
 from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
 from backend import config, db, events, modal_client, queue
-from backend.models import JobStatus
+from backend.models import JobRecord, JobStatus
 from separator.artifact_cache import async_locked, digest
+from separator.lyrics_reference import ReferenceMetadata
 from separator.options import SeparationOptions
 from separator.processing import ProcessingContext, ProcessingResult, run_processing
 from separator.progress import JobPhase
@@ -76,7 +79,7 @@ def test_run_job_upload_success(
     job = db.claim_oldest_queued()
     assert job is not None and job.id == job_id
 
-    async def run_with_events():
+    async def run_with_events(job: JobRecord):
         listener = events.subscribe(job.id)
         try:
             await queue._run_job(job)
@@ -84,7 +87,7 @@ def test_run_job_upload_success(
         finally:
             events.unsubscribe(job.id, listener)
 
-    updates = asyncio.run(run_with_events())
+    updates = asyncio.run(run_with_events(job))
     assert [update["progress"]["current"] for update in updates] == [
         "source",
         "analysis",
@@ -125,7 +128,7 @@ def test_run_job_upload_success(
     (cached_upload / "song.wav").write_bytes(source)
     job = db.claim_oldest_queued()
     assert job is not None and job.id == cached_id
-    cached_updates = asyncio.run(run_with_events())
+    cached_updates = asyncio.run(run_with_events(job))
     assert [update["progress"]["current"] for update in cached_updates] == [
         "source",
         "analysis",
@@ -138,7 +141,9 @@ def test_run_job_upload_success(
     assert calls == ["separation", "separation"]
 
 
-def test_phase_publication_does_not_deadlock_single_worker_executor() -> None:
+def test_phase_publication_does_not_deadlock_single_worker_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     job_id = db.insert_job(
         "s1", "upload", "song.wav", SeparationOptions(extract_vocals=True)
     )
@@ -147,11 +152,18 @@ def test_phase_publication_does_not_deadlock_single_worker_executor() -> None:
     parent, child = multiprocessing.get_context("fork").Pipe(duplex=False)
 
     def execute() -> None:
-        def process(_job, _audio, _filename, _metadata, _stop, on_phase):
+        def process(
+            job: JobRecord,
+            audio: bytes,
+            filename: str,
+            metadata: ReferenceMetadata | None,
+            stop: threading.Event,
+            on_phase: Callable[[JobPhase], None],
+        ) -> ProcessingResult:
             on_phase(JobPhase.SEPARATION)
             return ProcessingResult({})
 
-        queue.process_source = process
+        monkeypatch.setattr(queue, "process_source", process)
 
         async def run() -> None:
             asyncio.get_running_loop().set_default_executor(
