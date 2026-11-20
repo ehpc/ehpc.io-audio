@@ -21,12 +21,14 @@ from backend import config, events
 from separator.audio import modification_suffix, transposed_key
 from separator.lyrics import (
     CanonicalWordPosition,
+    LyricLineProjection,
     RecognitionChunk,
     Transcript,
     TranscriptSection,
     TranscriptSegment,
     TranscriptWord,
     UntimedRecognition,
+    ordered_lyric_lines,
     transcript_export_text,
 )
 from separator.lyrics_reference import ReferenceReview
@@ -124,6 +126,20 @@ class TranscriptDTO(BaseModel):
 
     @computed_field
     @property
+    def presentation_lines(self) -> list[LyricLineProjection]:
+        return ordered_lyric_lines(
+            Transcript(
+                segments=self.segments,
+                words=self.words,
+                reference=self.reference,
+                untimed=self.untimed,
+                asr_extras=self.asr_extras,
+                canonical_word_positions=self.canonical_word_positions,
+            )
+        )
+
+    @computed_field
+    @property
     def timestamped_text(self) -> str:
         return transcript_export_text(
             Transcript(
@@ -131,6 +147,8 @@ class TranscriptDTO(BaseModel):
                 sections=self.sections,
                 reference=self.reference,
                 untimed=self.untimed,
+                words=self.words,
+                canonical_word_positions=self.canonical_word_positions,
                 asr_extras=self.asr_extras,
             ),
             title=self._title,

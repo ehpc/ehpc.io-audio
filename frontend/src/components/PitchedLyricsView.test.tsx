@@ -23,7 +23,7 @@ const job: JobDTO = {
     dereverb: false, genders: false, lead_backing: false, drums: false,
     pitch_semitones: 1.25, tempo_percent: 125 },
   transcript: { segments: [], sections: [], language: "en", status: "recognized", timestamp_reference: "original",
-    structure_model: null, timestamped_text: "not the pitched renderer" },
+    structure_model: null, presentation_lines: [], timestamped_text: "not the pitched renderer" },
   pitch: { version: 1, model: "torchcrepe/full", source_duration_s: 5, duration_s: 4, pitch_shift_semitones: 1.25,
     tempo_percent: 125, timestamp_reference: "output", pitch_reference: "output", word_alignment: null, tracks: [], words: [] },
   pitched_lyrics: [

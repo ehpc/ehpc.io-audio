@@ -14,6 +14,7 @@ from backend.routes import (
     health,
     jobs,
     key_analysis,
+    learning_progress,
     results,
     song_search,
     status,
@@ -105,7 +106,14 @@ class JobAccess:
         if (
             len(parts) < 4
             or parts[:2] != ["api", "jobs"]
-            or parts[3] not in {"original", "results", "pitch-reference", "retry"}
+            or parts[3]
+            not in {
+                "original",
+                "results",
+                "pitch-reference",
+                "retry",
+                "learning-progress",
+            }
         ):
             await self.app(scope, receive, send)
             return
@@ -167,7 +175,23 @@ def create_app() -> FastAPI:
                 return JSONResponse(
                     {"detail": "Workload limit reached"}, status_code=429
                 )
+        learning = path.startswith("/api/jobs/") and "/learning-progress" in path
+        if learning and request.method in {"POST", "PATCH"}:
+            chunks = []
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > 4096:
+                    return JSONResponse(
+                        {"detail": "Learning progress payload is too large"},
+                        status_code=413,
+                        headers={"Cache-Control": "no-store"},
+                    )
+                chunks.append(chunk)
+            request._body = b"".join(chunks)
         response = await call_next(request)
+        if learning:
+            response.headers["Cache-Control"] = "no-store"
         if user is not None and unsafe and path != "/api/auth/logout":
             response.set_cookie(
                 auth.cookie_name(),
@@ -187,6 +211,7 @@ def create_app() -> FastAPI:
     fastapi_app.include_router(health.router)
     fastapi_app.include_router(jobs.router, prefix="/api")
     fastapi_app.include_router(results.router, prefix="/api")
+    fastapi_app.include_router(learning_progress.router, prefix="/api")
     fastapi_app.include_router(key_analysis.router, prefix="/api")
     fastapi_app.include_router(status.router, prefix="/api")
     fastapi_app.include_router(song_search.router, prefix="/api")

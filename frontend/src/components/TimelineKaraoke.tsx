@@ -50,9 +50,16 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
   const current = createMemo(() => currentKaraokeLine(lines(), props.position));
   const next = createMemo(() => {
     const all = lines();
-    const index = all.indexOf(current()!);
-    return index < 0 ? null : all.slice(index + 1).find(line => line.timing !== null) ?? null;
+    const active = current();
+    if (!active) return null;
+    const isExtra = (line: KaraokeLine) => line.sourceKind === "asr-extra" || line.sourceKind === "asr-word";
+    if (isExtra(active)) {
+      return all.find(line => !isExtra(line) && line.timing && line.timing.start_s > props.position) ?? null;
+    }
+    const index = all.indexOf(active);
+    return all.slice(index + 1).find(line => !isExtra(line) && line.timing !== null) ?? null;
   });
+  const unscheduled = createMemo(() => lines().filter(line => line.projected && !line.timing));
   const visibleLines = createMemo(() => [current(), next()].filter((line): line is KaraokeLine => line !== null));
   const pitches = createMemo(() => {
     const result = new Map<number, string[]>();
@@ -157,6 +164,15 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
         <Button type="button" variant="outline" aria-label="Open karaoke fullscreen" onClick={event => props.onFullscreen?.(event.currentTarget)}>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
         </Button>
+      </Show>
+      <Show when={lines().some(line => line.onsetSource === "provider-synced")}>
+        <span title="Line cues are provider-synced; word timings are independently estimated.">Synced line cues</span>
+      </Show>
+      <Show when={unscheduled().length > 0}>
+        <details>
+          <summary>Unscheduled lyrics ({unscheduled().length})</summary>
+          <For each={unscheduled()}>{line => <p>{line.text}</p>}</For>
+        </details>
       </Show>
     </div>
     <section ref={reader} class="timeline-karaoke" tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}

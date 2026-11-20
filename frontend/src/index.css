@@ -101,6 +101,29 @@
 .library-drawer-header { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; margin-top: -8px; background: hsl(var(--card)); }
 .library-drawer-header button { min-height: 44px; }
 @media (max-width: 1000px) { .library-workspace { display: block; } }
+
+/* Guided recall is a focused, scrollable view; the normal result stays unchanged. */
+.learn-overlay { position: fixed; inset: 0; z-index: 70; background: #000b; }
+.learn-dialog { position: fixed; z-index: 71; inset: 50% auto auto 50%; transform: translate(-50%, -50%); width: min(760px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 16px; border: 1px solid hsl(var(--border)); border-radius: 14px; background: hsl(var(--card)); color: hsl(var(--foreground)); box-shadow: 0 4px 24px #0008; overflow-wrap: anywhere; }
+.learn-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 20px; font-weight: 650; }
+.learn-body { display: grid; min-width: 0; gap: 14px; margin-top: 12px; }
+.learn-audio { width: 100%; min-width: 0; min-height: 44px; }
+.learn-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.learn-settings select { min-width: 0; max-width: 100%; min-height: 44px; padding: 8px; border: 1px solid hsl(var(--border)); border-radius: 6px; background: hsl(var(--background)); }
+.learn-note { font-size: 13px; color: hsl(var(--muted-foreground)); }
+.learn-stage { font-weight: 600; }
+.learn-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.learn-actions button { min-height: 44px; }
+.learn-line { display: grid; gap: 12px; padding: 12px; border: 1px solid hsl(var(--border)); border-radius: 8px; min-width: 0; }
+.learn-words { line-height: 1.7; font-size: 18px; }
+.learn-word { min-height: 44px; min-width: 44px; padding: 4px; border-radius: 4px; color: hsl(var(--foreground)); text-decoration: underline dotted; text-underline-offset: 4px; }
+.learn-word:focus-visible, .learn-navigation button:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+.learn-navigation { min-width: 0; }
+.learn-navigation p { font-weight: 600; }
+.learn-navigation ol { display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow: auto; }
+.learn-navigation li { min-width: 0; }
+.learn-navigation button { min-height: 44px; min-width: 44px; max-width: 100%; padding: 8px; border-radius: 6px; text-align: left; overflow-wrap: anywhere; }
+.learn-navigation button[aria-current="true"] { background: hsl(var(--accent)); color: hsl(var(--primary)); }
 @media (min-width: 1001px) and (max-width: 1500px) { .library-main .option-groups { grid-template-columns: 1fr; } }
 @media (max-width: 1000px) {
   .library-main .library-trigger { position: sticky; top: max(8px, env(safe-area-inset-top)); z-index: 30; background: hsl(var(--card)); }

@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id, id DESC);
 {_SEARCH_SCHEMA}
+CREATE TABLE IF NOT EXISTS learning_progress (
+    principal_id TEXT NOT NULL,
+    source_digest TEXT NOT NULL,
+    document_version TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    PRIMARY KEY (principal_id, source_digest, document_version)
+);
 CREATE TABLE IF NOT EXISTS job_source_snapshots (
     job_id INTEGER PRIMARY KEY,
     source_job_id INTEGER NOT NULL,

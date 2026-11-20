@@ -4,6 +4,7 @@ import json
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from itertools import pairwise
 from math import isfinite
 from typing import TYPE_CHECKING, Literal
 
@@ -138,6 +139,7 @@ class Transcript:
     def __post_init__(self) -> None:
         has_recognition = (
             self.segments
+            or self.words
             or self.untimed
             or self.asr_extras
             or any(chunk.text.strip() for chunk in self.recognition_chunks)
@@ -302,6 +304,153 @@ class LyricDisplayLine:
     start_s: float | None = None
     end_s: float | None = None
     canonical_line_index: int | None = None
+    onset_s: float | None = None
+    onset_source: Literal["provider-synced", "acoustic", "unknown"] = "unknown"
+
+
+@dataclass(frozen=True)
+class LyricLineWord:
+    word_index: int
+    token_index: int
+
+
+@dataclass(frozen=True)
+class LyricLineProjection:
+    text: str
+    source_kind: Literal["canonical", "asr-extra", "asr-word", "segment", "untimed"]
+    source_index: int
+    canonical_line_index: int | None
+    onset_s: float | None
+    end_s: float | None
+    onset_source: Literal["provider-synced", "acoustic", "unknown"]
+    words: list[LyricLineWord]
+
+
+def ordered_lyric_lines(transcript: Transcript) -> list[LyricLineProjection]:
+    """Project stored evidence without modifying the transcript or inventing ends."""
+    from separator.lyrics_reference import tokens  # noqa: PLC0415
+
+    review = transcript.reference
+    lines = review.lines if review is not None else []
+    duration = review.duration_s if review is not None else None
+    provider_ok = (
+        review is not None
+        and bool(lines)
+        and review.provider == "LRCLIB"
+        and review.provider_timing_status == "validated"
+        and duration is not None
+        and isfinite(duration)
+        and duration > 0
+        and all(
+            line.provider_start_s is not None
+            and isfinite(line.provider_start_s)
+            and 0 <= line.provider_start_s < duration
+            and line.provider_end_s is not None
+            and isfinite(line.provider_end_s)
+            and line.provider_start_s < line.provider_end_s <= duration
+            for line in lines
+        )
+        and all(
+            left.provider_end_s is not None
+            and right.provider_start_s is not None
+            and left.provider_end_s <= right.provider_start_s
+            for left, right in pairwise(lines)
+        )
+    )
+    result = []
+    for index, line in enumerate(lines):
+        expected = tokens(line.text)
+        positions = [
+            LyricLineWord(position.word_index, position.reference_token_index)
+            for position in transcript.canonical_word_positions
+            if position.reference_line_index == index
+            and 0 <= position.word_index < len(transcript.words)
+            and 0 <= position.reference_token_index < len(expected)
+            and tokens(transcript.words[position.word_index].text)
+            == [expected[position.reference_token_index]]
+        ]
+        first = [position for position in positions if position.token_index == 0]
+        if provider_ok:
+            onset, source = line.provider_start_s, "provider-synced"
+        elif len(first) == 1:
+            onset, source = transcript.words[first[0].word_index].start_s, "acoustic"
+        else:
+            onset, source = None, "unknown"
+        result.append(
+            LyricLineProjection(
+                line.text, "canonical", index, index, onset, None, source, positions
+            )
+        )
+
+    linked = {word.word_index for line in result for word in line.words}
+
+    def segment_words(segment: TranscriptSegment) -> list[LyricLineWord]:
+        expected = tokens(segment.text)
+        heard = [
+            (word_index, tokens(word.text))
+            for word_index, word in enumerate(transcript.words)
+            if word_index not in linked
+            and segment.start_s <= word.start_s
+            and word.end_s <= segment.end_s
+        ]
+        single = [item[0] if len(item) == 1 else None for _, item in heard]
+        exact = expected == single
+        positions = []
+        for token_index, token in enumerate(expected):
+            if exact:
+                positions.append(LyricLineWord(heard[token_index][0], token_index))
+            elif expected.count(token) == 1 and single.count(token) == 1:
+                positions.append(
+                    LyricLineWord(heard[single.index(token)][0], token_index)
+                )
+        linked.update(position.word_index for position in positions)
+        return positions
+
+    segments = transcript.asr_extras if lines else transcript.segments
+    kind = "asr-extra" if lines else "segment"
+    for index, segment in enumerate(segments):
+        result.append(
+            LyricLineProjection(
+                segment.text,
+                kind,
+                index,
+                None,
+                segment.start_s,
+                segment.end_s,
+                "acoustic",
+                segment_words(segment),
+            )
+        )
+    for index, word in enumerate(transcript.words):
+        if (
+            index in linked
+            or (lines and word.origin != "asr-extra")
+            or any(
+                segment.start_s <= word.start_s and word.end_s <= segment.end_s
+                for segment in segments
+            )
+        ):
+            continue
+        result.append(
+            LyricLineProjection(
+                word.text,
+                "asr-word",
+                index,
+                None,
+                word.start_s,
+                word.end_s,
+                "acoustic",
+                [LyricLineWord(index, 0)],
+            )
+        )
+    if not lines:
+        for index, item in enumerate(transcript.untimed):
+            result.append(
+                LyricLineProjection(
+                    item.text, "untimed", index, None, None, None, "unknown", []
+                )
+            )
+    return result
 
 
 type LyricLineRenderer = Callable[[LyricDisplayLine], str]
@@ -422,6 +571,17 @@ def transcript_export_text(
     rate = output_tempo_percent / 100 if output_tempo_percent is not None else 1
     clock = "Output" if output_tempo_percent is not None else "Original"
     head = _head_lines(transcript.reference, title, output_key)
+    presentation = ordered_lyric_lines(transcript)
+    timed_lines = sorted(
+        (
+            TranscriptSegment(line.onset_s, line.end_s, line.text)
+            for line in presentation
+            if line.source_kind in {"segment", "asr-extra", "asr-word"}
+            and line.onset_s is not None
+            and line.end_s is not None
+        ),
+        key=lambda line: line.start_s,
+    )
     if transcript.reference is not None and transcript.reference.lines:
         review = transcript.reference
         output = list(head)
@@ -464,10 +624,12 @@ def transcript_export_text(
             ):
                 output.append("\n[Unknown section — no reliable lyric anchor]\n")
                 have_heading = True
-            if line.status == "aligned" and line.start_s is not None:
-                prefix = format_timestamp(line.start_s)
-            else:
-                prefix = UNKNOWN_TIMESTAMP
+            projected = presentation[index]
+            prefix = (
+                format_timestamp(projected.onset_s)
+                if projected.onset_s is not None
+                else UNKNOWN_TIMESTAMP
+            )
             output.append(
                 render_line(
                     LyricDisplayLine(
@@ -476,6 +638,8 @@ def transcript_export_text(
                         line.start_s if line.status == "aligned" else None,
                         line.end_s if line.status == "aligned" else None,
                         index,
+                        projected.onset_s,
+                        projected.onset_source,
                     )
                 )
             )
@@ -485,13 +649,11 @@ def transcript_export_text(
                 f"\n[{SECTION_HEADINGS[section.label]}]\n"
                 for section in transcript.sections[next_section:]
             )
-        if transcript.asr_extras:
+        if timed_lines:
             output.append(
                 "\n[ASR-only candidate extras/adlibs — not in canonical reference]\n"
             )
-            output.append(
-                transcript_text(transcript.asr_extras, render_line=render_line)
-            )
+            output.append(transcript_text(timed_lines, render_line=render_line))
         if transcript.sections and not has_anchors:
             output.append(
                 "\n[Estimated musical structure — original mix; "
@@ -506,7 +668,7 @@ def transcript_export_text(
             )
         return "".join(output)
     text = "".join(head) + transcript_text(
-        transcript.segments, transcript.sections, render_line
+        timed_lines, transcript.sections, render_line
     )
     if transcript.untimed:
         text += "\n[Recognized text — alignment unavailable, NO TIMESTAMPS]\n"

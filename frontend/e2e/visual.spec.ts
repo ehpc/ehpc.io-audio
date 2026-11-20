@@ -692,6 +692,7 @@ for (const viewport of [mobile, desktop]) {
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8'));
     const words = [
+      { text: 'Before', start_s: 3.75, end_s: 4.75, probability: null, origin: 'reference-aligned' },
       { text: 'silver', start_s: 5, end_s: 7.5, probability: null, origin: 'reference-aligned' },
       { text: 'Next', start_s: 11.875, end_s: 13.125, probability: null, origin: 'reference-aligned' },
       { text: 'chorus', start_s: 13.75, end_s: 15.625, probability: null, origin: 'reference-aligned' },
@@ -704,8 +705,8 @@ for (const viewport of [mobile, desktop]) {
     fixture.transcript.segments = [];
     fixture.transcript.sections = [];
     fixture.transcript.canonical_word_positions = words.map((_, word_index) => ({
-      word_index, reference_line_index: word_index === 0 ? 0 : 1,
-      reference_token_index: word_index === 0 ? 1 : word_index - 1,
+      word_index, reference_line_index: word_index < 2 ? 0 : 1,
+      reference_token_index: word_index < 2 ? word_index : word_index - 2,
     }));
     fixture.transcript.reference = { ...fixture.transcript.reference, status: 'partial',
       lines: [line('Before silver, after', 3.75, 11.25), line('Next chorus', 11.875, 15.625)] };
@@ -717,9 +718,9 @@ for (const viewport of [mobile, desktop]) {
       start_s, end_s: start_s + 0.07, word_indices: [word],
     });
     fixture.pitch.tracks = [{ label: 'lead', notes: [
-      ...pitches.map((name, i) => note(name, 61 + i, 4 + i * 0.08, 0)),
-      ...['F#4', 'G#4', 'A#4'].map((name, i) => note(name, 66 + i * 2, 9.5 + i * 0.2, 1)),
-      ...['C#5', 'D#5', 'F#5'].map((name, i) => note(name, [73, 75, 78][i], 11 + i * 0.2, 2)),
+      ...pitches.map((name, i) => note(name, 61 + i, 4 + i * 0.08, 1)),
+      ...['F#4', 'G#4', 'A#4'].map((name, i) => note(name, 66 + i * 2, 9.5 + i * 0.2, 2)),
+      ...['C#5', 'D#5', 'F#5'].map((name, i) => note(name, [73, 75, 78][i], 11 + i * 0.2, 3)),
     ] }];
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
       file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },

@@ -676,7 +676,7 @@ it("rounds the entire timestamp at the minute rollover rather than displaying im
 it("keeps corrected text separate from original ASR provenance and its downloadable canonical JSON", () => {
   const source = job();
   source.transcript = {
-    status: "recognized", language: "en", timestamp_reference: "original", sections: [], structure_model: null,
+    status: "recognized", language: "en", timestamp_reference: "original", sections: [], structure_model: null, presentation_lines: [],
     segments: [{ start_s: 1, end_s: 2, text: "Good morning" }],
     timestamped_text: "[00:01] Good morning\n", original_timestamped_text: "[00:01] Good morninx\n",
     reference: { status: "corrected", reason: "Tentative spelling correction.", provider: "LRCLIB",
@@ -700,7 +700,7 @@ it("keeps corrected text separate from original ASR provenance and its downloada
 it("keeps lyrics visible while online alignment and raw recognition are keyboard-expandable details", async () => {
   const source = job();
   source.transcript = {
-    status: "recognized", language: "English", timestamp_reference: "original", sections: [], structure_model: null,
+    status: "recognized", language: "English", timestamp_reference: "original", sections: [], structure_model: null, presentation_lines: [],
     asr_model: "Qwen/Qwen3-ASR-1.7B", word_alignment: "torchaudio/MMS_FA",
     segments: [{ start_s: 31, end_s: 34, text: "Amber lanterns softly shine" }],
     words: [{ start_s: 31, end_s: 32, text: "Amber", probability: null, alignment_score: 0.7 }],
@@ -750,7 +750,7 @@ it("retains unversioned word timing interactions without inventing a recognizer"
   source.pitch = { ...pitch, word_alignment: null };
   source.transcript = {
     status: "recognized", language: "English", timestamp_reference: "original",
-    sections: [], structure_model: null, segments: [{ start_s: 1, end_s: 3, text: "world" }],
+    sections: [], structure_model: null, presentation_lines: [], segments: [{ start_s: 1, end_s: 3, text: "world" }],
     timestamped_text: "[00:01] world\n", reference: null, asr_model: null, word_alignment: null,
   };
   render(() => <><PitchView job={source} /><TranscriptView job={source} /></>);

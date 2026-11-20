@@ -29,6 +29,7 @@ def _fresh_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
     db.init_db()
     conn = sqlite3.connect(config.DB_PATH)
     conn.executescript(
+        "DELETE FROM learning_progress; "
         "DELETE FROM auth_legacy_bindings; DELETE FROM auth_work; "
         "DELETE FROM auth_sends; DELETE FROM auth_challenges; "
         "DELETE FROM auth_sessions; DELETE FROM auth_invites; "

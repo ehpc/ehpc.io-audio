@@ -10,12 +10,16 @@ from fastapi.testclient import TestClient
 
 from backend import config, db, queue
 from separator.lyrics import (
+    CanonicalWordPosition,
     Transcript,
     TranscriptSegment,
+    TranscriptWord,
+    UntimedRecognition,
     format_timestamp,
     transcript_from_json,
     transcript_text,
 )
+from separator.lyrics_reference import ReferenceLine, ReferenceReview
 from separator.options import SeparationOptions
 from separator.processing import ProcessingResult
 
@@ -195,3 +199,61 @@ def test_transformed_audio_does_not_rescale_original_lyrics_clock(
     expected = "voice\n[00:02] Original clock\n"
     assert job["transcript"]["timestamped_text"] == expected
     assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == expected
+
+
+def test_saved_provider_timing_is_projected_without_rewriting_evidence(
+    client: TestClient, other_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    word = TranscriptWord(5, 6, "amber")
+    transcript = Transcript(
+        words=[word, TranscriptWord(7, 8, "hey")],
+        asr_extras=[TranscriptSegment(7, 8, "hey")],
+        untimed=[UntimedRecognition("unknown words", "not aligned")],
+        reference=ReferenceReview(
+            "partial",
+            "validated",
+            duration_s=10,
+            provider_timing_status="validated",
+            lines=[
+                ReferenceLine(
+                    "amber lanterns",
+                    status="aligned",
+                    start_s=5,
+                    end_s=6,
+                    provider_start_s=3,
+                    provider_end_s=10,
+                )
+            ],
+        ),
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 0)],
+    )
+    job_id = _complete(client, monkeypatch, transcript)
+    stored_job = db.get_job(job_id)
+    assert stored_job is not None
+    stored_before = stored_job.transcript
+    result = client.get(f"/api/jobs/{job_id}/lyrics")
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload["presentation_lines"][0]["onset_s"] == 3
+    assert payload["presentation_lines"][0]["onset_source"] == "provider-synced"
+    assert payload["reference"]["lines"][0]["start_s"] == 5
+    assert payload["words"][0]["start_s"] == 5
+    assert [
+        (line["source_kind"], line["text"]) for line in payload["presentation_lines"]
+    ] == [
+        ("canonical", "amber lanterns"),
+        ("asr-extra", "hey"),
+    ]
+    assert payload["untimed"][0]["text"] == "unknown words"
+    assert payload["presentation_lines"][1]["words"] == [
+        {"word_index": 1, "token_index": 0}
+    ]
+    assert (
+        "[00:03] amber lanterns"
+        in client.get(f"/api/jobs/{job_id}/lyrics/download").text
+    )
+    stored_after = db.get_job(job_id)
+    assert stored_after is not None
+    assert stored_after.transcript == stored_before
+    assert other_client.get(f"/api/jobs/{job_id}/lyrics").status_code == 404
+    assert other_client.get(f"/api/jobs/{job_id}/lyrics/download").status_code == 404

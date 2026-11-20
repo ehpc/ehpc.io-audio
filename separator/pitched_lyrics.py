@@ -5,6 +5,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from separator.lyrics import (
+    UNKNOWN_TIMESTAMP,
     LyricDisplayLine,
     Transcript,
     format_timestamp,
@@ -169,10 +170,10 @@ def pitched_lyrics_document(
             for position in transcript.canonical_word_positions:
                 if (
                     position.reference_line_index != line.canonical_line_index
-                    or position.word_index >= len(analysis.words)
-                    or position.reference_token_index >= len(token_cells)
-                    or line.start_s is None
-                    or line.end_s is None
+                    or not 0 <= position.word_index < len(analysis.words)
+                    or not 0 <= position.word_index < len(transcript.words)
+                    or not 0 <= position.reference_token_index < len(token_cells)
+                    or position.reference_token_index >= len(canonical_tokens)
                 ):
                     continue
                 word = analysis.words[position.word_index]
@@ -180,6 +181,10 @@ def pitched_lyrics_document(
                 if (
                     word.text != source_word.text
                     or abs(word.start_s * rate - source_word.start_s) > 0.001
+                    or abs(word.end_s * rate - source_word.end_s) > 0.001
+                    or word.probability != source_word.probability
+                    or word.alignment_score != source_word.alignment_score
+                    or word.origin != source_word.origin
                     or tokens(word.text)
                     != [canonical_tokens[position.reference_token_index]]
                 ):
@@ -205,9 +210,14 @@ def pitched_lyrics_document(
             pitches.append(" ".join(labels) if labels else "?")
         # NUL cannot occur in printable word cells. Placeholders let the common
         # transcript exporter retain sole ownership of metadata/section order.
+        onset = line.onset_s
+        if line.canonical_line_index is None and onset is None:
+            onset = line.start_s
         prefix = (
-            format_timestamp(line.start_s / rate)
-            if line.start_s is not None
+            format_timestamp(onset / rate)
+            if onset is not None
+            else UNKNOWN_TIMESTAMP
+            if line.canonical_line_index is not None
             else line.prefix
         )
         rendered.append(_word_pairs(cells, pitches, f"[{prefix}] "))

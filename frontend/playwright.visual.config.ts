@@ -18,7 +18,7 @@ if (process.env.CI) reporter.push(['github']);
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['**/history-library-visual.spec.ts', '**/visual.spec.ts', '**/microphone-visual.spec.ts'],
+  testMatch: ['**/history-library-visual.spec.ts', '**/visual.spec.ts', '**/microphone-visual.spec.ts', '**/learning-visual.spec.ts'],
   outputDir: 'test-results/visual',
   snapshotPathTemplate: '{testDir}/visual-snapshots/{arg}{ext}',
   updateSnapshots: 'none',

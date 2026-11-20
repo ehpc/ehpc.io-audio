@@ -71,6 +71,7 @@ export interface TranscriptDTO {
   untimed?: UntimedRecognitionDTO[];
   asr_extras?: TranscriptSegmentDTO[];
   canonical_word_positions?: CanonicalWordPositionDTO[];
+  presentation_lines: LyricLineProjectionDTO[];
   original_timestamped_text?: string | null;
   timestamped_text: string;
 }
@@ -79,6 +80,17 @@ export interface CanonicalWordPositionDTO {
   word_index: number;
   reference_line_index: number;
   reference_token_index: number;
+}
+
+export interface LyricLineProjectionDTO {
+  text: string;
+  source_kind: "canonical" | "asr-extra" | "asr-word" | "segment" | "untimed";
+  source_index: number;
+  canonical_line_index: number | null;
+  onset_s: number | null;
+  end_s: number | null;
+  onset_source: "provider-synced" | "acoustic" | "unknown";
+  words: { word_index: number; token_index: number }[];
 }
 
 export interface PitchedLyricsTrackDTO {
@@ -400,6 +412,31 @@ async function authRequest<T>(path: string, init: RequestInit = {}, isPublic = f
 
 function jsonRequest(method: string, body: object): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+}
+
+export type LearningHint = "full" | "partial" | "first" | "hidden";
+export type LearningRating = "remembered" | "hesitated" | "forgot";
+export interface LearningDocument {
+  document_version: string;
+  lines: { id: string; text: string; onset_s: number | null; end_s: number | null; onset_source: "provider-synced" | "acoustic" | "unknown" }[];
+  sections: { id: string; label: string; start_s: number; end_s: number }[];
+  saving_available: boolean;
+  progress: { hint_level: LearningHint; section_id: string | null; line_id: string | null; difficulties: Record<string, number> };
+}
+export type LearningPreferences = {
+  document_version: string;
+  hint_level?: LearningHint;
+  section_id?: string | null;
+  line_id?: string | null;
+};
+export function learningProgress(id: number): Promise<LearningDocument> {
+  return authRequest(`/jobs/${id}/learning-progress`, { cache: "no-store" });
+}
+export function saveLearningPreferences(id: number, preferences: LearningPreferences): Promise<LearningDocument> {
+  return authRequest(`/jobs/${id}/learning-progress`, jsonRequest("PATCH", preferences));
+}
+export function reviewLearningLine(id: number, document_version: string, line_id: string, rating: LearningRating): Promise<LearningDocument> {
+  return authRequest(`/jobs/${id}/learning-progress/reviews`, jsonRequest("POST", { document_version, line_id, rating }));
 }
 
 export function authStart(email: string, inviteCode?: string): Promise<{ message: string }> {

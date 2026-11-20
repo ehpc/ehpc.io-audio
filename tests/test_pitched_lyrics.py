@@ -1,6 +1,10 @@
 import asyncio
+import io
 import json
+import zipfile
+from dataclasses import replace
 from urllib.parse import unquote
+from xml.etree import ElementTree
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,7 +26,12 @@ from separator.pitch import (
     pitch_to_json,
     transform_analysis,
 )
-from separator.pitched_lyrics import display_width, pitched_lyrics_text
+from separator.pitched_lyrics import (
+    display_width,
+    pitched_lyrics_document,
+    pitched_lyrics_text,
+)
+from separator.pitched_lyrics_odt import pitched_lyrics_odt
 from separator.processing import ProcessingResult
 
 
@@ -150,8 +159,8 @@ def test_canonical_order_disputed_repeats_and_unconfirmed_lines_are_not_guessed(
         < text.index("glow  glow  stars")
         < text.index("Untimed  ending")
     )
-    assert "        ?     ?     D4\n[00:01] glow  glow  stars\n" in text
-    assert text.count("[??:??]") == 2
+    assert "        ?     ?     D4\n[??:??] glow  glow  stars\n" in text
+    assert text.count("[??:??]") == 3
     assert "Reference line" not in text and "UNCONFIRMED" not in text
     assert "variant" not in text
     assert "C4" not in text
@@ -242,11 +251,11 @@ def test_reference_positions_survive_repeated_tokens_and_extras_sort() -> None:
         transcript.words,
     )
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert "        ?     C4    D4\n[00:01] glow  glow  stars\n" in text
+    assert "        ?     C4    D4\n[??:??] glow  glow  stars\n" in text
     assert "B3" not in text
     legacy = Transcript(words=transcript.words, reference=transcript.reference)
     legacy_text = pitched_lyrics_text(legacy, analysis, analysis.tracks[0])
-    assert "        ?     ?     ?\n[00:01] glow  glow  stars\n" in legacy_text
+    assert "        ?     ?     ?\n[??:??] glow  glow  stars\n" in legacy_text
 
 
 def test_canonical_ids_use_exact_tokenization_for_decomposed_word_cells() -> None:
@@ -293,6 +302,85 @@ def test_canonical_ids_use_exact_tokenization_for_decomposed_word_cells() -> Non
     rendered = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
     assert "        C4 D4    ?     E4\n[00:01] cafe\u0301ine  glow  glow\n" in rendered
     assert display_width("cafe\u0301ine") == 7
+
+
+def test_provider_onset_and_partial_acoustic_word_reach_txt_and_odt() -> None:
+    words = [TranscriptWord(5, 6, "stars", origin="reference-aligned")]
+    transcript = Transcript(
+        words=words,
+        reference=ReferenceReview(
+            "partial",
+            "Validated provider timing",
+            duration_s=10,
+            provider_timing_status="validated",
+            lines=[
+                ReferenceLine(
+                    "shine stars tonight",
+                    "aligned",
+                    start_s=5,
+                    end_s=6,
+                    provider_start_s=2.5,
+                    provider_end_s=7,
+                ),
+                ReferenceLine("silent sky", provider_start_s=7, provider_end_s=10),
+            ],
+        ),
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 1)],
+    )
+    analysis = transform_analysis(
+        PitchAnalysis(
+            10,
+            10,
+            [PitchTrack("vocals", [PitchNote(5, 6, 60, 261, 0.9)])],
+        ),
+        0,
+        125,
+        words,
+    )
+    track = analysis.tracks[0]
+    text = pitched_lyrics_text(transcript, analysis, track)
+    assert "        ?      C4     ?\n[00:02] shine  stars  tonight\n" in text
+    assert "        ?       ?\n[00:05] silent  sky\n" in text
+    assert "[00:04]" not in text
+
+    odt = pitched_lyrics_odt(pitched_lyrics_document(transcript, analysis, track))
+    with zipfile.ZipFile(io.BytesIO(odt)) as archive:
+        root = ElementTree.fromstring(archive.read("content.xml"))
+    paragraphs = root.findall(".//{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p")
+    visible = ["".join(paragraph.itertext()) for paragraph in paragraphs]
+    assert any("?C4?[00:02]shinestarstonight" in line for line in visible)
+    assert any("??[00:05]silentsky" in line for line in visible)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"text": "other"},
+        {"start_s": 3.9},
+        {"end_s": 4.7},
+        {"origin": "asr"},
+        {"alignment_score": 0.5},
+    ],
+)
+def test_canonical_pitch_requires_matching_source_word_identity_and_both_clocks(
+    changed: dict,
+) -> None:
+    source_word = TranscriptWord(5, 6, "stars", origin="reference-aligned")
+    transcript = Transcript(
+        words=[source_word],
+        reference=ReferenceReview("partial", "test", lines=[ReferenceLine("stars")]),
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 0)],
+    )
+    analysis = transform_analysis(
+        PitchAnalysis(10, 10, [PitchTrack("vocals", [PitchNote(5, 6, 60, 261, 0.9)])]),
+        0,
+        125,
+        transcript.words,
+    )
+    mismatched = replace(analysis, words=[replace(analysis.words[0], **changed)])
+    text = pitched_lyrics_text(transcript, mismatched, mismatched.tracks[0])
+    assert "?\n[00:04] stars\n" in text
+    assert "C4" not in text
 
 
 @pytest.mark.parametrize(
@@ -411,3 +499,34 @@ def test_pitched_download_uses_transform_filename_and_requires_explicit_option(
         == 404
     )
     assert client.get(f"/api/jobs/{plain_id}").json()["pitched_lyrics"] is None
+
+
+def test_word_only_saved_job_downloads_both_real_formats(
+    client: TestClient, other_client: TestClient
+) -> None:
+    word = TranscriptWord(2, 3, "hello")
+    transcript = Transcript(words=[word], language="en")
+    source = PitchAnalysis(
+        5, 5, [PitchTrack("lead", [PitchNote(2, 3, 60, 261.625565, 0.9)])]
+    )
+    analysis = transform_analysis(source, 0, 125, [word], "fixture")
+    job_id = client.post(
+        "/api/jobs",
+        data={"url": "https://example.org/song", "extract_pitched_lyrics": "true"},
+    ).json()["id"]
+    db.mark_done(job_id, [], transcript, pitch_to_json(analysis))
+    plain = client.get(f"/api/jobs/{job_id}/lyrics/download")
+    pitched = client.get(f"/api/jobs/{job_id}/pitched-lyrics/lead/download")
+    document = client.get(f"/api/jobs/{job_id}/pitched-lyrics/lead/download?format=odt")
+    assert "[00:02] hello" in plain.text
+    assert "[00:01] hello" in pitched.text
+    assert "C4" in pitched.text
+    with zipfile.ZipFile(io.BytesIO(document.content)) as archive:
+        content = archive.read("content.xml").decode()
+        assert "hello" in content
+        assert "C4" in content
+        assert "[00:01]" in content
+    assert (
+        other_client.get(f"/api/jobs/{job_id}/pitched-lyrics/lead/download").status_code
+        == 404
+    )

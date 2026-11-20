@@ -25,6 +25,13 @@ function job(): JobDTO {
       { word_index: 2, reference_line_index: 1, reference_token_index: 0 },
       { word_index: 3, reference_line_index: 1, reference_token_index: 2 },
     ],
+    presentation_lines: [
+      { text: "Go, go—don't stop!", source_kind: "canonical", source_index: 0, canonical_line_index: 0, onset_s: 5, end_s: null, onset_source: "acoustic",
+        words: [{ word_index: 0, token_index: 1 }, { word_index: 1, token_index: 2 }] },
+      { text: "Go, go—don't stop!", source_kind: "canonical", source_index: 1, canonical_line_index: 1, onset_s: 10, end_s: null, onset_source: "acoustic",
+        words: [{ word_index: 2, token_index: 0 }, { word_index: 3, token_index: 2 }] },
+      { text: "Unknown refrain", source_kind: "canonical", source_index: 2, canonical_line_index: 2, onset_s: null, end_s: null, onset_source: "unknown", words: [] },
+    ],
     reference: {
       status: "partial", reason: "fixture", provider: "fixture", source_url: null, record_id: null,
       artist: null, title: null, album: null, duration_s: null, agreement: null,
@@ -70,9 +77,10 @@ describe("karaoke provenance and output clock", () => {
     source.transcript!.reference!.lines = [referenceLine(text, 5, 13)];
     source.transcript!.words = [word("l'amour", 5, 6), word("can't", 6, 7), word("e", 7, 8),
       word("lan", 8, 9), word("再见", 9, 10), word("123", 10, 11), word("go", 12, 13)];
-    source.transcript!.canonical_word_positions = [0, 1, 2, 3, 4, 5, 7].map((token, index) => ({
-      word_index: index, reference_line_index: 0, reference_token_index: token,
-    }));
+    source.transcript!.presentation_lines = [{
+      text, source_kind: "canonical", source_index: 0, canonical_line_index: 0, onset_s: 5, end_s: null, onset_source: "acoustic",
+      words: [0, 1, 2, 3, 4, 5, 7].map((token, index) => ({ word_index: index, token_index: token })),
+    }];
     const line = karaokeLines(source)[0];
     expect(lexicalWords(line).map(part => [part.text, part.timing !== null])).toEqual([
       ["L’amour", true], ["can't", true], ["e", true], ["lan", true],
@@ -81,84 +89,87 @@ describe("karaoke provenance and output clock", () => {
     expect(line.parts.map(part => typeof part === "string" ? part : part.text).join("")).toBe(text);
   });
 
-  it("does not schedule provider-only lines or manufacture word timing for aligned phrase bounds", () => {
+  it("shows provider onset before supported words without manufacturing timing", () => {
     const source = job();
-    source.transcript!.canonical_word_positions = [];
+    source.transcript!.presentation_lines[0].onset_s = 1.25;
+    source.transcript!.presentation_lines[0].onset_source = "provider-synced";
     const lines = karaokeLines(source);
-    expect(lines[0].timing).toEqual({ start_s: 4, end_s: 7 });
-    expect(lexicalWords(lines[0]).every(part => part.timing === null)).toBe(true);
-    expect(lines[2].timing).toBeNull();
-    expect(currentKaraokeLine(lines, 20)?.timing).toEqual({ start_s: 8, end_s: 11 });
-    source.transcript!.reference!.lines = [lines[2]].map(line => ({ ...referenceLine(line.text, null, null),
-      provider_start_s: 1, provider_end_s: 2 }));
-    expect(currentKaraokeLine(karaokeLines(source), 1.5)).toBeNull();
+    expect(lines[0].timing).toEqual({ start_s: 1, end_s: 8 });
+    expect(lexicalWords(lines[0]).map(part => part.timing)).toEqual([
+      null, { start_s: 4, end_s: 5 }, { start_s: 6, end_s: 7 }, null,
+    ]);
+    const [position, setPosition] = createSignal(1);
+    render(() => <TimelineKaraoke job={source} position={position()} />);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Go, go—don't stop!");
+    expect(screen.getByRole("region", { name: "Current karaoke line" }).querySelector("[aria-current]")).toBeNull();
+    fireEvent.click(screen.getByText("Unscheduled lyrics (1)"));
+    expect(screen.getByText("Unknown refrain")).toBeVisible();
+    setPosition(4.5);
+    expect(screen.getByRole("region", { name: "Current karaoke line" }).querySelector("[aria-current]")).toHaveTextContent("go");
   });
 
-  it("uses accepted ASR gap words between canonical repetitions without timing an unknown reference line", () => {
+  it("preserves accepted extra words between repeated lines and seeks by output time", () => {
     const source = job();
+    source.transcript!.presentation_lines[1].onset_s = 20;
     source.transcript!.words![2] = word("Go", 20, 21.25);
     source.transcript!.words![3] = word("don't", 22.5, 23.75);
-    source.transcript!.reference!.lines![1] = referenceLine("Go, go—don't stop!", 20, 23.75);
     source.transcript!.words!.push(
       { ...word("actual", 12.5, 13.75), origin: "asr-extra" },
       { ...word("adlib", 15, 16.25), origin: "asr-extra" },
     );
+    source.transcript!.presentation_lines.splice(1, 0,
+      { text: "actual", source_kind: "asr-word", source_index: 4, canonical_line_index: null, onset_s: 12.5, end_s: 13.75, onset_source: "acoustic", words: [{ word_index: 4, token_index: 0 }] },
+      { text: "adlib", source_kind: "asr-extra", source_index: 0, canonical_line_index: null, onset_s: 15, end_s: 16.25, onset_source: "acoustic", words: [{ word_index: 5, token_index: 0 }] },
+    );
+    source.pitch!.words = [{ ...word("actual", 10, 11), origin: "asr-extra" }];
     const lines = karaokeLines(source);
-    expect(lines.map(line => line.timing)).toEqual([
-      { start_s: 4, end_s: 7 }, { start_s: 10, end_s: 11 }, { start_s: 12, end_s: 13 },
-      { start_s: 16, end_s: 19 }, null,
+    expect(lines.map(line => [line.text, line.timing])).toEqual([
+      ["Go, go—don't stop!", { start_s: 4, end_s: 16 }],
+      ["actual", { start_s: 10, end_s: 11 }],
+      ["adlib", { start_s: 12, end_s: 13 }],
+      ["Go, go—don't stop!", { start_s: 16, end_s: 24 }],
+      ["Unknown refrain", null],
     ]);
+    expect(lexicalWords(lines[1])[0]).toMatchObject({ pitchIndex: 0, timing: { start_s: 10, end_s: 11 } });
     expect(currentKaraokeLine(lines, 10.5)?.text).toBe("actual");
+    expect(currentKaraokeLine(lines, 16.5)?.text).toBe("Go, go—don't stop!");
     expect(currentKaraokeLine(lines, 12.5)?.text).toBe("adlib");
-    const repeated = currentKaraokeLine(lines, 16.5)!;
-    expect(lexicalWords(repeated).map(part => part.timing)).toEqual([
-      { start_s: 16, end_s: 17 }, null, { start_s: 18, end_s: 19 }, null,
-    ]);
-    expect(lines.find(line => line.text === "Unknown refrain")?.timing).toBeNull();
+    expect(currentKaraokeLine(lines, 11.5)?.text).toBe("Go, go—don't stop!");
+    expect(currentKaraokeLine(lines, 4.5)?.text).toBe("Go, go—don't stop!");
     const [position, setPosition] = createSignal(10.5);
     render(() => <TimelineKaraoke job={source} position={position()} />);
-    const region = screen.getByRole("region", { name: "Current karaoke line" });
-    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^actual$/);
-    setPosition(16.5);
-    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^Go, go—don't stop!$/);
-    expect(region.querySelector("[aria-current]")).toHaveTextContent("Go");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("actual");
+    setPosition(11.5);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Go, go—don't stop!");
     setPosition(12.5);
-    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(/^adlib$/);
-    expect(region.querySelector("[aria-current]")).toHaveTextContent("adlib");
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("adlib");
+    setPosition(4.5);
+    expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Go, go—don't stop!");
+    expect(screen.queryByText("actual", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("adlib", { exact: true })).not.toBeInTheDocument();
   });
 
-  it("previews a second early, holds across gaps/end, and recomputes immediately after backward seeks", () => {
-    const lines = karaokeLines(job());
-    expect(currentKaraokeLine(lines, 2.99)).toBeNull();
-    expect(currentKaraokeLine(lines, 3)?.timing?.start_s).toBe(4);
-    expect(currentKaraokeLine(lines, 6.99)?.timing?.start_s).toBe(4);
-    expect(currentKaraokeLine(lines, 7)?.timing?.start_s).toBe(8);
-    expect(currentKaraokeLine(lines, 24)?.timing?.start_s).toBe(8);
-    expect(currentKaraokeLine(lines, 4)?.timing?.start_s).toBe(4);
-    expect(currentKaraokeLine(lines, 0)).toBeNull();
-    const source = job();
-    source.transcript!.words![2] = word("Go", 15, 16.25);
-    source.transcript!.words![3] = word("don't", 17.5, 18.75);
-    source.transcript!.reference!.lines![1] = referenceLine("Go, go—don't stop!", 15, 18.75);
-    expect(currentKaraokeLine(karaokeLines(source), 10)?.timing?.start_s).toBe(4);
-  });
-
-  it("never replaces a still-sung line for the next line's anticipatory lead", () => {
-    const source = job();
-    source.transcript!.words![2] = word("Go", 8.125, 10);
-    source.transcript!.reference!.lines![1] = referenceLine("Go, go—don't stop!", 8.125, 13.75);
-    const lines = karaokeLines(source);
-    expect(currentKaraokeLine(lines, 6.75)?.timing?.start_s).toBe(4);
-    expect(currentKaraokeLine(lines, 7)?.timing?.start_s).toBe(6.5);
-  });
-
-  it("uses known word extent instead of contradictory supported phrase bounds", () => {
+  it("uses projected onsets rather than reference bounds and keeps unknown onsets unscheduled", () => {
     const source = job();
     source.transcript!.reference!.lines![0] = referenceLine("Go, go—don't stop!", 6.25, 7.5);
-    const line = karaokeLines(source)[0];
-    expect(line.timing).toEqual({ start_s: 4, end_s: 7 });
-    expect(karaokeWordState(lexicalWords(line)[1].timing, 4.5).state).toBe("active");
-    expect(karaokeWordState(lexicalWords(line)[2].timing, 6.5).state).toBe("active");
+    const lines = karaokeLines(source);
+    expect(lines[0].timing).toEqual({ start_s: 4, end_s: 8 });
+    expect(lines[2].timing).toBeNull();
+    expect(currentKaraokeLine(lines, 7.99)).toBe(lines[0]);
+    expect(currentKaraokeLine(lines, 8)).toBe(lines[1]);
+    expect(currentKaraokeLine(lines, 0)).toBeNull();
+  });
+
+  it("converts provider onset and actual word bounds once at slower tempo", () => {
+    const source = job();
+    source.pitch!.tempo_percent = 50;
+    source.pitch!.duration_s = 60;
+    source.transcript!.presentation_lines[0].onset_s = 2;
+    source.transcript!.presentation_lines[0].onset_source = "provider-synced";
+    const lines = karaokeLines(source);
+    expect(lines[0].timing).toEqual({ start_s: 4, end_s: 20 });
+    expect(lexicalWords(lines[0])[1].timing).toEqual({ start_s: 10, end_s: 12.5 });
+    expect(lines[1].timing).toEqual({ start_s: 20, end_s: 60 });
   });
 
   it("uses actual continuous word duration, not syllables or a timer state machine", () => {
@@ -174,6 +185,10 @@ describe("karaoke provenance and output clock", () => {
   it("keeps segment repeats separate and leaves ambiguous missing repeated words neutral", () => {
     const source = job();
     source.transcript!.reference = null;
+    source.transcript!.presentation_lines = [
+      { text: "Go go home!", source_kind: "segment", source_index: 0, canonical_line_index: null, onset_s: 5, end_s: 8.75, onset_source: "acoustic", words: [{ word_index: 1, token_index: 2 }] },
+      { text: "Go go home!", source_kind: "segment", source_index: 1, canonical_line_index: null, onset_s: 10, end_s: 13.75, onset_source: "acoustic", words: [{ word_index: 2, token_index: 0 }, { word_index: 3, token_index: 1 }, { word_index: 4, token_index: 2 }] },
+    ];
     source.transcript!.segments = [
       { text: "Go go home!", start_s: 5, end_s: 8.75 },
       { text: "Go go home!", start_s: 10, end_s: 13.75 },
@@ -275,14 +290,22 @@ describe("TimelineKaraoke reactive reader", () => {
       { word_index: 1, reference_line_index: 1, reference_token_index: 0 },
     ];
     source.transcript!.reference!.lines = [referenceLine(text, 5, 11.25), referenceLine("Next", 11.875, 13.125)];
+    source.transcript!.presentation_lines = [
+      { text, source_kind: "canonical", source_index: 0, canonical_line_index: 0, onset_s: 5, end_s: null, onset_source: "acoustic", words: [{ word_index: 0, token_index: 1 }] },
+      { text: "Next", source_kind: "canonical", source_index: 1, canonical_line_index: 1, onset_s: 11.875, end_s: null, onset_source: "acoustic", words: [{ word_index: 1, token_index: 0 }] },
+    ];
     if (kind === "segment") {
       source.transcript!.reference = null;
+      source.transcript!.presentation_lines = [
+        { text, source_kind: "segment", source_index: 0, canonical_line_index: null, onset_s: 5, end_s: 11.25, onset_source: "acoustic", words: [{ word_index: 0, token_index: 1 }] },
+        { text: "Next", source_kind: "segment", source_index: 1, canonical_line_index: null, onset_s: 11.875, end_s: 13.125, onset_source: "acoustic", words: [{ word_index: 1, token_index: 0 }] },
+      ];
       source.transcript!.segments = [
         { text, start_s: 5, end_s: 11.25 }, { text: "Next", start_s: 11.875, end_s: 13.125 },
       ];
     }
     const lines = karaokeLines(source);
-    expect(lines[0].timing).toEqual({ start_s: 4, end_s: 9 });
+    expect(lines[0].timing).toEqual({ start_s: 4, end_s: kind === "canonical" ? 9.5 : 9 });
     const [position, setPosition] = createSignal(3);
     render(() => <TimelineKaraoke job={source} position={position()} />);
     const region = screen.getByRole("region", { name: "Current karaoke line" });
@@ -295,9 +318,9 @@ describe("TimelineKaraoke reactive reader", () => {
     expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(text);
     expect(region.querySelector("[aria-current]")).toBeNull();
     expect([...screen.getByRole("group", { name: "Current lyrics" }).querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Before", "after"]);
-    setPosition(9);
+    setPosition(kind === "canonical" ? 9.5 : 9);
     expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Next");
-    expect(region.querySelector("[aria-current]")).toBeNull();
+    if (kind === "segment") expect(region.querySelector("[aria-current]")).toBeNull();
     setPosition(9.75);
     expect(region.querySelector("[aria-current]")).toHaveTextContent("Next");
   });
@@ -356,20 +379,20 @@ describe("TimelineKaraoke reactive reader", () => {
   });
 
   it("promotes the existing next row on adjacent playback but not by a seek", () => {
-    const [position, setPosition] = createSignal(6.9);
+    const [position, setPosition] = createSignal(7.9);
     const [seeking, setSeeking] = createSignal(false);
     const [revision, setRevision] = createSignal(0);
     render(() => <TimelineKaraoke job={job()} position={position()} playing seeking={seeking()} seekRevision={revision()} />);
     const next = screen.getByRole("group", { name: "Next lyrics" });
-    setPosition(6.99);
-    setPosition(7);
+    setPosition(7.99);
+    setPosition(8);
     expect(screen.getByRole("group", { name: "Current lyrics" })).toBe(next);
     expect(next).toHaveClass("timeline-karaoke-slide");
     setSeeking(true);
     setRevision(1);
     setPosition(4.5);
     expect(screen.getByRole("group", { name: "Current lyrics" })).not.toHaveClass("timeline-karaoke-slide");
-    setPosition(7);
+    setPosition(8);
     expect(screen.getByRole("group", { name: "Current lyrics" })).not.toHaveClass("timeline-karaoke-slide");
   });
 });

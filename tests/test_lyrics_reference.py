@@ -12,11 +12,13 @@ import pytest
 
 from separator import lyrics_reference
 from separator.lyrics import (
+    CanonicalWordPosition,
     Transcript,
     TranscriptSection,
     TranscriptSegment,
     TranscriptWord,
     UntimedRecognition,
+    ordered_lyric_lines,
     transcript_export_text,
 )
 from separator.lyrics_reference import (
@@ -548,6 +550,8 @@ def test_txt_head_is_identity_without_system_messages_or_bottom_legend() -> None
 def test_unconfirmed_word_timings_stay_in_json_not_a_bottom_legend() -> None:
     text = transcript_export_text(
         Transcript(
+            words=[TranscriptWord(2, 2.5, "Amber")],
+            canonical_word_positions=[CanonicalWordPosition(0, 0, 0)],
             reference=ReferenceReview(
                 "aligned",
                 "Synthetic policy fixture",
@@ -563,7 +567,7 @@ def test_unconfirmed_word_timings_stay_in_json_not_a_bottom_legend() -> None:
                         unconfirmed_words=["shine"],
                     )
                 ],
-            )
+            ),
         )
     )
     assert text.splitlines()[0] == "Doe — Amber Song"
@@ -761,3 +765,141 @@ def test_invalid_reused_raw_acoustic_word_cannot_be_published(field, value):
     result = apply_reference(original, review, {})
     assert result.reference is not None
     assert result.reference.lines[0].status == "unconfirmed"
+
+
+def test_line_projection_prefers_valid_provider_without_rewriting_raw_words():
+    line = ReferenceLine(
+        "amber lanterns",
+        status="aligned",
+        start_s=5,
+        end_s=7,
+        provider_start_s=3,
+        provider_end_s=10,
+    )
+    word = TranscriptWord(5, 6, "amber", alignment_score=0.8)
+    review = ReferenceReview(
+        "partial",
+        "matched",
+        duration_s=10,
+        provider_timing_status="validated",
+        lines=[line],
+    )
+    transcript = Transcript(
+        words=[word],
+        reference=review,
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 0)],
+    )
+    projected = ordered_lyric_lines(transcript)
+    assert (projected[0].onset_s, projected[0].onset_source, projected[0].end_s) == (
+        3,
+        "provider-synced",
+        None,
+    )
+    assert transcript.reference is not None
+    assert transcript.reference.lines[0].start_s == 5
+    assert transcript.words[0] == word
+    assert "[00:03] amber lanterns" in transcript_export_text(transcript)
+
+
+@pytest.mark.parametrize(
+    "status,start,end",
+    [
+        ("candidate", 3, 10),
+        ("rejected", 3, 10),
+        ("validated", None, 10),
+        ("validated", 11, 12),
+        ("validated", float("nan"), 10),
+    ],
+)
+def test_unusable_provider_never_promotes_unpublished_first_word(status, start, end):
+    line = ReferenceLine(
+        "amber lanterns",
+        status="aligned",
+        start_s=2,
+        end_s=7,
+        provider_start_s=start,
+        provider_end_s=end,
+    )
+    review = ReferenceReview(
+        "partial", "matched", duration_s=10, provider_timing_status=status, lines=[line]
+    )
+    transcript = Transcript(
+        words=[TranscriptWord(5, 6, "lanterns")],
+        reference=review,
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 1)],
+    )
+    assert ordered_lyric_lines(transcript)[0].onset_s is None
+    assert "[??:??] amber lanterns" in transcript_export_text(transcript)
+
+
+def test_projection_rejects_nonmonotonic_cues_and_preserves_repeated_lines_and_extras():
+    lines = [
+        ReferenceLine("amber", provider_start_s=3, provider_end_s=8),
+        ReferenceLine("amber", provider_start_s=7, provider_end_s=10),
+    ]
+    review = ReferenceReview(
+        "partial",
+        "matched",
+        duration_s=10,
+        provider_timing_status="validated",
+        lines=lines,
+    )
+    transcript = Transcript(
+        reference=review, asr_extras=[TranscriptSegment(8, 9, "hey")]
+    )
+    projected = ordered_lyric_lines(transcript)
+    assert [
+        (line.source_kind, line.source_index, line.onset_s) for line in projected
+    ] == [("canonical", 0, None), ("canonical", 1, None), ("asr-extra", 0, 8)]
+
+
+@pytest.mark.parametrize("field", ["word_index", "reference_token_index"])
+def test_negative_position_never_fabricates_a_canonical_onset(field):
+    position = CanonicalWordPosition(0, 0, 0)
+    transcript = Transcript(
+        words=[TranscriptWord(2, 3, "amber")],
+        reference=ReferenceReview("partial", "fixture", lines=[ReferenceLine("amber")]),
+        canonical_word_positions=[position],
+    )
+    object.__setattr__(position, field, -1)
+    line = ordered_lyric_lines(transcript)[0]
+    assert line.onset_s is None
+    assert line.words == []
+
+
+def test_word_only_transcript_remains_singable_without_inventing_a_phrase():
+    transcript = Transcript(words=[TranscriptWord(2, 3, "hello")])
+    line = ordered_lyric_lines(transcript)[0]
+    assert (line.source_kind, line.text, line.onset_s, line.end_s) == (
+        "asr-word",
+        "hello",
+        2,
+        3,
+    )
+    assert [(item.word_index, item.token_index) for item in line.words] == [(0, 0)]
+
+
+def test_canonical_missing_positions_does_not_duplicate_words_as_extras():
+    transcript = Transcript(
+        words=[
+            TranscriptWord(2, 3, "amber", origin="reference-aligned"),
+            TranscriptWord(4, 5, "hey", origin="asr-extra"),
+        ],
+        reference=ReferenceReview("partial", "fixture", lines=[ReferenceLine("amber")]),
+    )
+    projected = ordered_lyric_lines(transcript)
+    assert [(line.source_kind, line.text) for line in projected] == [
+        ("canonical", "amber"),
+        ("asr-word", "hey"),
+    ]
+    text = transcript_export_text(transcript)
+    assert text.count("amber") == 1
+    assert "[00:04] hey" in text
+
+
+def test_segment_covered_words_are_not_exported_twice():
+    transcript = Transcript(
+        segments=[TranscriptSegment(1, 4, "amber")],
+        words=[TranscriptWord(2, 3, "amber")],
+    )
+    assert transcript_export_text(transcript).count("amber") == 1

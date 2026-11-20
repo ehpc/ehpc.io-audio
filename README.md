@@ -400,6 +400,33 @@ use. This project's authorized use includes noncommercial local development,
 runtime verification, and deployment of this personal music tool; that project
 authorization does not grant additional rights under the model licenses.
 
+### Learn lyrics
+
+For processed lyrics, open **Learn lyrics** from the Lyrics header. Listen to
+the original recording with the full text, choose **Practice**, then use
+**Fewer hints** to progress from partial words to first letters and hidden text.
+**More hints**, individual word buttons and **Reveal line** are available at any
+time. Rate a line **Remembered**, **Hesitated** or **Forgot** to guide a fair
+rotation that revisits harder lines more often; the ratings are self-reports,
+not a measured memory score. No microphone, typing or additional inference is
+required.
+
+An estimated section can be selected and repeated when its published boundaries
+are available. Unplaced lines remain manually accessible and are not assigned
+invented timestamps or included in a section loop. The original audio controls
+remain available for manual seeking; opening another player pauses the current
+one. Closing learning stops its playback.
+
+Progress, selected section and hint level are private to the signed-in account
+and the verified original recording. Ratings and hints remain available after
+deleting an analysis and reuploading the same audio bytes with the same ordered
+displayed lyrics; retiming unchanged displayed lines preserves them. Changed or
+removed section boundaries may reset the selected section, and the selected line
+is revalidated. Changed text or grouping starts a separate document version. If
+the original cannot be verified, manual practice is still available but progress
+cannot be saved. Existing results, other accounts and shared processing caches do
+not provide access to this private progress.
+
 
 | Selection | Output label or file |
 |---|---|
@@ -805,6 +832,14 @@ readers. The inline reader fits its content within the available width and grows
 for wrapped word groups and long note sequences. No syllable timings or note
 links are invented. Pitch-only or ASR-gap words can appear as
 short individual cues.
+
+For an exact-metadata LRCLIB match with validated, ordered line cues, the reader
+and lyric exports use the provider-synced line onsets; these are estimates, not
+measured word boundaries. Published word timings remain independent, and an
+unknown first word does not acquire a guessed onset. Saved jobs with validated
+cues use this presentation on read without rerunning analysis. In the absence of
+validated provider cues, only an independently published first word supplies a
+canonical line onset.
 
 The inline lyric size starts at twice the previous base size; **A−** and **A+**
 adjust it from 75% to 400% in 25% steps. The choice is shared within the view

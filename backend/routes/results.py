@@ -1,8 +1,4 @@
 import asyncio
-import contextlib
-import hashlib
-import os
-import stat
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -30,6 +26,7 @@ from backend.models import (
 from backend.pitch_reference import persist_pitch_vocals
 from backend.playback import listening_path
 from backend.session import get_session_id
+from backend.source_identity import source_identity
 from separator.artifact_cache import async_locked
 from separator.audio import transposed_key
 from separator.lyrics import transcript_export_text
@@ -40,33 +37,9 @@ from separator.pitched_lyrics_odt import MIME_TYPE, pitched_lyrics_odt
 router = APIRouter(tags=["results"])
 
 
-def _source_identity(job: JobRecord):
-    """Hash the sole original without following links or loading it into memory."""
-    try:
-        with contextlib.ExitStack() as stack:
-            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            root = os.open(config.UPLOADS_DIR, flags)
-            stack.callback(os.close, root)
-            directory = os.open(str(job.id), flags, dir_fd=root)
-            stack.callback(os.close, directory)
-            with os.scandir(directory) as entries:
-                names = [entry.name for entry in entries]
-            if len(names) != 1:
-                return None
-            descriptor = os.open(
-                names[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
-            )
-            stream = stack.enter_context(os.fdopen(descriptor, "rb"))
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                return None
-            return hashlib.file_digest(stream, "sha256").hexdigest(), names[0]
-    except OSError:
-        return None
-
-
 def _with_source(job: JobRecord, function, *args):
     with capture() as recorder:
-        identity = _source_identity(job)
+        identity = source_identity(job)
         if identity is not None:
             digest, filename = identity
             recorder.bind_digest(digest, job.title or Path(filename).stem)

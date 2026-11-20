@@ -201,7 +201,7 @@ describe("HistoryView results", () => {
   it("keeps lyrics out of the compact history summary", () => {
     const transcript = {
       status: "recognized" as const, language: "en", timestamp_reference: "original" as const,
-      segments: [], sections: [], timestamped_text: "A long lyric that belongs in the expanded result",
+      segments: [], sections: [], presentation_lines: [], timestamped_text: "A long lyric that belongs in the expanded result",
     };
     render(() => <HistoryView jobs={[urlJob({ transcript, options: { ...urlJob().options, extract_lyrics: true } })]}
       onSelect={vi.fn()} onDeleted={vi.fn()} />);
@@ -213,7 +213,7 @@ describe("HistoryView results", () => {
   it("retains empty transcript details when a history result is opened", async () => {
     const job = urlJob({ options: { ...urlJob().options, extract_lyrics: true }, transcript: {
       status: "empty", language: null, timestamp_reference: "original", segments: [],
-      sections: [{ start_s: 0, end_s: 2, label: "chorus" }], structure_model: "SongFormer",
+      sections: [{ start_s: 0, end_s: 2, label: "chorus" }], structure_model: "SongFormer", presentation_lines: [],
       timestamped_text: "[00:00]\n[Chorus]\n",
     } });
     const [selected, setSelected] = createSignal<JobDTO | null>(null);

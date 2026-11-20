@@ -71,10 +71,23 @@ function karaokeJob(): JobDTO {
         { word_index: 2, reference_line_index: 1, reference_token_index: 1 },
         { word_index: 3, reference_line_index: 2, reference_token_index: 1 },
       ],
+      presentation_lines: [
+        { text: 'Before silver, after', source_kind: 'canonical', source_index: 0, canonical_line_index: 0,
+          onset_s: 3.75, end_s: null, onset_source: 'provider-synced', words: [{ word_index: 0, token_index: 1 }] },
+        { text: 'Next chorus', source_kind: 'canonical', source_index: 1, canonical_line_index: 1,
+          onset_s: 11.25, end_s: null, onset_source: 'provider-synced', words: [{ word_index: 1, token_index: 0 }, { word_index: 2, token_index: 1 }] },
+        { text: longLine, source_kind: 'canonical', source_index: 2, canonical_line_index: 2,
+          onset_s: 25, end_s: null, onset_source: 'provider-synced', words: [{ word_index: 3, token_index: 1 }] },
+        { text: 'The harbor rests', source_kind: 'canonical', source_index: 3, canonical_line_index: 3,
+          onset_s: 42.5, end_s: null, onset_source: 'provider-synced', words: [] },
+        ...rapidWords.map((text, index) => ({ text, source_kind: 'asr-word' as const, source_index: index + 4,
+          canonical_line_index: null, onset_s: (32 + index / 10) * 1.25, end_s: (32 + (index + 1) / 10) * 1.25,
+          onset_source: 'acoustic' as const, words: [{ word_index: index + 4, token_index: 0 }] })),
+      ],
       reference: { status: 'partial', reason: 'UI fixture', provider: 'fixture', source_url: null, record_id: null,
         artist: null, title: null, album: null, duration_s: null, agreement: null, corrections: [],
         original_segments: [], original_words: [], lines: [phrase('Before silver, after', 3, 9),
-          phrase('Next chorus', 9.5, 12.5), phrase(longLine, 20, 30)] },
+          phrase('Next chorus', 9.5, 12.5), phrase(longLine, 20, 30), phrase('The harbor rests', 34, 35)] },
     },
     pitch: { version: 1, model: 'UI fixture, no inference', source_duration_s: 45, duration_s: 36,
       pitch_shift_semitones: 1.25, tempo_percent: 125, timestamp_reference: 'output', pitch_reference: 'output',
@@ -211,6 +224,19 @@ async function fittedRows(reader: Locator) {
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke native-media reader ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('shows a provider line before the independently timed word', async ({ page }, info) => {
+      const { view, player, reader } = await mountFixture(page);
+      await seekNative(player, 4.3);
+      const current = reader.getByRole('group', { name: 'Current lyrics' });
+      await expect.poll(() => lyricText(current)).toBe('Before silver, after');
+      await expect(view.getByText('Synced line cues')).toBeVisible();
+      await expect(current.locator('[aria-current="true"]')).toHaveCount(0);
+      await view.locator('.pitch-footer').screenshot({ path: info.outputPath(`provider-line-${viewport.width}.png`), animations: 'disabled' });
+      await player.evaluate((audio: HTMLAudioElement) => audio.play());
+      await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(5.05);
+      await expect(current.locator('[aria-current="true"]')).toHaveText('silver');
+      await player.evaluate((audio: HTMLAudioElement) => audio.pause());
+    });
     test('fits current and next lyrics as pitch labels are shown and hidden', async ({ page }) => {
       const { view, player, reader } = await mountFixture(page);
       const current = reader.getByRole('group', { name: 'Current lyrics' });
@@ -713,6 +739,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     test('centers a typical lyric and its next line in the fullscreen stage', async ({ page }, info) => {
       const fixture = karaokeJob();
       fixture.transcript!.reference!.lines![0] = phrase('The silver moon is shining over quiet water', 3, 9);
+      fixture.transcript!.presentation_lines[0].text = 'The silver moon is shining over quiet water';
       fixture.pitch!.tracks[0].notes = fixture.pitch!.tracks[0].notes.filter((note, index) =>
         !note.word_indices.includes(0) || index < 3);
       const { view, player } = await mountFixture(page, fixture);

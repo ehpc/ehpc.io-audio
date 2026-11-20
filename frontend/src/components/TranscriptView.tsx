@@ -1,12 +1,26 @@
-import { For, Show, type Component } from "solid-js";
+import { For, Show, createEffect, createSignal, type Component } from "solid-js";
+import * as Dialog from "@kobalte/core/dialog";
 import type { JobDTO } from "~/api";
 import { lyricsDownloadUrl, lyricsJsonDownloadUrl } from "~/api";
+import { Button } from "~/components/button";
+import LearnLyrics from "~/components/LearnLyrics";
 
 const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) => {
   const transcript = () => props.job.transcript;
+  const [learningOpen, setLearningOpen] = createSignal(false);
+  let currentJob = props.job.id;
+  createEffect(() => {
+    if (currentJob !== props.job.id) {
+      currentJob = props.job.id;
+      setLearningOpen(false);
+    }
+  });
   const content = () => (
     <>
       <p class="text-xs text-muted-foreground">Original audio timestamps · approximate segment timing. Automatic transcription may contain errors; review the text.</p>
+      <Show when={transcript()?.presentation_lines.some(line => line.onset_source === "provider-synced")}>
+        <p class="text-xs text-muted-foreground">Line timing: provider-synced. Individual word timings remain independently estimated.</p>
+      </Show>
       <Show when={transcript()?.asr_model === "Qwen/Qwen3-ASR-1.7B"}>
         <p class="text-xs text-muted-foreground">Reference-first lyrics · unprompted Qwen singing recognition + multilingual MMS acoustic alignment. Reference-aligned text is not verified lyrics. Unconfirmed text has no word timestamps; acoustic scores are not calibrated correctness probabilities.</p>
       </Show>
@@ -117,13 +131,28 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
     >
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h3 class="text-base font-semibold">Lyrics</h3>
-        <a
-          href={lyricsDownloadUrl(props.job.id, props.job.result_revision)}
-          download=""
-          class="text-sm font-medium text-primary underline-offset-4 hover:underline"
-        >
-          Download timestamped TXT
-        </a>
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <Show when={!props.compact && (transcript()?.presentation_lines?.length ?? 0) > 0}>
+            <Dialog.Root open={learningOpen()} onOpenChange={setLearningOpen}>
+              <Dialog.Trigger as={Button} type="button" variant="outline" class="min-h-11">Learn lyrics</Dialog.Trigger>
+              <Dialog.Portal>
+                <Dialog.Overlay class="learn-overlay" />
+                <Dialog.Content class="learn-dialog" aria-label="Learn lyrics">
+                  <header class="learn-header">
+                    <Dialog.Title>Learn lyrics</Dialog.Title>
+                    <Dialog.CloseButton as={Button} type="button" variant="outline" class="min-h-11" aria-label="Close learning">Close learning</Dialog.CloseButton>
+                  </header>
+                  <Dialog.Description class="learn-note">Listen, practise one section, and choose how much of each line to reveal.</Dialog.Description>
+                  <Show when={learningOpen()}><LearnLyrics job={props.job} /></Show>
+                </Dialog.Content>
+              </Dialog.Portal>
+            </Dialog.Root>
+          </Show>
+          <a href={lyricsDownloadUrl(props.job.id, props.job.result_revision)} download=""
+            class="inline-flex min-h-11 items-center text-sm font-medium text-primary underline-offset-4 hover:underline">
+            Download timestamped TXT
+          </a>
+        </div>
       </div>
       <Show when={props.compact}>
         <details>

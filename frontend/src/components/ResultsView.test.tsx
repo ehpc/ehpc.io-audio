@@ -57,6 +57,7 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
       segments: [{ start_s: 0, end_s: 2.5, text: "<img src=x onerror=alert(1)>" }],
       sections: [],
       structure_model: null,
+      presentation_lines: [],
       timestamped_text: "[00:00] <img src=x onerror=alert(1)>",
     },
     error_message: null,
