@@ -1,7 +1,7 @@
 import { createEffect, createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
 import * as Dialog from "@kobalte/core/dialog";
 import type { JobDTO } from "./api";
-import { getCurrentJob, getJob, listJobs, subscribeToJob } from "./api";
+import { getCurrentJob, getJob, listJobs, retryJob, subscribeToJob } from "./api";
 import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
 import JobStatusDock from "./components/JobStatusDock";
@@ -24,6 +24,8 @@ const App: Component = () => {
   let currentJobRevision = 0;
   let historyRequestRevision = 0;
   const [selectedJobRefreshError, setSelectedJobRefreshError] = createSignal<string | null>(null);
+  const [retryingId, setRetryingId] = createSignal<number | null>(null);
+  const [retryError, setRetryError] = createSignal<{ jobId: number; message: string } | null>(null);
   const auth = useAuth();
   const [tab, setTab] = createSignal<"workspace" | "profile" | "people">("workspace");
   const [accountError, setAccountError] = createSignal("");
@@ -204,14 +206,45 @@ const App: Component = () => {
     void refreshHistory();
   });
 
-  const onSubmitted = (newJob: JobDTO) => {
-    currentJobRevision++;
-    setSelectedJobRefreshError(null);
-    setLibraryOpen(false);
-    setHistoryScrollRequest(null);
+  const onSubmitted = (newJob: JobDTO, select = true) => {
+    if (select) {
+      currentJobRevision++;
+      setSelectedJobRefreshError(null);
+      setLibraryOpen(false);
+      setHistoryScrollRequest(null);
+    }
     setTrackedJob(newJob);
-    setJob(newJob);
-    refreshHistory();
+    if (select) setJob(newJob);
+    void refreshHistory();
+  };
+
+  const retrySelectedJob = async () => {
+    const failed = job();
+    if (!failed || failed.status !== "failed" || retryingId() !== null) return;
+    setRetryingId(failed.id);
+    setRetryError(null);
+    try {
+      const result = await retryJob(failed.id);
+      onSubmitted({
+        ...failed,
+        ...result,
+        original_key: null,
+        output_key: null,
+        result_revision: null,
+        manifest: null,
+        transcript: null,
+        pitch: null,
+        pitched_lyrics: null,
+        error_message: null,
+        created_at: Math.floor(Date.now() / 1000),
+        has_original: false,
+        has_pitch_vocals: false,
+      }, job()?.id === failed.id);
+    } catch (error) {
+      setRetryError({ jobId: failed.id, message: error instanceof Error ? error.message : "Could not retry this job." });
+    } finally {
+      setRetryingId(null);
+    }
   };
 
   const onHistorySelect = (selected: JobDTO) => {
@@ -322,7 +355,14 @@ const App: Component = () => {
             <ResultsView job={job()!} onReset={onReset} scrollRequest={historyScrollRequest()} />
           </Show>
           <Show when={job()?.status === "failed"}>
-            <section role="alert"><h2>Processing failed</h2><p>{job()?.error_message || "The job failed."}</p></section>
+            <section role="alert">
+              <h2>Processing failed</h2>
+              <p>{job()?.error_message || "The job failed."}</p>
+              <Show when={retryError()?.jobId === job()?.id}><p>{retryError()!.message}</p></Show>
+              <Button type="button" variant="outline" class="min-h-11" disabled={retryingId() !== null} onClick={() => void retrySelectedJob()}>
+                {retryingId() === job()?.id ? "Retrying..." : "Retry"}
+              </Button>
+            </section>
           </Show>
         </div>
       </Show>

@@ -280,8 +280,9 @@ History beside the workspace on desktop; on smaller screens, the sticky
 The current entry is highlighted and listed once. Choosing a History title
 closes the drawer and scrolls to **Karaoke with pitches** when present,
 otherwise to the results panel. History entries show the song title and date;
-the Delete action appears for completed entries. Open an entry for lyrics,
-individual audio and pitch JSON downloads when present. Timestamped
+the Delete action appears for completed entries. Select a failed entry to open
+its error and retry the original source and options. Open a completed entry for
+lyrics, individual audio and pitch JSON downloads when present. Timestamped
 lyrics remain visible while online-alignment and raw-recognition diagnostics are
 initially collapsed in the **Online alignment and raw recognition details**
 disclosure.

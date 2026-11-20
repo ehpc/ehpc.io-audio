@@ -334,6 +334,17 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(page.getByRole('heading', { name: 'first-tone.wav', exact: true })).toBeVisible();
       await dock.getByRole('button', { name: 'View error' }).click();
       await expect(page.getByRole('alert')).toContainText('Controlled inference failure');
+      const retry = page.locator('.processing-results').getByRole('button', { name: 'Retry', exact: true });
+      await expect(retry).toBeVisible();
+      await retry.scrollIntoViewIfNeeded();
+      const retryBox = (await retry.boundingBox())!;
+      expect(retryBox.height).toBeGreaterThanOrEqual(44);
+      expect(retryBox.x).toBeGreaterThanOrEqual(0);
+      expect(retryBox.x + retryBox.width).toBeLessThanOrEqual(viewport.width);
+      await retry.focus();
+      await page.keyboard.press('Shift+Tab');
+      await page.keyboard.press('Tab');
+      await expect(retry).toBeFocused();
       await expect(input).toHaveValue(/second-tone\.wav/);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await info.attach(`live-failed-${viewport.width}`, { body: await page.screenshot(), contentType: 'image/png' });

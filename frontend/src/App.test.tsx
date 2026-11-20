@@ -2,12 +2,13 @@ import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
-import type { JobDTO } from "./api";
+import type { JobDTO, SubmitResult } from "./api";
 
 const api = vi.hoisted(() => ({
   getCurrentJob: vi.fn(),
   getJob: vi.fn(),
   listJobs: vi.fn(),
+  retryJob: vi.fn(),
   subscribeToJob: vi.fn(),
   jobLabel: (job: { title: string }) => job.title,
 }));
@@ -54,6 +55,7 @@ let scrollIntoViewDescriptor: PropertyDescriptor | undefined;
 beforeEach(() => {
   scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
   vi.clearAllMocks();
+  api.retryJob.mockReset();
   api.getCurrentJob.mockResolvedValue(null);
   api.listJobs.mockResolvedValue([displayJob("revision-1")]);
   api.subscribeToJob.mockReturnValue(() => {});
@@ -179,6 +181,49 @@ it("shows a failed tracked job without replacing another selected result", async
   await userEvent.click(within(dock).getByRole("button", { name: "View error" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Fixture failure");
   expect(document.activeElement).toHaveClass("processing-results");
+});
+
+it("keeps a failed job retryable after a rejected attempt and tracks an accepted retry", async () => {
+  const failed = { ...activeJob(72, "Failed song"), status: "failed" as const, error_message: "Source unavailable" };
+  const pending = Promise.withResolvers<SubmitResult>();
+  api.getCurrentJob.mockResolvedValue(failed);
+  api.retryJob.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
+    id: 73, status: "queued", position: 1, progress: { steps: ["source", "analysis", "export"], current: null },
+  });
+  render(() => <App />);
+  const alert = await screen.findByRole("alert");
+  await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+  expect(within(alert).getByRole("button", { name: "Retrying..." })).toBeDisabled();
+  pending.reject(new Error("Queue unavailable"));
+  await waitFor(() => expect(alert).toHaveTextContent("Queue unavailable"));
+  expect(alert).toHaveTextContent("Source unavailable");
+  expect(within(alert).getByRole("button", { name: "Retry" })).toBeEnabled();
+  await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Failed song");
+  expect(screen.getByRole("status")).toHaveTextContent("Queued");
+});
+
+it("keeps a different selected result mounted while an accepted retry appears in the dock", async () => {
+  const failed = { ...activeJob(72, "Failed song"), status: "failed" as const, error_message: "Source unavailable" };
+  const otherFailed = { ...activeJob(74, "Another failed song"), status: "failed" as const, error_message: "Other failure" };
+  const pending = Promise.withResolvers<SubmitResult>();
+  api.getCurrentJob.mockResolvedValue(failed);
+  api.listJobs.mockResolvedValue([displayJob("revision-1"), otherFailed]);
+  api.getJob.mockImplementation(async (id: number) => id === otherFailed.id ? otherFailed : displayJob("selected"));
+  api.retryJob.mockReturnValueOnce(pending.promise);
+  render(() => <App />);
+  await userEvent.click(within(await screen.findByRole("alert")).getByRole("button", { name: "Retry" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Another failed song" }));
+  const otherAlert = await screen.findByRole("alert");
+  expect(otherAlert).toHaveTextContent("Other failure");
+  expect(within(otherAlert).getByRole("button", { name: "Retry" })).toBeDisabled();
+  await userEvent.click(await screen.findByRole("button", { name: "Harbor song" }));
+  const selected = await screen.findByRole("region", { name: "Current result" });
+  expect(selected).toHaveTextContent("Harbor song");
+  pending.resolve({ id: 73, status: "queued", position: 1, progress: { steps: ["source", "analysis", "export"], current: null } });
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Failed song"));
+  expect(screen.getByRole("region", { name: "Current result" })).toBe(selected);
+  expect(selected).toHaveTextContent("Harbor song");
 });
 
 it("refreshes the tracked result on view and ignores a late refresh after another selection", async () => {
