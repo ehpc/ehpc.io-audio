@@ -34,10 +34,14 @@ for (const width of [390, 1440]) {
     await expect(tuner.locator('.mic-tuner-reading')).toContainText('E4', { timeout: 12000 });
     await expect(path).toHaveAttribute('d', ''); // Microphone alone cannot record.
     await play.click();
-    await expect.poll(async () => (await path.getAttribute('d'))?.includes('L'), { timeout: 12000 }).toBe(true);
-    await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(1);
+    await expect.poll(() => path.evaluate((p: SVGPathElement) => p.getBBox().width), { timeout: 12000 }).toBeGreaterThan(0);
+    await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(2);
     await page.getByRole('button', { name: 'Pause', exact: true }).first().click();
     const first = await path.getAttribute('d');
+    const points = (value: string) => [...value.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)]
+      .map(([, x, y]) => `${x} ${y}`);
+    const originalPoints = points(first!);
+    expect(originalPoints.length).toBeGreaterThan(2);
     await page.waitForTimeout(250);
     expect(await path.getAttribute('d')).toBe(first);
     const voiceY = await path.evaluate((p: SVGPathElement) => p.getBBox().y);
@@ -75,13 +79,31 @@ for (const width of [390, 1440]) {
     await expect(tuner.getByText('Listening for a clear note…')).toBeVisible();
     await audio.evaluate((a: HTMLAudioElement) => { a.currentTime = 0; });
     await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.seeking)).toBe(false);
+    // Stop from the browser's own playback clock; cross-process polling can
+    // overshoot and replay the entire original take on a busy CI runner.
+    await audio.evaluate((a: HTMLAudioElement) => {
+      const media = a as HTMLAudioElement & { __stopReplay: Promise<number> };
+      const { promise, resolve } = Promise.withResolvers<number>();
+      media.__stopReplay = promise;
+      const stopAtBoundary = () => {
+        if (!a.paused && a.currentTime >= 0.35) {
+          a.pause();
+          resolve(a.currentTime);
+        } else {
+          requestAnimationFrame(stopAtBoundary);
+        }
+      };
+      requestAnimationFrame(stopAtBoundary);
+    });
     await play.click();
-    await expect.poll(() => audio.evaluate((a: HTMLAudioElement) => a.currentTime)).toBeGreaterThan(0.35);
-    await page.getByRole('button', { name: 'Pause', exact: true }).first().click();
+    await audio.evaluate(async (a: HTMLAudioElement) => {
+      await (a as HTMLAudioElement & { __stopReplay: Promise<number> }).__stopReplay;
+    });
+    await expect(play).toBeVisible();
     const erased = await path.getAttribute('d');
-    expect(erased).not.toBe(first);
-    expect(erased).toContain('L');
-    expect(Number(erased!.match(/^M([\d.]+)/)?.[1])).toBeGreaterThan(0);
+    const remainingPoints = points(erased!);
+    expect(remainingPoints).not.toContain(originalPoints[0]);
+    expect(remainingPoints.slice(-2)).toEqual(originalPoints.slice(-2));
     await viewport.evaluate((v: HTMLElement) => { v.scrollLeft = 400; });
     await viewport.evaluate((v: HTMLElement) => { v.scrollLeft = 0; });
     await expect(path).toHaveAttribute('d', erased!);
