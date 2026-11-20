@@ -1565,6 +1565,12 @@ on success or failure. A successful GPU gate requires at least one valid actual
 name and positive MiB record per app; build-layer text does not qualify. Missing
 evidence is reported as unknown, not inferred from the requested pool. The gate
 does not independently reconcile every call's container with those records.
+The isolated production-sized CI app retains an idle container for 180 seconds
+instead of the usual 60 to reduce reacquisition between spaced tests; it still scales to
+zero and is always stopped. Each fully used extra 120-second idle window costs
+approximately $0.06504 on L40S or $0.08328 on A100-80GB in GPU charges alone at
+published rates; CPU and memory are additional. This is not a whole-run cap or a
+guarantee of capacity. Primary smoke and production idle settings are unchanged.
 Three recent successful full GPU jobs took approximately 54–56 minutes; the
 short first-result budget does not make a successful full run a five-minute job.
 Only a passing main run promotes **`audio-inference-v3`** and publishes the
