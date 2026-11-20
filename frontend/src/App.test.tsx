@@ -41,9 +41,10 @@ vi.mock("./components/QueueStatus", () => ({ default: () => null }));
 vi.mock("./ProfileView", () => ({ default: () => <section>Profile contents</section> }));
 vi.mock("./AdminView", () => ({ default: () => <section>Admin contents</section> }));
 
-type DisplayJob = { id: number; status: "done"; title: string; result_revision: string | null };
+type DisplayJob = { id: number; status: "done"; title: string; result_revision: string | null; progress: JobDTO["progress"] };
 const displayJob = (result_revision: string | null): DisplayJob => ({
   id: 71, status: "done", title: "Harbor song", result_revision,
+  progress: { steps: ["source", "analysis", "export"], current: null },
 });
 const activeJob = (id: number, title: string): JobDTO => ({
   ...displayJob(null), id, title, status: "queued", position: 2,
@@ -208,4 +209,22 @@ it("refreshes the tracked result on view and ignores a late refresh after anothe
   pending.resolve({ ...old, result_revision: "late" });
   await waitFor(() => expect(screen.queryByText("Revision: late")).not.toBeInTheDocument());
   expect(screen.getByRole("region", { name: "Current result" })).toHaveTextContent("Harbor song");
+});
+
+it("does not let a late disconnect snapshot overwrite a newer live update", async () => {
+  const active = activeJob(72, "New song");
+  const pending = Promise.withResolvers<JobDTO>();
+  api.getCurrentJob.mockResolvedValue(active);
+  api.getJob.mockReturnValue(pending.promise);
+  render(() => <App />);
+  const dock = await screen.findByRole("status");
+  await waitFor(() => expect(api.subscribeToJob).toHaveBeenCalledTimes(1));
+  const update = api.subscribeToJob.mock.calls[0][1] as (job: JobDTO) => void;
+  const onError = api.subscribeToJob.mock.calls[0][2] as () => void;
+  onError();
+  update({ ...active, status: "running" });
+  expect(dock).toHaveTextContent("Processing audio");
+  pending.resolve(active);
+  await pending.promise;
+  expect(dock).toHaveTextContent("Processing audio");
 });

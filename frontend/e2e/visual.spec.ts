@@ -105,6 +105,66 @@ with db._session() as c:
   });
 }
 
+// Static running snapshot for layout only; job-status-dock.spec.ts separately
+// exercises the real worker and SSE producer at these actual phase boundaries.
+const seedExpandedProgress = String.raw`
+import json,sys
+from backend import config, db
+assert config.QUEUE_CONCURRENCY == 0
+options = {"extract_vocals": True, "extract_lyrics": True, "detect_pitch": True}
+with db._session() as c:
+    cursor = c.execute("INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,created_at) VALUES (?,?,?,?,?,?,?)",
+                       (sys.argv[1], "running", "upload", "fixture.wav", "Expanded visual fixture song", json.dumps(options), 1767268800))
+    print(cursor.lastrowid)
+`;
+for (const viewport of [mobile, desktop]) {
+  test(`expanded progress gauge ${viewport.width}`, async ({ page }, info) => {
+    await page.setViewportSize(viewport);
+    const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
+    const id = execFileSync('uv', ['run', 'python', '-c', seedExpandedProgress, identity.id], {
+      cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! }, encoding: 'utf8',
+    }).trim();
+    try {
+      const response = await page.request.get(`/api/jobs/${id}`);
+      expect(response.ok()).toBe(true);
+      const job = await response.json();
+      expect(job.progress.steps).toEqual(['source', 'analysis', 'wait', 'metadata', 'separation', 'lyrics', 'pitch', 'export']);
+      job.progress.current = 'lyrics';
+      await page.addInitScript(snapshot => {
+        class VisualEventSource {
+          onmessage: ((event: MessageEvent) => void) | null = null;
+          constructor() { queueMicrotask(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(snapshot) }))); }
+          close() {}
+        }
+        Object.defineProperty(window, 'EventSource', { value: VisualEventSource, configurable: true });
+      }, job);
+      await page.goto('/');
+      const dock = page.locator('.job-dock');
+      await expect(dock).toContainText('Transcribing and aligning lyrics');
+      await dock.getByRole('button', { name: 'View progress' }).click();
+      const progress = page.locator('.processing-results');
+      await expect(progress).toBeFocused();
+      const steps = progress.getByRole('list', { name: 'Processing steps' });
+      await expect(steps).toContainText('Separating audio: Complete');
+      await expect(steps).toContainText('Transcribing and aligning lyrics: Current');
+      await expect(steps).toContainText('Detecting vocal pitch: Pending');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await compare(progress, info, `expanded-progress-gauge-${viewport.width}.png`);
+    } finally {
+      await page.goto('about:blank');
+      execFileSync('uv', ['run', 'python', '-c', String.raw`
+import sys
+from backend import config, db
+assert config.QUEUE_CONCURRENCY == 0
+with db._session() as c:
+    c.execute("DELETE FROM jobs WHERE id=? AND session_id=? AND status='running' AND title='Expanded visual fixture song'", (int(sys.argv[1]), sys.argv[2]))
+`, id, identity.id], {
+        cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+    }
+  });
+}
+
 // Fixed, synthetic metadata in the isolated database exercises the actual admin
 // activity UI without sending searches, mail, or inference requests.
 const seedAccountActivity = String.raw`

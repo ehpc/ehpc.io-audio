@@ -150,11 +150,10 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await expect(mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true })).toBeVisible();
   await mobilePage.getByRole('button', { name: /^Library/ }).click();
   const history = mobilePage.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
-  const historyTimestamp = await mobilePage.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job!.created_at);
-  const historyCard = history.locator('.rounded-lg').filter({
-    has: mobilePage.getByRole('button', { name: `Delete ${jobLabel(job!)}`, exact: true }),
-    hasText: historyTimestamp,
-  });
+  const historyDateTime = await mobilePage.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job!.created_at);
+  const historyCard = history.locator('.rounded-lg')
+    .filter({ has: mobilePage.getByRole('button', { name: `Delete ${jobLabel(job!)}`, exact: true }) })
+    .filter({ has: mobilePage.locator(`time[datetime="${historyDateTime}"]`) });
   await expect(historyCard.getByRole('button', { name: jobLabel(job!), exact: true })).toBeVisible();
   const foreign = await browser.newContext();
   await authenticateOutsider(foreign);

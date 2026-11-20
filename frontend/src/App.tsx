@@ -103,8 +103,10 @@ const App: Component = () => {
     for (const id of wanted) {
       if (subscriptions.has(id)) continue;
       let valid = true;
+      let updateRevision = 0;
       const apply = (next: JobDTO) => {
         if (!valid || next.id !== id || deletedJobIds.has(id)) return;
+        updateRevision++;
         if (job()?.id === id) {
           currentJobRevision++;
           setSelectedJobRefreshError(null);
@@ -114,7 +116,11 @@ const App: Component = () => {
         if (next.status === "done" || next.status === "failed") void refreshHistory();
       };
       const close = subscribeToJob(id, apply, async () => {
-        try { apply(await getJob(id)); } catch { /* Keep the last known status. */ }
+        const revision = updateRevision;
+        try {
+          const snapshot = await getJob(id);
+          if (revision === updateRevision) apply(snapshot);
+        } catch { /* Keep the last known status while the stream reconnects. */ }
       });
       subscriptions.set(id, () => { valid = false; close(); });
     }
@@ -251,7 +257,7 @@ const App: Component = () => {
     setTab(next);
     if (next === "workspace") void refreshWorkspace();
   };
-  const LibraryHistory = () => <HistoryView jobs={history()} selectedId={job()?.id} onSelect={onHistorySelect} onRetried={onSubmitted} onDeleted={onDeleted} />;
+  const LibraryHistory = () => <HistoryView jobs={history()} selectedId={job()?.id} onSelect={onHistorySelect} onDeleted={onDeleted} />;
 
   return (
     <main class="app-shell">

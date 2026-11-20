@@ -46,6 +46,7 @@ from separator.pitch import (
     transform_analysis,
 )
 from separator.producer_manifest import ProducerManifest, load_manifest
+from separator.progress import JobPhase
 from separator.stems import (
     VOCALS_STEM,
     SeparationResult,
@@ -131,6 +132,7 @@ class ProcessingContext:
     manifest: ProducerManifest
     infer: InferenceProducer
     on_committed: Callable[[str, Path], None] | None = None
+    on_phase: Callable[[JobPhase], None] | None = None
 
     def key(
         self, operation: Operation, identity: object, model: str | None = None
@@ -603,12 +605,16 @@ def run_processing(
     context: ProcessingContext,
     reference_metadata: ReferenceMetadata | None = None,
 ) -> ProcessingResult:
+    if context.on_phase:
+        context.on_phase(JobPhase.SEPARATION)
     stems = run_separation(
         input_path, options, tmp, context.root / "stems", context.separate
     )
     manifest = context.manifest
     transcript = None
     if options.needs_lyrics:
+        if context.on_phase:
+            context.on_phase(JobPhase.LYRICS)
         transcript = transcribe_source(
             stems["vocals"].data, context, reference_metadata
         )
@@ -643,6 +649,8 @@ def run_processing(
         )
     pitch_json = None
     if options.needs_pitch:
+        if context.on_phase:
+            context.on_phase(JobPhase.PITCH)
         tracks = []
         duration = 0.0
         for label in options.pitch_labels:

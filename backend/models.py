@@ -17,7 +17,7 @@ from pydantic import (
     field_validator,
 )
 
-from backend import config
+from backend import config, events
 from separator.audio import modification_suffix, transposed_key
 from separator.lyrics import (
     CanonicalWordPosition,
@@ -33,6 +33,7 @@ from separator.lyrics_reference import ReferenceReview
 from separator.options import SeparationOptions
 from separator.pitch import PitchAnalysis, pitch_from_json, pitch_to_json
 from separator.pitched_lyrics import PitchedLyricsTrack, pitched_lyrics_tracks
+from separator.progress import JobPhase
 from separator.song_search import MAX_PLAY_COUNT, RESULT_LIMIT, trusted_thumbnail_url
 
 _AUDIO_EXT = re.compile(r"\.(mp3|wav|flac|m4a|ogg|aac|opus|webm)$", re.IGNORECASE)
@@ -204,12 +205,18 @@ def result_directory(job: JobRecord) -> Path:
     return directory
 
 
+class JobProgress(BaseModel):
+    steps: list[JobPhase]
+    current: JobPhase | None
+
+
 class JobDTO(BaseModel):
     """API-facing job shape — must match the frontend's JobDTO contract exactly."""
 
     id: int
     status: JobStatus
     position: int | None
+    progress: JobProgress
     source_type: str
     source_value: str
     title: str | None
@@ -263,6 +270,23 @@ def pitched_lyrics_available(job: JobRecord) -> bool:
     )
 
 
+def job_progress(
+    options: SeparationOptions, current: JobPhase | None = None
+) -> JobProgress:
+    steps = [JobPhase.SOURCE, JobPhase.ANALYSIS]
+    if options.output_labels or options.needs_lyrics or options.needs_pitch:
+        steps.append(JobPhase.WAIT)
+        if options.needs_lyrics:
+            steps.append(JobPhase.METADATA)
+        steps.append(JobPhase.SEPARATION)
+    if options.needs_lyrics:
+        steps.append(JobPhase.LYRICS)
+    if options.needs_pitch:
+        steps.append(JobPhase.PITCH)
+    steps.append(JobPhase.EXPORT)
+    return JobProgress(steps=steps, current=current)
+
+
 def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
     pitch = pitch_from_json(job.pitch_json) if job.pitch_json else None
     title = header_title(job.title)
@@ -271,6 +295,10 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         id=job.id,
         status=job.status,
         position=position if job.status == JobStatus.QUEUED else None,
+        progress=job_progress(
+            job.options,
+            events.current_phase(job.id) if job.status == JobStatus.RUNNING else None,
+        ),
         source_type=job.source_type,
         source_value=job.source_value,
         title=job.title,

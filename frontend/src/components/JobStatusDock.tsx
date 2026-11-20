@@ -1,5 +1,6 @@
 import { onCleanup, onMount, Show, type Component } from "solid-js";
 import { jobLabel, type JobDTO } from "~/api";
+import JobSteps, { phaseLabels } from "./JobSteps";
 
 const JobStatusDock: Component<{ job: JobDTO; onView: () => void }> = (props) => {
   let dock: HTMLDivElement | undefined;
@@ -24,7 +25,8 @@ const JobStatusDock: Component<{ job: JobDTO; onView: () => void }> = (props) =>
       </Show>
       <div class="job-dock-copy">
         <strong title={jobLabel(props.job)}>{jobLabel(props.job)}</strong>
-        <span>{props.job.status === "queued" ? "Queued · Waiting to start" : props.job.status === "running" ? "Processing audio" : props.job.status === "done" ? "Complete" : "Failed"}</span>
+        <span>{props.job.status === "queued" ? "Queued · Waiting to start" : props.job.status === "running" ? (props.job.progress.current ? phaseLabels[props.job.progress.current] : "Processing audio") : props.job.status === "done" ? "Complete" : "Failed"}</span>
+        <Show when={props.job.status !== "failed"} fallback={<div class="job-steps-placeholder" aria-hidden="true" />}><JobSteps job={props.job} compact /></Show>
       </div>
       <button type="button" onClick={props.onView}>{active() ? "View progress" : props.job.status === "done" ? "View result" : "View error"}</button>
     </div>

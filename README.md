@@ -279,9 +279,9 @@ History beside the workspace on desktop; on smaller screens, the sticky
 **Library** button opens a drawer and remains available while viewing results.
 The current entry is highlighted and listed once. Choosing a History title
 closes the drawer and scrolls to **Karaoke with pitches** when present,
-otherwise to the results panel. History entries show title, status, date, key,
-adjustments, and an audio-output count. Open an entry for lyrics, individual
-audio and pitch JSON downloads when present. Timestamped
+otherwise to the results panel. History entries show the song title and date;
+the Delete action appears for completed entries. Open an entry for lyrics,
+individual audio and pitch JSON downloads when present. Timestamped
 lyrics remain visible while online-alignment and raw-recognition diagnostics are
 initially collapsed in the **Online alignment and raw recognition details**
 disclosure.
@@ -289,8 +289,13 @@ disclosure.
 A fixed status dock follows the latest accepted job independently of which
 History entry is open. It distinguishes waiting in the queue from actual
 processing and reports completion or failure; **View progress**, **View result**
-or **View error** returns to that job. The layout measures dock height to preserve
-space for controls, including the mobile action. It does not play a chime.
+or **View error** returns to that job. Its step gauge shows the current operation
+and completed or pending steps for the requested work, not a percentage or
+estimate of remaining time. Cached work advances only when that operation has
+actually returned. A temporarily interrupted status stream reconnects and
+recovers the latest state without requiring a page reload. The fixed dock and
+mobile action reserve measured end and scroll space; during intermediate
+scrolling the dock can temporarily overlay content. It does not play a chime.
 
 Each signed-in user can delete their own completed History entries after a
 confirmation. Deletion permanently removes that job's history, original upload

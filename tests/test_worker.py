@@ -1,14 +1,18 @@
 import asyncio
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from audio_samples import mp3_measurements, tone_wav
 from inference_fixture import StemSignal, cpu_inference, fixture_manifest
 
-from backend import config, db, modal_client, queue
+from backend import config, db, events, modal_client, queue
 from backend.models import JobStatus
+from separator.artifact_cache import async_locked, digest
 from separator.options import SeparationOptions
-from separator.processing import ProcessingContext, run_processing
+from separator.processing import ProcessingContext, ProcessingResult, run_processing
+from separator.progress import JobPhase
 
 
 @pytest.fixture(autouse=True)
@@ -53,23 +57,44 @@ def test_run_job_upload_success(
         calls.append(request.operation)
         return cpu_inference(request, key, root=producer)
 
-    def process(job, audio, filename, metadata, stop):
+    def process(job, audio, filename, metadata, stop, on_phase):
         assert audio == source and filename == "song.wav"
         assert not stop.is_set()
-        work = tmp_path / "work"
+        work = tmp_path / f"work-{job.id}"
         work.mkdir()
         input_path = work / filename
         input_path.write_bytes(audio)
-        context = ProcessingContext(tmp_path / "cache", manifest, infer)
+        context = ProcessingContext(
+            tmp_path / "cache", manifest, infer, on_phase=on_phase
+        )
         result = run_processing(input_path, job.options, work, context, metadata)
         produced.append(result)
         return result
 
     monkeypatch.setattr(queue, "process_source", process)
 
-    job = db.get_job(job_id)
-    assert job is not None
-    asyncio.run(queue._run_job(job))
+    job = db.claim_oldest_queued()
+    assert job is not None and job.id == job_id
+
+    async def run_with_events():
+        listener = events.subscribe(job.id)
+        try:
+            await queue._run_job(job)
+            return [listener.get_nowait() for _ in range(listener.qsize())]
+        finally:
+            events.unsubscribe(job.id, listener)
+
+    updates = asyncio.run(run_with_events())
+    assert [update["progress"]["current"] for update in updates] == [
+        "source",
+        "analysis",
+        "analysis",
+        "wait",
+        "separation",
+        "export",
+        None,
+    ]
+    assert updates[-1]["status"] == JobStatus.DONE
 
     done = db.get_job(job_id)
     assert done is not None
@@ -88,6 +113,87 @@ def test_run_job_upload_success(
         # This field is producer elapsed time, not decoded media duration.
         assert entry.duration_s == produced[0].audio[entry.label].duration_s
     assert (upload / "song.wav").read_bytes() == source
+
+    cached_id = db.insert_job(
+        "s1",
+        "upload",
+        "song.wav",
+        SeparationOptions(extract_vocals=True, extract_instruments=True),
+    )
+    cached_upload = config.UPLOADS_DIR / str(cached_id)
+    cached_upload.mkdir(parents=True)
+    (cached_upload / "song.wav").write_bytes(source)
+    job = db.claim_oldest_queued()
+    assert job is not None and job.id == cached_id
+    cached_updates = asyncio.run(run_with_events())
+    assert [update["progress"]["current"] for update in cached_updates] == [
+        "source",
+        "analysis",
+        "analysis",
+        "wait",
+        "separation",
+        "export",
+        None,
+    ]
+    assert calls == ["separation", "separation"]
+
+
+def test_phase_publication_does_not_deadlock_single_worker_executor() -> None:
+    job_id = db.insert_job(
+        "s1", "upload", "song.wav", SeparationOptions(extract_vocals=True)
+    )
+    job = db.claim_oldest_queued()
+    assert job is not None and job.id == job_id
+    parent, child = multiprocessing.get_context("fork").Pipe(duplex=False)
+
+    def execute() -> None:
+        def process(_job, _audio, _filename, _metadata, _stop, on_phase):
+            on_phase(JobPhase.SEPARATION)
+            return ProcessingResult({})
+
+        queue.process_source = process
+
+        async def run() -> None:
+            asyncio.get_running_loop().set_default_executor(
+                ThreadPoolExecutor(max_workers=1)
+            )
+            listener = events.subscribe(job_id)
+            await queue._process(job, b"source", "song.wav", None)
+            child.send(listener.get_nowait()["progress"]["current"])
+            events.unsubscribe(job_id, listener)
+
+        asyncio.run(run())
+        child.close()
+
+    process = multiprocessing.get_context("fork").Process(target=execute)
+    process.start()
+    child.close()
+    try:
+        assert parent.poll(10), "phase callback blocked the only executor thread"
+        assert parent.recv() == "separation"
+        process.join(10)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(10)
+        parent.close()
+
+
+def test_source_only_job_does_not_wait_for_same_source_model_lock() -> None:
+    job_id = db.insert_job("s1", "upload", "song.wav", SeparationOptions())
+    _write_upload(job_id, "song.wav")
+    job = db.claim_oldest_queued()
+    assert job is not None and job.id == job_id
+    lock = config.DATA_DIR / "artifacts" / "gpu-locks" / digest(b"audio-bytes")
+
+    async def run() -> None:
+        async with async_locked(lock):
+            await asyncio.wait_for(queue._run_job(job), timeout=10)
+
+    asyncio.run(run())
+    done = db.get_job(job_id)
+    assert done is not None and done.status is JobStatus.DONE
 
 
 def test_run_job_url_sets_title_from_download(monkeypatch: pytest.MonkeyPatch) -> None:

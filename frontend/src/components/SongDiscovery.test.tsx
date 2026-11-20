@@ -28,7 +28,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.searchSong).mockResolvedValue([match]);
   vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
-  vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1 });
+  vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1, progress: { steps: ["source", "analysis", "export"], current: null } });
 });
 afterEach(() => vi.unstubAllGlobals());
 

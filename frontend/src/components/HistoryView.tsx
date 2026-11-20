@@ -1,31 +1,22 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import * as AlertDialog from "@kobalte/core/alert-dialog";
-import type { JobDTO, JobStatus } from "~/api";
-import { AuthHttpError, deleteJob, jobLabel, retryJob } from "~/api";
-import AudioMetadata from "~/components/AudioMetadata";
+import type { JobDTO } from "~/api";
+import { AuthHttpError, deleteJob, jobLabel } from "~/api";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
 
-const STATUS_STYLES: Record<JobStatus, string> = {
-  queued: "bg-muted text-muted-foreground",
-  running: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-  done: "bg-green-500/15 text-green-600 dark:text-green-400",
-  failed: "bg-destructive/15 text-destructive",
-};
+const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" });
 
-function formatTimestamp(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString();
+function formatDate(unixSeconds: number): string {
+  return DATE_FORMATTER.format(new Date(unixSeconds * 1000));
 }
 
 const HistoryView: Component<{
   jobs: JobDTO[];
   selectedId?: number | null;
   onSelect: (job: JobDTO) => void;
-  onRetried: (job: JobDTO) => void;
   onDeleted: (id: number) => void;
 }> = (props) => {
-  const [retryingId, setRetryingId] = createSignal<number | null>(null);
-  const [copiedId, setCopiedId] = createSignal<number | null>(null);
   const [deleting, setDeleting] = createSignal(false);
   const [deleteTarget, setDeleteTarget] = createSignal<JobDTO | null>(null);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
@@ -33,46 +24,6 @@ const HistoryView: Component<{
     const selected = props.jobs.find(job => job.id === props.selectedId);
     return selected ? [selected, ...props.jobs.filter(job => job.id !== selected.id)] : props.jobs;
   });
-
-  const copyUrl = async (job: JobDTO, event: MouseEvent) => {
-    event.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(job.source_value);
-      setCopiedId(job.id);
-      setTimeout(() => setCopiedId((id) => (id === job.id ? null : id)), 1500);
-    } catch {
-      // Clipboard unavailable (e.g. non-secure context); nothing to fall back to.
-    }
-  };
-
-  const handleRetry = async (job: JobDTO, event: MouseEvent) => {
-    event.stopPropagation();
-    setRetryingId(job.id);
-    try {
-      const result = await retryJob(job.id);
-      props.onRetried({
-        id: result.id,
-        status: result.status,
-        position: result.position,
-        source_type: job.source_type,
-        source_value: job.source_value,
-        title: job.title,
-        original_key: null,
-        output_key: null,
-        result_revision: null,
-        options: job.options,
-        manifest: null,
-        transcript: null,
-        pitch: null,
-        error_message: null,
-        created_at: Math.floor(Date.now() / 1000),
-        has_original: false,
-        has_pitch_vocals: false,
-      });
-    } finally {
-      setRetryingId(null);
-    }
-  };
 
   const handleDelete = async () => {
     const target = deleteTarget();
@@ -102,73 +53,30 @@ const HistoryView: Component<{
         when={props.jobs.length > 0}
         fallback={<p class="text-sm text-muted-foreground">No jobs yet.</p>}
       >
-        <div class="space-y-2">
+        <div role="list" class="space-y-2">
           <For each={orderedJobs()}>
             {(job) => (
               <Card
+                role="listitem"
                 class={`cursor-pointer transition-colors hover:bg-accent ${job.id === props.selectedId ? "library-selected" : ""}`}
                 onClick={() => props.onSelect(job)}
               >
-                <CardContent class="space-y-2 p-4">
-                  <Show when={job.id === props.selectedId}><p class="library-current-label">Current song</p></Show>
-                  <div class="flex items-center justify-between gap-4">
-                    <div class="min-w-0 flex-1">
-                      <button type="button" class="block w-full truncate text-left text-sm font-medium" aria-current={job.id === props.selectedId ? "true" : undefined}
-                        onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
-                        {jobLabel(job)}
-                      </button>
-                      <div class="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{formatTimestamp(job.created_at)}</span>
-                        <Show when={job.source_type === "url"}>
-                          <span aria-hidden="true">·</span>
-                          <button
-                            type="button"
-                            class="font-medium text-primary hover:underline"
-                            onClick={(event) => copyUrl(job, event)}
-                          >
-                            {copiedId() === job.id ? "Copied!" : "Copy link"}
-                          </button>
-                        </Show>
-                      </div>
-                    </div>
-                    <span
-                      class={`shrink-0 rounded-full px-2 py-0.5 text-xs capitalize ${STATUS_STYLES[job.status]}`}
-                    >
-                      {job.status}
-                    </span>
+                <CardContent class="flex min-w-0 items-center gap-3 p-3">
+                  <div class="min-w-0 flex-1">
+                    <button type="button" class="flex min-h-11 min-w-0 w-full items-center text-left text-sm font-medium" aria-current={job.id === props.selectedId ? "true" : undefined}
+                      onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
+                      <span class="block min-w-0 truncate">{jobLabel(job)}</span>
+                    </button>
+                    <time class="block truncate text-xs text-muted-foreground" dateTime={new Date(job.created_at * 1000).toISOString()}>
+                      {formatDate(job.created_at)}
+                    </time>
                   </div>
-                  <AudioMetadata job={job} />
-
                   <Show when={job.status === "done"}>
-                    <p class="text-xs text-muted-foreground">
-                      {(job.manifest?.length ?? 0)} audio {(job.manifest?.length ?? 0) === 1 ? "output" : "outputs"}
-                    </p>
-                  </Show>
-                  <Show when={job.status === "done"}>
-                    <div class="flex justify-end border-t border-border pt-2 text-sm">
-                      <Button type="button" variant="outline" size="sm" class="min-h-11"
-                        aria-label={`Delete ${jobLabel(job)}`}
-                        onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(job); }}>
-                        Delete
-                      </Button>
-                    </div>
-                  </Show>
-
-                  <Show when={job.status === "failed"}>
-                    <div class="flex items-start justify-between gap-3 border-t border-border pt-2">
-                      <p class="min-w-0 flex-1 whitespace-pre-wrap break-words text-xs text-destructive">
-                        {job.error_message ?? "An unknown error occurred."}
-                      </p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        class="shrink-0"
-                        disabled={retryingId() === job.id}
-                        onClick={(event) => handleRetry(job, event)}
-                      >
-                        {retryingId() === job.id ? "Retrying..." : "Retry"}
-                      </Button>
-                    </div>
+                    <Button type="button" variant="outline" size="sm" class="min-h-11 shrink-0"
+                      aria-label={`Delete ${jobLabel(job)}`}
+                      onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(job); }}>
+                      Delete
+                    </Button>
                   </Show>
                 </CardContent>
               </Card>

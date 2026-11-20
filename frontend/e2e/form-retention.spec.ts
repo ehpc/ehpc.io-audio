@@ -156,11 +156,10 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       const history = await openHistory();
       await expect(history.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
       await expect(history.locator(`a[href='/api/jobs/${id}/results/mix-1']`)).toHaveCount(0);
-      const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job.created_at);
-      const historyCard = history.locator('.rounded-lg').filter({
-        has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }),
-        hasText: historyTimestamp,
-      });
+      const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
+      const historyCard = history.locator('.rounded-lg')
+        .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+        .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
       await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
       await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
       await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();

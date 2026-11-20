@@ -38,6 +38,7 @@ from separator.inference_transport import (
     publish_file,
 )
 from separator.options import SeparationOptions
+from separator.progress import JobPhase
 
 _TERMINAL = (JobStatus.DONE, JobStatus.FAILED)
 _UPLOAD_BYTES = tone_wav((440.0,), duration_s=1)
@@ -454,11 +455,69 @@ def test_event_stream_heartbeats_and_delivers_terminal_event(
     assert initial["status"] == JobStatus.QUEUED
     assert heartbeat == ": keep-alive\n\n"
     assert payloads[0]["status"] == JobStatus.RUNNING
+    assert initial["progress"] == {
+        "steps": ["source", "analysis", "wait", "separation", "export"],
+        "current": None,
+    }
+    phases = [payload["progress"]["current"] for payload in payloads]
+    assert phases == [
+        "source",
+        "analysis",
+        "analysis",
+        "wait",
+        "separation",
+        "export",
+        None,
+    ]
+    assert all(
+        payload["progress"]["steps"] == initial["progress"]["steps"]
+        for payload in payloads
+    )
     assert payloads[-1]["status"] == JobStatus.DONE
     assert payloads[-1]["original_key"] == "C major"
     assert [entry["label"] for entry in payloads[-1]["manifest"]] == [
         "vocals",
         "instruments",
+    ]
+
+
+def test_progress_plan_matches_requested_work_and_terminal_overrides_phase(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/jobs",
+        files={"file": ("song.mp3", _UPLOAD_BYTES, "audio/mpeg")},
+        data={"pitch_semitones": "2", "tempo_percent": "120"},
+    )
+    assert response.status_code == 200
+    job_id = response.json()["id"]
+    job = db.claim_oldest_queued()
+    assert job is not None and job.id == job_id
+    try:
+        events.set_phase(job_id, JobPhase.EXPORT)
+        running = client.get(f"/api/jobs/{job_id}").json()
+        assert running["progress"] == {
+            "steps": ["source", "analysis", "export"],
+            "current": "export",
+        }
+        db.mark_failed(job_id, "fixture failure")
+        failed = client.get(f"/api/jobs/{job_id}").json()
+        assert failed["status"] == "failed"
+        assert failed["progress"]["current"] is None
+    finally:
+        events.clear_phase(job_id)
+
+    selected_id = _submit_upload(client, extract_lyrics=True, detect_pitch=True)
+    selected = client.get(f"/api/jobs/{selected_id}").json()
+    assert selected["progress"]["steps"] == [
+        "source",
+        "analysis",
+        "wait",
+        "metadata",
+        "separation",
+        "lyrics",
+        "pitch",
+        "export",
     ]
 
 

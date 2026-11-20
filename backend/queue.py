@@ -33,6 +33,7 @@ from separator.artifact_cache import async_locked, digest
 from separator.audio import detect_key, modification_suffix, transform_audio
 from separator.download import download_mp3
 from separator.processing import ProcessingResult
+from separator.progress import JobPhase
 from separator.stems import SeparationResult, StemResult
 
 log = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ async def _publish_status(job_id: int) -> None:
         else None
     )
     events.publish(job_id, job_to_dto(job, position).model_dump(mode="json"))
+
+
+async def _set_phase(job: JobRecord, phase: JobPhase) -> None:
+    events.set_phase(job.id, phase)
+    events.publish(job.id, job_to_dto(job, None).model_dump(mode="json"))
 
 
 def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
@@ -161,8 +167,16 @@ async def _process(
     job: JobRecord, audio: bytes, filename: str, metadata
 ) -> ProcessingResult:
     stop = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def on_phase(phase: JobPhase) -> None:
+        # Wait for publication before entering the next actual operation.
+        asyncio.run_coroutine_threadsafe(_set_phase(job, phase), loop).result()
+
     task = asyncio.create_task(
-        asyncio.to_thread(process_source, job, audio, filename, metadata, stop)
+        asyncio.to_thread(
+            process_source, job, audio, filename, metadata, stop, on_phase
+        )
     )
     drain.state.track(task)
     try:
@@ -182,8 +196,8 @@ async def _run_job(job: JobRecord) -> None:
 
 async def _run_job_captured(job: JobRecord, recorder) -> None:
     work = await asyncio.to_thread(db.regeneration_work, job.id)
-    await _publish_status(job.id)
     try:
+        await _set_phase(job, JobPhase.SOURCE)
         log.info(
             "job %s starting (source=%s value=%s options=%s)",
             job.id,
@@ -209,24 +223,26 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
         if job.source_type == "url":
             job.title = Path(filename).stem
             await asyncio.to_thread(db.set_title, job.id, job.title)
+        await _set_phase(job, JobPhase.ANALYSIS)
         job.original_key = await _cache_thread(
             detect_key, audio_bytes, filename, config.DATA_DIR / "artifacts"
         )
         await asyncio.to_thread(db.set_original_key, job.id, job.original_key)
         await _publish_status(job.id)
         processed = ProcessingResult(audio={})
-        # Coalesce identical sources on the authoritative VPS filesystem.
-        # Completed stages persist before later stages or CPU exports begin.
-        async with async_locked(
-            config.DATA_DIR / "artifacts" / "gpu-locks" / digest(audio_bytes)
+        if (
+            job.options.needs_lyrics
+            or job.options.needs_pitch
+            or job.options.output_labels
         ):
-            if (
-                job.options.needs_lyrics
-                or job.options.needs_pitch
-                or job.options.output_labels
+            await _set_phase(job, JobPhase.WAIT)
+            # Coalesce identical sources while the shared model graph runs.
+            async with async_locked(
+                config.DATA_DIR / "artifacts" / "gpu-locks" / digest(audio_bytes)
             ):
                 metadata = None
                 if job.options.needs_lyrics:
+                    await _set_phase(job, JobPhase.METADATA)
                     metadata = await asyncio.to_thread(
                         reference_metadata,
                         audio_bytes,
@@ -257,6 +273,7 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
             # Transform the complete source, not a separated/reconstructed mix.
             # Persisting applies pitch and tempo together once, as for each stem.
             result = {"song": StemResult(audio_bytes, 0.0), **result}
+        await _set_phase(job, JobPhase.EXPORT)
         original = await asyncio.to_thread(db.get_job, work[1]) if work else None
         if work and original is None:
             raise ValueError("Original job no longer exists")
@@ -309,6 +326,7 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
                     type(cleanup_error).__name__,
                 )
     finally:
+        events.clear_phase(job.id)
         await _publish_status(job.id)
 
 

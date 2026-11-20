@@ -13,6 +13,7 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
     id: 1,
     status: "done",
     position: null,
+    progress: { steps: ["source", "analysis", "separation", "lyrics", "export"], current: null },
     source_type: "upload",
     source_value: "song.wav",
     title: "song.wav",

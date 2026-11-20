@@ -64,6 +64,8 @@ def poll(call, timeout):
         (ROOT / "polling").touch()
         while not (ROOT / "release").exists():
             time.sleep(0.01)
+    if (ROOT / "fail").exists():
+        raise RuntimeError("Controlled inference failure")
     return call.output_id
 
 

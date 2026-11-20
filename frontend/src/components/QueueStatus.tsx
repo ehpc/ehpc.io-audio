@@ -2,6 +2,7 @@ import { Show, type Component } from "solid-js";
 import type { JobDTO } from "~/api";
 import { jobLabel } from "~/api";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/card";
+import JobSteps, { phaseLabels } from "./JobSteps";
 
 const QueueStatus: Component<{ job: JobDTO }> = (props) => {
 
@@ -19,7 +20,7 @@ const QueueStatus: Component<{ job: JobDTO }> = (props) => {
                 class="size-5 shrink-0 animate-spin rounded-full border-2 border-muted border-t-primary"
                 aria-hidden="true"
               />
-              <span>Processing audio, this can take a few minutes...</span>
+              <span>{props.job.progress.current ? phaseLabels[props.job.progress.current] : "Processing audio, this can take a few minutes..."}</span>
             </div>
           }
         >
@@ -30,6 +31,7 @@ const QueueStatus: Component<{ job: JobDTO }> = (props) => {
             <p class="text-sm text-muted-foreground">Your position in the queue</p>
           </div>
         </Show>
+        <JobSteps job={props.job} />
       </CardContent>
     </Card>
   );

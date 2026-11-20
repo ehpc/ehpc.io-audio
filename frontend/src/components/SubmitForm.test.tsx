@@ -11,6 +11,7 @@ vi.mock("~/api", async (importOriginal) => {
 });
 
 const submitButton = () => screen.getByRole("button", { name: /download song|process audio/i });
+const queuedProgress: api.JobProgress = { steps: ["source", "analysis", "export"], current: null };
 
 describe("SubmitForm", () => {
   beforeEach(() => {
@@ -53,7 +54,7 @@ describe("SubmitForm", () => {
     ["song.wav", "application/octet-stream"],
   ])("analyzes and submits %s reported as %s without changing the file", async (name, type) => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 13, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 13, status: "queued", position: 1, progress: queuedProgress });
     const onSubmitted = vi.fn();
     render(() => <SubmitForm onSubmitted={onSubmitted} />);
     await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
@@ -69,11 +70,7 @@ describe("SubmitForm", () => {
   });
 
   it("retains fractional pitch and positive fractional tempo after submission", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({
-      id: 7,
-      status: "queued",
-      position: 1,
-    });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 7, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
 
     const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
@@ -111,7 +108,7 @@ describe("SubmitForm", () => {
 
   it("shows the resulting key inside the editable pitch field and clears unknown and invalid keys", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 10, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 10, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
     const badge = () => pitch.parentElement!.querySelector(".pitch-key-badge");
@@ -149,10 +146,8 @@ describe("SubmitForm", () => {
     expect(pitch).toHaveAttribute("aria-describedby");
   });
   it("keeps the URL and selections after success and submits later edits as a new snapshot", async () => {
-    const pending = Promise.withResolvers<{ id: number; status: "queued"; position: number }>();
-    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
-      id: 11, status: "queued", position: 1,
-    });
+    const pending = Promise.withResolvers<api.SubmitResult>();
+    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ id: 11, status: "queued", position: 1, progress: queuedProgress });
     const onSubmitted = vi.fn();
     render(() => <SubmitForm onSubmitted={onSubmitted} />);
     const url = screen.getByLabelText("Track URL");
@@ -172,7 +167,7 @@ describe("SubmitForm", () => {
     });
     fireEvent.input(url, { target: { value: "https://example.com/edited" } });
     fireEvent.input(pitch, { target: { value: "2.5" } });
-    pending.resolve({ id: 10, status: "queued", position: 1 });
+    pending.resolve({ id: 10, status: "queued", position: 1, progress: queuedProgress });
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
     expect(onSubmitted.mock.calls[0][0]).toEqual(expect.objectContaining({
       source_value: "https://example.com/song",
@@ -208,7 +203,7 @@ describe("SubmitForm", () => {
 
   it("steps pitch and tempo from defaults and fractional entries, updates previews, and submits the adjusted values", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 8, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 8, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
     await userEvent.upload(screen.getByLabelText("Audio file"), new File(["audio"], "song.wav", { type: "audio/wav" }));
@@ -385,7 +380,7 @@ describe("SubmitForm", () => {
     expect(instruments).not.toBeChecked();
     expect(drums).not.toBeChecked();
     expect(screen.queryByText("Drums + Vocals", { exact: true })).toBeNull();
-    pending.resolve({ id: 42, status: "queued", position: 1 });
+    pending.resolve({ id: 42, status: "queued", position: 1, progress: queuedProgress });
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
     expect(onSubmitted.mock.calls[0][0].options).toEqual(expect.objectContaining({
       detect_pitch: true, extract_vocals: true, extract_lyrics: true, extract_instruments: true, drums: true,
@@ -395,7 +390,7 @@ describe("SubmitForm", () => {
   it.each([[false, false], [true, false], [false, true], [true, true]])(
     "restores prior vocals=%s and lyrics=%s while preserving independent selections and source edits",
     async (wantedVocals, wantedLyrics) => {
-      vi.mocked(api.submitJob).mockResolvedValue({ id: 43, status: "queued", position: 1 });
+      vi.mocked(api.submitJob).mockResolvedValue({ id: 43, status: "queued", position: 1, progress: queuedProgress });
       render(() => <SubmitForm onSubmitted={vi.fn()} />);
       const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
       const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
@@ -431,7 +426,7 @@ describe("SubmitForm", () => {
   );
 
   it.each([false, true])("restores the prior pitched-lyrics selection (%s) after karaoke", async (wanted) => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 45, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 45, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
     const pitched = screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true });
@@ -454,7 +449,7 @@ describe("SubmitForm", () => {
   it.each([[false, false], [true, false], [false, true], [true, true]])(
     "restores public instruments=%s and drums=%s independently after karaoke, without inserting mixes",
     async (wantedInstruments, wantedDrums) => {
-      vi.mocked(api.submitJob).mockResolvedValue({ id: 44, status: "queued", position: 1 });
+      vi.mocked(api.submitJob).mockResolvedValue({ id: 44, status: "queued", position: 1, progress: queuedProgress });
       render(() => <SubmitForm onSubmitted={vi.fn()} />);
       fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/backings" } });
       const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
@@ -565,7 +560,7 @@ describe("SubmitForm", () => {
   });
 
   it("submits a lyrics-only request without selecting an audio stem", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 18, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 18, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
     await userEvent.click(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true }));
@@ -659,7 +654,7 @@ describe("SubmitForm", () => {
 
   it("shows analysis failures independently and retains the selected file after submission", async () => {
     vi.mocked(api.analyzeKey).mockRejectedValueOnce(new Error("Unsupported audio format"));
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
     const input = screen.getByLabelText("Audio file");
@@ -679,7 +674,7 @@ describe("SubmitForm", () => {
   });
 
   it("retains every grouped selection and URL after submission", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 12, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 12, status: "queued", position: 1, progress: queuedProgress });
     const onSubmitted = vi.fn();
     render(() => <SubmitForm onSubmitted={onSubmitted} />);
     const url = screen.getByLabelText("Track URL");
@@ -698,7 +693,7 @@ describe("SubmitForm", () => {
   });
 
   it("retains a queued vocal-variant mix without selecting or previewing hidden prerequisites", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 14, status: "queued", position: 1 });
+    vi.mocked(api.submitJob).mockResolvedValue({ id: 14, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/lead");
     await userEvent.click(screen.getByText(/Vocal variants/));
@@ -734,7 +729,7 @@ describe("SubmitForm", () => {
     await userEvent.click(screen.getByRole("button", { name: "Edit Drums + Bass" }));
     await userEvent.type(screen.getByLabelText("Mix name for Drums + Bass"), " · v2");
     fireEvent.click(screen.getByRole("button", { name: "Save mix" }));
-    deferred.resolve({ id: 21, status: "queued", position: 1 });
+    deferred.resolve({ id: 21, status: "queued", position: 1, progress: queuedProgress });
     await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
     const job = onSubmitted.mock.calls[0][0] as JobDTO;
     // The queued job keeps the original name, components, and id.

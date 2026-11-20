@@ -260,6 +260,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         id: result.id,
         status: result.status,
         position: result.position,
+        progress: result.progress,
         source_type: usingUrl ? "url" : "upload",
         source_value: usingUrl ? chosenUrl : chosenFile!.name,
         // A URL's title is resolved server-side after download; an upload's

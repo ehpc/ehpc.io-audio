@@ -15,6 +15,7 @@ beforeEach(() => {
 
 const job: JobDTO = {
   id: 9, status: "done", position: null, source_type: "upload", source_value: "song.ogg", title: "song.ogg",
+  progress: { steps: ["source", "analysis", "separation", "lyrics", "pitch", "export"], current: null },
   original_key: null, output_key: null, result_revision: "build-3", manifest: [], error_message: null, created_at: 1, has_original: true,
   has_pitch_vocals: false,
   options: { extract_vocals: false, extract_instruments: false, extract_lyrics: false, detect_pitch: false,
@@ -101,7 +102,7 @@ it.each(["karaoke", "original"] as const)("opens a compact history entry into or
   const [selected, setSelected] = createSignal<JobDTO | null>(null);
   render(() => <>
     <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-    <HistoryView jobs={jobs()} onSelect={setSelected} onRetried={vi.fn()} onDeleted={vi.fn()} />
+    <HistoryView jobs={jobs()} onSelect={setSelected} onDeleted={vi.fn()} />
   </>);
   expect(screen.queryByText("not the pitched renderer")).not.toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Aligned pitch and lyric text" })).not.toBeInTheDocument();
@@ -146,7 +147,7 @@ it("scrolls a new history selection to its own karaoke, ignores metadata rerende
       <HistoryView jobs={[first, second, plain]} onSelect={(item) => {
         setSelected(item);
         setScrollRequest({ jobId: item.id, token: ++token });
-      }} onRetried={vi.fn()} onDeleted={vi.fn()} />
+      }} onDeleted={vi.fn()} />
     </>);
     const firstTitle = screen.getByRole("button", { name: "First song", exact: true });
     const secondTitle = screen.getByRole("button", { name: "Second song", exact: true });

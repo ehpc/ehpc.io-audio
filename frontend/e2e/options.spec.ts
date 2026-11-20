@@ -339,22 +339,15 @@ for (const item of cases) {
     const notes = keyScale(transposeKey(originalKey, options.pitch_semitones))!;
     await expect(page.getByText(`Notes (${notes.mode}): ${notes.notes.join(' · ')}`, { exact: true }).last()).toBeVisible();
     const id = await submit(page);
-    if (item.name === 'extract_vocals' || item.name === 'all-booleans-enabled') {
-      await expect(page.getByText(/Processing audio, this can take a few minutes/)).toBeVisible({ timeout: 60_000 });
-      await expect(page.locator('span.animate-spin').last()).toBeVisible();
-      await page.reload();
-      await expect(page.getByText(/Processing audio, this can take a few minutes/)).toBeVisible();
-    }
     const job = await complete(page, id);
     await prove(page, info, item, job, originalKey);
     if (item.name === 'identity-original-only') {
       await page.reload();
       const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-      const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job.created_at);
-      const historyCard = history.locator('.rounded-lg').filter({
-        has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }),
-        hasText: historyTimestamp,
-      });
+      const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
+      const historyCard = history.locator('.rounded-lg')
+        .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+        .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
       await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
       await expect(page.locator(`a[href='/api/jobs/${id}/original']`)).toBeVisible();
     }
@@ -433,11 +426,10 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   expect(original.headers()['content-disposition']).toContain('silent-fixture%20-%20original.wav');
   await page.reload();
   const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), job.created_at);
-  const historyCard = history.locator('.rounded-lg').filter({
-    has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }),
-    hasText: historyTimestamp,
-  });
+  const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
+  const historyCard = history.locator('.rounded-lg')
+    .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+    .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
   await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
   const historyStem = page.locator(`a[href='/api/jobs/${id}/results/song']`);
   await expect(historyStem).toHaveCount(1);

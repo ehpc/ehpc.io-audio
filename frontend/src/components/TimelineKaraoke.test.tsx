@@ -35,6 +35,7 @@ function job(): JobDTO {
   };
   return {
     id: 37, status: "done", position: null, source_type: "upload", source_value: "fixture.wav", title: null,
+    progress: { steps: ["source", "analysis", "separation", "lyrics", "pitch", "export"], current: null },
     original_key: null, output_key: null, result_revision: null, error_message: null, created_at: 1, has_original: true,
     has_pitch_vocals: true, manifest: null, transcript,
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,

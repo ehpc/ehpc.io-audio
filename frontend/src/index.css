@@ -230,6 +230,17 @@ html:has(.job-dock) { scroll-padding-bottom: calc(var(--job-dock-height, 0px) + 
 .job-dock-spinner, .job-dock-mark { flex: none; width: 22px; height: 22px; }
 .job-dock-spinner { border: 3px solid #526248; border-top-color: #c5ee87; border-radius: 50%; animation: job-dock-spin 1s linear infinite; }
 .job-dock-mark { color: #c5ee87; text-align: center; }
+.job-steps { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 14px; padding: 0; list-style: none; }
+.job-step { display: flex; align-items: center; gap: 6px; min-width: 0; color: hsl(var(--muted-foreground)); font-size: 12px; }
+.job-step-indicator { width: 9px; height: 9px; flex: none; border: 1px solid #7b8576; border-radius: 50%; }
+.job-step-complete .job-step-indicator { background: #a7cf71; border-color: #a7cf71; }
+.job-step-current .job-step-indicator { background: #c5ee87; border-color: #c5ee87; box-shadow: 0 0 0 2px #4d6240; }
+.job-steps-compact { flex-wrap: nowrap; gap: 4px; width: 100%; margin-top: 2px; }
+.job-steps-placeholder { height: 6px; }
+.job-steps-compact .job-step { flex: 1; }
+.job-steps-compact .job-step-indicator { width: 100%; height: 4px; border: 0; border-radius: 4px; background: #4a5548; box-shadow: none; }
+.job-steps-compact .job-step-complete .job-step-indicator { background: #87ad5e; }
+.job-steps-compact .job-step-current .job-step-indicator { background: #c5ee87; }
 @keyframes job-dock-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .job-dock-spinner, .processing-results .animate-spin { animation: none; } }
 @media (max-width: 700px) {

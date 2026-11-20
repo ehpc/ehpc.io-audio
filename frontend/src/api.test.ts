@@ -51,7 +51,7 @@ it("adds the result revision to derived media URLs without changing original URL
 
 it("serializes the lyrics choice in the multipart job request", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-    new Response(JSON.stringify({ id: 8, status: "queued", position: 1 }), {
+    new Response(JSON.stringify({ id: 8, status: "queued", position: 1, progress: { steps: ["source", "analysis", "separation", "lyrics", "export"], current: null } }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     }),
@@ -102,6 +102,8 @@ it("does not notify on other failures and falls back for non-JSON errors", async
 it("probes the session after an EventSource error", async () => {
   let source: MockEventSource;
   class MockEventSource {
+    static CLOSED = 2;
+    readyState = 0;
     onmessage: ((event: MessageEvent) => void) | null = null;
     onerror: (() => void) | null = null;
     close = vi.fn();
@@ -112,10 +114,40 @@ it("probes the session after an EventSource error", async () => {
   const listener = vi.fn();
   const unsubscribe = onUnauthorized(listener);
   const onError = vi.fn();
-  subscribeToJob(1, vi.fn(), onError);
+  const close = subscribeToJob(1, vi.fn(), onError);
   source!.onerror!();
   await vi.waitFor(() => expect(listener).toHaveBeenCalledOnce());
   expect(onError).toHaveBeenCalledOnce();
+  expect(source!.close).not.toHaveBeenCalled();
+  close();
   expect(source!.close).toHaveBeenCalledOnce();
   unsubscribe();
+});
+
+it("reopens a permanently closed stream and stops reconnecting after cleanup", async () => {
+  vi.useFakeTimers();
+  try {
+    const sources: MockEventSource[] = [];
+    class MockEventSource {
+      static CLOSED = 2;
+      readyState = MockEventSource.CLOSED;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor() { sources.push(this); }
+    }
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 200 })));
+    const close = subscribeToJob(1, vi.fn());
+    sources[0].onerror!();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sources).toHaveLength(2);
+    sources[1].onerror!();
+    close();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sources).toHaveLength(2);
+    expect(sources[1].close).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
 });

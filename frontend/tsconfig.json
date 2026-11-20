@@ -22,5 +22,5 @@
     }
   },
   "include": ["src", "vite.config.ts"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-setup.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-setup.ts", "src/**/*conflicted copy*.tsx"]
 }

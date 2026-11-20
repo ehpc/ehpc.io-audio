@@ -6,6 +6,7 @@ import logging
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 from backend import config, db, drain, modal_client
@@ -22,6 +23,7 @@ from separator.processing import (
     run_processing,
 )
 from separator.producer_manifest import ProducerManifest, load_manifest
+from separator.progress import JobPhase
 
 log = logging.getLogger(__name__)
 
@@ -288,12 +290,17 @@ def process_source(
     filename: str,
     metadata: ReferenceMetadata | None,
     stop: threading.Event,
+    on_phase: Callable[[JobPhase], None],
 ) -> ProcessingResult:
     cleanup_completed_transfers()
     manifest = load_manifest(config.PRODUCER_MANIFEST)
     runner = StageRunner(job.id, manifest, stop)
     context = ProcessingContext(
-        config.DATA_DIR / "artifacts", manifest, runner, on_committed=runner.committed
+        config.DATA_DIR / "artifacts",
+        manifest,
+        runner,
+        on_committed=runner.committed,
+        on_phase=on_phase,
     )
     with tempfile.TemporaryDirectory(prefix="audio-stages-") as directory:
         root = Path(directory)

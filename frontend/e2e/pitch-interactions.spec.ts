@@ -668,11 +668,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       if (viewport.width <= 700) await page.getByRole('button', { name: /^Library/ }).click();
       const history = page.getByRole(viewport.width <= 700 ? 'dialog' : 'complementary', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
       const historyJobLabel = jobLabel(completed);
-      const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), completed.created_at);
-      const historyCard = history.locator('.rounded-lg').filter({
-        has: page.getByRole('button', { name: `Delete ${historyJobLabel}` }),
-        hasText: historyTimestamp,
-      });
+      const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), completed.created_at);
+      const historyCard = history.locator('.rounded-lg')
+        .filter({ has: page.getByRole('button', { name: `Delete ${historyJobLabel}` }) })
+        .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
       if (viewport.width <= 700) await page.getByRole('button', { name: 'Close library', exact: true }).click();
       await activate(page.getByRole('button', { name: 'Start another job', exact: true }));
       if (viewport.width <= 700) await page.getByRole('button', { name: /^Library/ }).click();

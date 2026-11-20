@@ -1,6 +1,12 @@
 import { mixIdValid, stemMixError, type StemMix } from "~/lib/stemMix";
 
 export type JobStatus = "queued" | "running" | "done" | "failed";
+export type JobPhase = "source" | "analysis" | "wait" | "metadata" | "separation" | "lyrics" | "pitch" | "export";
+
+export interface JobProgress {
+  steps: JobPhase[];
+  current: JobPhase | null;
+}
 
 export interface StemManifestEntry {
   label: string;
@@ -192,6 +198,7 @@ export interface JobDTO {
   id: number;
   status: JobStatus;
   position: number | null;
+  progress: JobProgress;
   source_type: "url" | "upload";
   source_value: string;
   title: string | null;
@@ -227,6 +234,7 @@ export interface SubmitResult {
   id: number;
   status: "queued";
   position: number;
+  progress: JobProgress;
 }
 
 export interface DiskUsage {
@@ -672,35 +680,45 @@ export function subscribeToJob(
   onUpdate: (job: JobDTO) => void,
   onError?: () => void,
 ): () => void {
-  const source = new EventSource(`${API_BASE}/jobs/${id}/events`, {
-    withCredentials: true,
-  });
+  let source: EventSource;
+  let reconnectTimer: number | undefined;
   let closed = false;
 
   const close = () => {
     if (closed) return;
     closed = true;
+    clearTimeout(reconnectTimer);
     source.close();
   };
 
-  source.onmessage = (event) => {
-    const job = JSON.parse(event.data) as JobDTO;
-    onUpdate(job);
-    // The server closes after a terminal event; the app reloads an explicit
-    // selection or workspace visit to observe later in-place result revisions.
-    if (isTerminal(job.status)) {
-      close();
-    }
+  const connect = () => {
+    source = new EventSource(`${API_BASE}/jobs/${id}/events`, {
+      withCredentials: true,
+    });
+    const current = source;
+    current.onmessage = (event) => {
+      if (closed || source !== current) return;
+      const job = JSON.parse(event.data) as JobDTO;
+      onUpdate(job);
+      if (isTerminal(job.status)) close();
+    };
+    current.onerror = () => {
+      if (closed || source !== current) return;
+      // Native EventSource reconnects after transient network errors. Some
+      // HTTP failures leave it CLOSED instead; reopen only that failed stream.
+      if (current.readyState === EventSource.CLOSED && reconnectTimer === undefined) {
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = undefined;
+          if (!closed) connect();
+        }, 2000);
+      }
+      // EventSource exposes no HTTP status. Probe auth without treating every
+      // stream interruption as a sign-out.
+      void authMe().catch(() => {});
+      onError?.();
+    };
   };
-
-  source.onerror = () => {
-    if (closed) return;
-    close();
-    // EventSource exposes no HTTP status. Probe the session rather than treating
-    // every network/stream error as an expired login.
-    void authMe().catch(() => {});
-    onError?.();
-  };
+  connect();
 
   return close;
 }

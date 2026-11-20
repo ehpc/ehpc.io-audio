@@ -78,7 +78,12 @@ def test_static_fallback_cannot_serve_an_outside_index_symlink(
 def test_submit_url_queues_job(client: TestClient) -> None:
     r = client.post("/api/jobs", data={"url": "https://example.com/x"})
     assert r.status_code == 200
-    assert r.json() == {"id": 1, "status": "queued", "position": 1}
+    assert r.json() == {
+        "id": 1,
+        "status": "queued",
+        "position": 1,
+        "progress": {"steps": ["source", "analysis", "export"], "current": None},
+    }
     options = client.get("/api/jobs/1").json()["options"]
     assert options["extract_vocals"] is False
     assert options["extract_instruments"] is False

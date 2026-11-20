@@ -160,11 +160,10 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await page.getByRole('button', { name: /^Library/ }).click();
     const history = page.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
     await expect(history.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveCount(0);
-    const historyTimestamp = await page.evaluate(createdAt => new Date(createdAt * 1000).toLocaleString(), mixedJob.created_at);
-    const historyCard = history.locator('.rounded-lg').filter({
-      has: page.getByRole('button', { name: `Delete ${jobLabel(mixedJob)}`, exact: true }),
-      hasText: historyTimestamp,
-    });
+    const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), mixedJob.created_at);
+    const historyCard = history.locator('.rounded-lg')
+      .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(mixedJob)}`, exact: true }) })
+      .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
     await historyCard.getByRole('button', { name: jobLabel(mixedJob), exact: true }).click();
     await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();

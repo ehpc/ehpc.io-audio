@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import Response, StreamingResponse
 
 from backend import auth_store, config, db, events, regeneration
-from backend.models import JobDTO, JobRecord, JobStatus, job_to_dto
+from backend.models import JobDTO, JobRecord, JobStatus, job_progress, job_to_dto
 from backend.routes import admin_cache
 from backend.routes.auth import cookie_name
 from backend.routes.results import _tracked_thread
@@ -109,7 +109,12 @@ async def submit_job(
         await _save_upload(job_id, source_value, upload_bytes)
 
     position = await asyncio.to_thread(db.queue_position, job_id)
-    return {"id": job_id, "status": JobStatus.QUEUED, "position": position}
+    return {
+        "id": job_id,
+        "status": JobStatus.QUEUED,
+        "position": position,
+        "progress": job_progress(options),
+    }
 
 
 @router.post("/jobs/{job_id}/retry")
@@ -132,6 +137,7 @@ async def retry_job(
             "id": entry["job_id"],
             "status": entry["status"],
             "position": entry["position"],
+            "progress": job_progress(job.options),
         }
 
     try:
@@ -147,7 +153,12 @@ async def retry_job(
         await _save_upload(new_job_id, job.source_value, data)
 
     position = await asyncio.to_thread(db.queue_position, new_job_id)
-    return {"id": new_job_id, "status": JobStatus.QUEUED, "position": position}
+    return {
+        "id": new_job_id,
+        "status": JobStatus.QUEUED,
+        "position": position,
+        "progress": job_progress(job.options),
+    }
 
 
 @router.get("/jobs")
