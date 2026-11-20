@@ -63,9 +63,9 @@ const HistoryView: Component<{
               >
                 <CardContent class="flex min-w-0 items-center gap-3 p-3">
                   <div class="min-w-0 flex-1">
-                    <button type="button" class="flex min-h-11 min-w-0 w-full items-center text-left text-sm font-medium" aria-current={job.id === props.selectedId ? "true" : undefined}
+                    <button type="button" class="flex min-h-11 min-w-0 w-full items-center py-0.5 text-left text-sm font-medium" aria-current={job.id === props.selectedId ? "true" : undefined}
                       onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
-                      <span class="block min-w-0 truncate">{jobLabel(job)}</span>
+                      <span class="block min-w-0 whitespace-normal [overflow-wrap:anywhere]">{jobLabel(job)}</span>
                     </button>
                     <time class="block truncate text-xs text-muted-foreground" dateTime={new Date(job.created_at * 1000).toISOString()}>
                       {formatDate(job.created_at)}

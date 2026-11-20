@@ -239,3 +239,108 @@ for (const viewport of [
     }
   });
 }
+
+const wrappingTitles = [
+  'An Exceptionally Long Song Title Featuring Many Words For A Narrow Library Sidebar',
+  'UnbrokenSupercalifragilisticExpialidociousExtendedRecordingIdentifier0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  '非常に長い曲名と国際的な文字列🎶音楽の物語を繰り返す非常に長い曲名と国際的な文字列',
+];
+for (const viewport of [
+  { width: 320, height: 844, isMobile: true },
+  { width: 390, height: 844, isMobile: true },
+  { width: 1440, height: 1000, isMobile: false },
+  { width: 2560, height: 1000, isMobile: false },
+]) {
+  test(`full history titles remain readable at ${viewport.width}`, async ({ page }) => {
+    await page.clock.install({ time: fixedTime });
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
+    const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8')) as { pitch: unknown };
+    const ids: number[] = [];
+    try {
+      for (const title of wrappingTitles) {
+        const output = execFileSync('uv', ['run', 'python', '-c', insertLibraryTrack, identity.id, title,
+          `wrap-history-${viewport.width}-${ids.length}.wav`, JSON.stringify(fixture.pitch)], {
+          cwd: process.env.E2E_REPO_ROOT!,
+          env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+          encoding: 'utf8',
+        }).trim();
+        const id = Number(output);
+        expect(Number.isSafeInteger(id) && id > 0).toBe(true);
+        ids.push(id);
+      }
+      await page.goto('/');
+      const library = page.getByRole('button', { name: 'Library', exact: true });
+      if (viewport.isMobile) await library.click();
+      const history = page.getByRole('region', { name: 'History', exact: true });
+      for (const title of wrappingTitles) {
+        const titleButton = history.getByRole('button', { name: title, exact: true });
+        const row = history.getByRole('listitem').filter({ has: page.getByRole('button', { name: title, exact: true }) });
+        await expect(row).toHaveCount(1);
+        await expect(titleButton).toBeVisible();
+        await expect(row.locator('time')).toBeVisible();
+        await expect(row.getByRole('button', { name: `Delete ${title}`, exact: true })).toBeVisible();
+        const geometry = await row.evaluate(element => {
+          const button = element.querySelector('button')!;
+          const span = button.querySelector('span')!;
+          const date = element.querySelector('time')!;
+          const deletion = element.querySelector('button[aria-label^="Delete "]')!;
+          const rect = (target: Element) => {
+            const box = target.getBoundingClientRect();
+            return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, height: box.height };
+          };
+          const range = document.createRange();
+          range.selectNodeContents(span);
+          return {
+            row: rect(element), button: rect(button), date: rect(date), deletion: rect(deletion),
+            lines: [...range.getClientRects()].map(box => ({ left: box.left, right: box.right, top: box.top, bottom: box.bottom })),
+            titleClientWidth: span.clientWidth, titleScrollWidth: span.scrollWidth,
+            dateClientWidth: date.clientWidth, dateScrollWidth: date.scrollWidth,
+            documentWidth: document.documentElement.scrollWidth,
+          };
+        });
+        expect(new Set(geometry.lines.map(line => Math.round(line.top))).size).toBeGreaterThan(1);
+        expect(geometry.titleScrollWidth).toBeLessThanOrEqual(geometry.titleClientWidth);
+        expect(geometry.dateScrollWidth).toBeLessThanOrEqual(geometry.dateClientWidth);
+        expect(geometry.row.left).toBeGreaterThanOrEqual(0);
+        expect(geometry.row.right).toBeLessThanOrEqual(viewport.width);
+        expect(geometry.documentWidth).toBeLessThanOrEqual(viewport.width);
+        expect(geometry.button.height).toBeGreaterThanOrEqual(44);
+        expect(geometry.deletion.height).toBeGreaterThanOrEqual(44);
+        for (const line of geometry.lines) {
+          expect(Math.round(line.left)).toBeGreaterThanOrEqual(Math.round(geometry.button.left));
+          expect(Math.round(line.right)).toBeLessThanOrEqual(Math.round(geometry.button.right));
+          expect(Math.round(line.top)).toBeGreaterThanOrEqual(Math.round(geometry.button.top));
+          expect(Math.round(line.bottom)).toBeLessThanOrEqual(Math.round(geometry.button.bottom));
+          expect(Math.round(line.bottom)).toBeLessThanOrEqual(Math.round(geometry.date.top));
+          expect(Math.round(line.right)).toBeLessThanOrEqual(Math.round(geometry.deletion.left));
+        }
+        for (const part of [geometry.button, geometry.date, geometry.deletion]) {
+          expect(part.left).toBeGreaterThanOrEqual(geometry.row.left);
+          expect(part.right).toBeLessThanOrEqual(geometry.row.right);
+          expect(part.top).toBeGreaterThanOrEqual(geometry.row.top);
+          expect(part.bottom).toBeLessThanOrEqual(geometry.row.bottom);
+        }
+      }
+      const firstTitle = wrappingTitles[0];
+      const selected = page.waitForResponse(response =>
+        response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${ids[0]}`);
+      await history.getByRole('button', { name: firstTitle, exact: true }).press('Enter');
+      expect((await selected).ok()).toBe(true);
+      if (viewport.isMobile) await library.click();
+      await expect(history.getByRole('button', { name: firstTitle, exact: true })).toHaveAttribute('aria-current', 'true');
+      const deleteButton = history.getByRole('button', { name: `Delete ${firstTitle}`, exact: true });
+      await deleteButton.focus();
+      await page.keyboard.press('Enter');
+      const confirmation = page.getByRole('alertdialog');
+      await expect(confirmation).toContainText(`Delete ${firstTitle}?`);
+      await confirmation.getByRole('button', { name: 'Cancel' }).click();
+      await expect(deleteButton).toBeVisible();
+    } finally {
+      for (const id of ids) {
+        const response = await page.request.delete(`/api/jobs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+        expect([204, 404]).toContain(response.status());
+      }
+    }
+  });
+}
