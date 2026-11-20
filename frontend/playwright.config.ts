@@ -22,6 +22,8 @@ export default defineConfig({
     '**/pitch-interactions.spec.ts',
     '**/live-pitch-trace.spec.ts',
     '**/job-status-dock.spec.ts',
+    '**/learning.spec.ts',
+    '**/learning-visual.spec.ts',
     '**/piano.spec.ts',
     '**/microphone-tuner.spec.ts',
     '**/microphone-visual.spec.ts',

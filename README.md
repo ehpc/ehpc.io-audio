@@ -1324,6 +1324,10 @@ not neural quality. CI requires the complete seeded lane before paid GPU work:
 node frontend/e2e/run.mjs --visual --config=playwright.seeded.config.ts
 ```
 
+The Learn lyrics behavior and visual fixtures also require this isolated,
+queue-disabled setup: their cases run in the required seeded and strict visual
+suites, not the live-queue GPU matrix.
+
 To run just the authentication cases through the same mandatory seeded config:
 
 ```sh
