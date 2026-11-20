@@ -110,7 +110,10 @@ for (const mobile of [false, true]) {
         if (mobile) await page.getByRole('button', { name: /^Library/ }).click();
         const library = page.getByRole(mobile ? 'dialog' : 'complementary', { name: 'Library', exact: true });
         const history = library.getByRole('region', { name: 'History', exact: true });
-        const card = history.locator('.rounded-lg').filter({ hasText: 'native-upload.MP3' }).first();
+        const card = history.getByRole('listitem')
+          .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+          .filter({ has: page.locator(`time[datetime="${new Date(job.created_at * 1000).toISOString()}"]`) });
+        await expect(card).toHaveCount(1);
         await expect(card.locator(`a[href='/api/jobs/${id}/original']`)).toHaveCount(0);
         await card.getByRole('button', { name: jobLabel(job), exact: true }).click();
         await expect(page.locator(`a[href='/api/jobs/${id}/original']`).first()).toBeVisible();

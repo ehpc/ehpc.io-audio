@@ -121,15 +121,19 @@ test('real speech lyrics render and download in Results and History on the origi
   await page.reload();
   await page.getByRole('button', { name: /^Library/ }).click();
   const history = page.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
-  const historyCard = (tempo: number) => history.locator('.rounded-lg').filter({ hasText: 'jfk' }).filter({ hasText: new RegExp(`Tempo:\\s*${tempo}% of original`) }).first();
-  await expect(historyCard(100).getByLabel('Lyrics transcript')).toHaveCount(0);
-  await expect(historyCard(120).getByLabel('Lyrics transcript')).toHaveCount(0);
-  await expect(historyCard(120).locator('a[href*="/results/"]')).toHaveCount(0);
-  await historyCard(120).getByRole('button', { name: jobLabel(transformed), exact: true }).click();
+  const historyCard = (job: JobDTO) => history.getByRole('listitem')
+    .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+    .filter({ has: page.locator(`time[datetime="${new Date(job.created_at * 1000).toISOString()}"]`) });
+  await expect(historyCard(lyricsOnly)).toHaveCount(1);
+  await expect(historyCard(transformed)).toHaveCount(1);
+  await expect(historyCard(lyricsOnly).getByLabel('Lyrics transcript')).toHaveCount(0);
+  await expect(historyCard(transformed).getByLabel('Lyrics transcript')).toHaveCount(0);
+  await expect(historyCard(transformed).locator('a[href*="/results/"]')).toHaveCount(0);
+  await historyCard(transformed).getByRole('button', { name: jobLabel(transformed), exact: true }).click();
   await expect(page.locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
   await page.getByRole('button', { name: /^Library/ }).click();
-  await historyCard(100).getByRole('button', { name: jobLabel(lyricsOnly), exact: true }).click();
+  await historyCard(lyricsOnly).getByRole('button', { name: jobLabel(lyricsOnly), exact: true }).click();
   resultTranscript = page.getByRole('heading', { name: jobLabel(lyricsOnly), exact: true }).locator('../..').getByLabel('Lyrics transcript');
   await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toBeVisible();
   await expect(resultTranscript.getByLabel('Timestamped lyrics', { exact: true })).toContainText(/my fellow americans/i);
@@ -171,7 +175,7 @@ test('real speech lyrics render and download in Results and History on the origi
   }, null, 2), 'utf8');
   await info.attach('lyrics-proof', { path: proofPath, contentType: 'application/json' });
   await page.getByRole('button', { name: /^Library/ }).click();
-  await historyCard(120).getByRole('button', { name: jobLabel(transformed), exact: true }).click();
+  await historyCard(transformed).getByRole('button', { name: jobLabel(transformed), exact: true }).click();
   await expect(page.locator(`a[href="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   await expect(page.getByRole('heading', { name: jobLabel(transformed), exact: true })).toBeVisible();
 });

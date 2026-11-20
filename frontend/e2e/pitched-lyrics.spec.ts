@@ -110,8 +110,11 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   expect(durationProof.first_word_output_s).toBeCloseTo(durationProof.first_word_source_s / 1.25, 6);
   expect(durationProof.first_word_output_s).toBeLessThan(durationProof.transformed_s);
   await page.reload();
-  const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  const historyCard = history.locator('.rounded-lg').filter({ hasText: 'auld-lang-syne-full' }).filter({ hasText: '125%' }).first();
+  const history = page.getByRole('region', { name: 'History', exact: true });
+  const historyCard = history.getByRole('listitem')
+    .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job!)}`, exact: true }) })
+    .filter({ has: page.locator(`time[datetime="${new Date(job!.created_at * 1000).toISOString()}"]`) });
+  await expect(historyCard).toHaveCount(1);
   await expect(historyCard.getByRole('region', { name: 'Aligned pitch and lyric text', exact: true })).toHaveCount(0);
   await historyCard.getByRole('button', { name: jobLabel(job!), exact: true }).click();
   await expect(results.locator(`a[href="/api/jobs/${id}/original"]`)).toBeVisible();

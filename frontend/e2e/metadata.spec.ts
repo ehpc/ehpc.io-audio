@@ -57,8 +57,11 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
   await page.screenshot({ path: info.outputPath('results.png'), fullPage: true });
 
   await page.reload();
-  const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
-  const historyCard = history.locator('.rounded-lg').filter({ hasText: 'tone-fixture' }).filter({ hasText: '2.5 semitones' }).first();
+  const history = page.getByRole('region', { name: 'History', exact: true });
+  const historyCard = history.getByRole('listitem')
+    .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+    .filter({ has: page.locator(`time[datetime="${new Date(job.created_at * 1000).toISOString()}"]`) });
+  await expect(historyCard).toHaveCount(1);
   await expect(historyCard.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
   await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
   const historyLink = result.locator(`a[href='/api/jobs/${id}/results/song']`);
