@@ -102,8 +102,7 @@ def test_partial_and_unanchored_lines_separate_tracks_and_bounds() -> None:
     assert pitch_to_json(analysis) == original_pitch
     rendered = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
     assert "~C4 D4" in rendered
-    assert "Line pitches (approx.): A4" in rendered
-    assert "G4" not in rendered
+    assert "A4" in rendered and "G4" not in rendered
 
 
 def test_half_open_boundary_sustain_and_residual_for_asr_segment() -> None:
@@ -179,7 +178,7 @@ def test_saved_job_api_txt_and_odt_share_line_projection(client: TestClient) -> 
     odt = client.get(path, params={"format": "odt"}).content
     with zipfile.ZipFile(io.BytesIO(odt)) as archive:
         content = ElementTree.fromstring(archive.read("content.xml"))
-    assert "Line pitches (approx.): A4" in odf_text(content)
+    assert "A4" in odf_text(content)
     job = db.get_job(job_id)
     assert job is not None
     assert job.transcript == transcript and job.pitch_json == stored_pitch
@@ -236,8 +235,8 @@ def test_repeated_extra_occurrences_keep_distinct_pitch_tracks_in_export() -> No
         if p.source_kind == "asr-extra"
     ] == [(0, [0]), (1, [1])]
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert "Line pitches (approx.): C4\n[00:01] echo" in text
-    assert "Line pitches (approx.): D4\n[00:04] echo" in text
+    assert "C4\n[00:01] echo" in text
+    assert "D4\n[00:04] echo" in text
 
 
 def test_known_word_receives_overlapping_pitch_without_stored_word_links() -> None:

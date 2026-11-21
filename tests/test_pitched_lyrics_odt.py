@@ -187,7 +187,11 @@ def test_indivisible_long_melisma_uses_wider_page_not_split_notes_or_tiny_font()
             40,
             [
                 PitchTrack(
-                    "lead", [PitchNote(i, i + 1, 60, 261, 0.9) for i in range(40)]
+                    "lead",
+                    [
+                        PitchNote(i, i + 1, 60 + 2 * (i % 2), 261, 0.9)
+                        for i in range(40)
+                    ],
                 )
             ],
         ),
@@ -197,9 +201,14 @@ def test_indivisible_long_melisma_uses_wider_page_not_split_notes_or_tiny_font()
     )
     blocks = pitched_lyrics_document(transcript, analysis, analysis.tracks[0])
     assert len(blocks) == 1
-    assert blocks[0].pitch == "        " + " ".join(["C4"] * 40)
+    expected_names = ["C4" if index % 2 == 0 else "D4" for index in range(40)]
+    assert blocks[0].pitch == "        " + " ".join(expected_names)
     with zipfile.ZipFile(io.BytesIO(pitched_lyrics_odt(blocks))) as archive:
+        content = ET.fromstring(archive.read("content.xml"))
         styles = ET.fromstring(archive.read("styles.xml"))
+    paragraphs = content.findall("office:body/office:text/text:p", NS)
+    visible = " ".join(odf_text(paragraph) for paragraph in paragraphs)
+    assert re.findall(r"[A-G]#?[0-9]+", visible) == expected_names
     normal_transcript, normal_analysis = document_fixture(1)
     normal_blocks = pitched_lyrics_document(
         normal_transcript, normal_analysis, normal_analysis.tracks[0]
@@ -538,11 +547,14 @@ def test_long_phrase_pitch_rows_stay_gray_and_lyrics_wrap_with_brackets() -> Non
             TranscriptSegment(20, 21, "next phrase"),
         ]
     )
-    notes = [PitchNote(i / 5, (i + 1) / 5, 60, 261, 0.9) for i in range(90)]
+    notes = [
+        PitchNote(i / 5, (i + 1) / 5, 60 + 2 * (i % 2), 261, 0.9) for i in range(90)
+    ]
+    expected_names = ["C4" if index % 2 == 0 else "D4" for index in range(90)]
     analysis = PitchAnalysis(21, 21, [PitchTrack("lead", notes)])
     blocks = pitched_lyrics_document(transcript, analysis, analysis.tracks[0])
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert text.split().count("C4") == len(notes)
+    assert [label for label in text.split() if label in {"C4", "D4"}] == expected_names
     assert all(text.count(word) == 1 for word in words)
     assert text.count("[00:00]") == 1
     assert all(display_width(row) <= LINE_COLUMNS for row in text.splitlines())
@@ -555,9 +567,11 @@ def test_long_phrase_pitch_rows_stay_gray_and_lyrics_wrap_with_brackets() -> Non
         (piece, props)
         for paragraph in paragraphs
         for piece, props in odf_runs(styles, paragraph)
-        if "C4" in piece
+        if re.search(r"C4|D4", piece)
     ]
-    assert sum(piece.split().count("C4") for piece, _ in pitches) == len(notes)
+    assert [
+        label for piece, _ in pitches for label in re.findall(r"C4|D4", piece)
+    ] == expected_names
     assert all(grayscale(props[f"{{{NS['fo']}}}color"]) > 0 for _, props in pitches)
     assert any(
         paragraph.find("text:line-break", NS) is not None
@@ -568,7 +582,12 @@ def test_long_phrase_pitch_rows_stay_gray_and_lyrics_wrap_with_brackets() -> Non
     first = next(
         i
         for i, paragraph in enumerate(paragraphs)
-        if "Line pitches" in odf_text(paragraph)
+        if any(
+            re.search(r"C4|D4", piece)
+            and properties.get(f"{{{NS['fo']}}}color") is not None
+            and grayscale(properties[f"{{{NS['fo']}}}color"]) > 0
+            for piece, properties in odf_runs(styles, paragraph)
+        )
     )
     last = next(
         i for i, paragraph in enumerate(paragraphs) if "outside" in odf_text(paragraph)

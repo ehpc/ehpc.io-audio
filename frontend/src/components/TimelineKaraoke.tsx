@@ -29,6 +29,10 @@ interface DisplayWord {
   suffix: string;
 }
 
+function appendPitchLabel(labels: string[], label: string) {
+  if (labels.at(-1) !== label) labels.push(label);
+}
+
 // Keep directly adjacent punctuation beside its word, rather than at the
 // far edge of a cell widened by a long note sequence.
 function displayParts(parts: KaraokePart[]): (string | DisplayWord)[] {
@@ -67,7 +71,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     for (const note of props.notes ?? []) {
       for (const index of note.word_indices) {
         const labels = result.get(index) ?? [];
-        labels.push(note.note);
+        appendPitchLabel(labels, note.note);
         result.set(index, labels);
       }
     }
@@ -78,7 +82,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     const labels: string[] = [];
     for (const index of indices) {
       const note = props.notes?.[index];
-      if (note) labels.push(note.note);
+      if (note) appendPitchLabel(labels, note.note);
     }
     return labels;
   };

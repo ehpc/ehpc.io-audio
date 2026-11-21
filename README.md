@@ -621,9 +621,12 @@ Pitch rows are above lyric rows in fixed-width whole-word cells. The timestamp
 is the left prefix of the **lyric row**, not a separate third row; the pitch row
 starts with the same number of display columns in spaces. Unknown `[??:??]`
 and timestamps beyond 99 minutes use their actual prefix widths.
-A word spanning several detected notes keeps the full ordered sequence,
-including distinct repeated notes; cells widen when that sequence is longer
-than the word. No syllable boundaries are invented. All three formats wrap
+A word spanning several detected notes keeps their order, collapsing only
+consecutive identical displayed pitch labels within that word. A later return
+to the same pitch and the same label on another word remain visible; raw
+detected notes and timing are unchanged. Line-level pitch sequences follow the
+same label rule. Cells widen when the displayed sequence is longer than the
+word. No syllable boundaries are invented. All three formats wrap
 long lines together, **between whole-word cells**, at 78 columns, preserving
 each pitch/lyric pair. Continuation pairs retain the same left indent.
 An indivisible word/melisma wider than that remains intact: the browser/TXT

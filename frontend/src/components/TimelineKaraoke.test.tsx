@@ -119,6 +119,45 @@ it("does not attach pitches to a transcript line when derived associations are u
   expect(within(screen.getByRole("group", { name: "Current lyrics" })).queryByRole("group", { name: /pitches/i })).toBeNull();
 });
 
+it("compresses only consecutive displayed pitch labels within each word or line", () => {
+  const source = job();
+  const line = source.transcript!.presentation_lines[0];
+  source.lyric_pitch_lines = [{
+    source_kind: line.source_kind, source_index: line.source_index, canonical_line_index: line.canonical_line_index,
+    start_s: 4, end_s: 8, bounds_source: "acoustic",
+    words: [
+      { token_index: 1, start_s: 4, end_s: 5, origin: "measured", tracks: [{ track_index: 0, note_indices: [0, 1, 2, 3, 4] }] },
+      { token_index: 2, start_s: 6, end_s: 7, origin: "measured", tracks: [{ track_index: 0, note_indices: [4, 5] }] },
+    ],
+    tracks: [{ track_index: 0, note_indices: [0, 1, 2, 3, 4] }],
+  }];
+  const note = (name: string) => ({ start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6, confidence: 0.9, note: name, cents: 0, word_indices: [] });
+  const raw = ["C4", "C4", "C5", "C4", "D4", "D4"].map(note);
+  const [notes, setNotes] = createSignal(raw);
+  render(() => <TimelineKaraoke job={source} position={4.5} notes={notes()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  expect(screen.getByRole("group", { name: "Pitches for go: C4 C5 C4 D4" })).toBeVisible();
+  expect(screen.getByRole("group", { name: "Pitches for don't: D4" })).toBeVisible();
+  expect(screen.getByRole("group", { name: "Estimated pitches for this line: C4 C5 C4 D4" })).toBeVisible();
+  setNotes(["D4", "D4", "D5", "D4", "E4", "E4"].map(note));
+  expect(screen.getByRole("group", { name: "Pitches for go: D4 D5 D4 E4" })).toBeVisible();
+  expect(raw.map(item => item.note)).toEqual(["C4", "C4", "C5", "C4", "D4", "D4"]);
+});
+
+it("compresses consecutive labels in the pitch-only fallback without merging words", () => {
+  const source = job();
+  source.transcript = null;
+  source.pitch!.words = [word("first", 4, 5), word("second", 6, 7)];
+  const note = (name: string, index: number) => ({ start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6, confidence: 0.9, note: name, cents: 0, word_indices: [index] });
+  const notes = [note("C4", 0), note("C4", 0), note("C5", 0), note("C4", 0), note("C4", 1)];
+  const [position, setPosition] = createSignal(4.5);
+  render(() => <TimelineKaraoke job={source} position={position()} notes={notes} />);
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  expect(screen.getByRole("group", { name: "Pitches for first: C4 C5 C4" })).toBeVisible();
+  setPosition(6.5);
+  expect(screen.getByRole("group", { name: "Pitches for second: C4" })).toBeVisible();
+});
+
 describe("karaoke provenance and output clock", () => {
   it("maps original words once at 125%, retaining partial and repeated canonical positions", () => {
     const lines = karaokeLines(job());

@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import re
 import zipfile
 from dataclasses import replace
 from urllib.parse import unquote
@@ -34,6 +35,7 @@ from separator.pitched_lyrics import (
 )
 from separator.pitched_lyrics_odt import pitched_lyrics_odt
 from separator.processing import ProcessingResult
+from tests.pitched_lyrics_odt_fixture import odf_text
 
 
 def singing() -> tuple[Transcript, PitchAnalysis]:
@@ -60,13 +62,98 @@ def singing() -> tuple[Transcript, PitchAnalysis]:
     return transcript, analysis
 
 
-def test_melisma_and_real_repeated_notes_widen_cells_without_changing_lyrics() -> None:
-    transcript, analysis = singing()
-    text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
+def test_pitch_name_runs_compress_per_word_and_match_txt_odt() -> None:
+    words = [TranscriptWord(1, 5, "first"), TranscriptWord(6, 9, "second")]
+    transcript = Transcript(
+        segments=[TranscriptSegment(1, 9, "first second")], words=words
+    )
+    semitones = [60, 60, 62, 62, 60, 72, 72, 72, 72]
+    times = [
+        (1, 1.4),
+        (1.5, 1.9),
+        (2, 2.4),
+        (2.5, 2.9),
+        (3, 3.4),
+        (3.5, 3.9),
+        (4, 4.4),
+        (6.2, 6.4),
+        (6.5, 6.8),
+    ]
+    notes = [
+        PitchNote(start, end, semitone, 261.625565, 0.9)
+        for (start, end), semitone in zip(times, semitones, strict=True)
+    ]
+    analysis = transform_analysis(
+        PitchAnalysis(10, 10, [PitchTrack("lead", notes)]), 0, 100, words
+    )
+    original_pitch = pitch_to_json(analysis)
+    associations = lyric_pitch_lines(transcript, analysis)
+    assert [word.tracks[0].note_indices for word in associations[0].words] == [
+        list(range(7)),
+        [7, 8],
+    ]
+
+    blocks = pitched_lyrics_document(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
+    text = pitched_lyrics_text(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
     rows = text.splitlines()
     start = next(index for index, row in enumerate(rows) if row.startswith("[00:01] "))
-    assert rows[start - 1] == "        C#4 C#4 D#4  ?"
+    expected_names = ["C4", "D4", "C4", "C5", "C5"]
+    assert rows[start - 1].split() == expected_names
+
+    with zipfile.ZipFile(io.BytesIO(pitched_lyrics_odt(blocks))) as archive:
+        root = ElementTree.fromstring(archive.read("content.xml"))
+    paragraphs = root.findall(".//{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p")
+    visible = " ".join(odf_text(paragraph) for paragraph in paragraphs)
+    assert re.findall(r"[A-G]#?[0-9]+", visible) == expected_names
+    assert pitch_to_json(analysis) == original_pitch
+
+
+def test_residual_line_pitch_sequence_collapses_only_consecutive_names() -> None:
+    transcript = Transcript(segments=[TranscriptSegment(1, 5, "unanchored phrase")])
+    semitones = [60, 60, 62, 62, 60, 72, 72]
+    notes = [
+        PitchNote(1 + index * 0.5, 1.25 + index * 0.5, semitone, 261.6, 0.9)
+        for index, semitone in enumerate(semitones)
+    ]
+    analysis = PitchAnalysis(6, 6, [PitchTrack("lead", notes)])
+    original_pitch = pitch_to_json(analysis)
+    associations = lyric_pitch_lines(transcript, analysis)
+    assert associations[0].tracks[0].note_indices == list(range(7))
+
+    blocks = pitched_lyrics_document(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
+    text = pitched_lyrics_text(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
+    pitch_row = next(row for row in text.splitlines() if row.strip().startswith("C4"))
+    expected_names = ["C4", "D4", "C4", "C5"]
+    assert pitch_row.split() == expected_names
+    with zipfile.ZipFile(io.BytesIO(pitched_lyrics_odt(blocks))) as archive:
+        root = ElementTree.fromstring(archive.read("content.xml"))
+    paragraphs = root.findall(".//{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p")
+    visible = " ".join(odf_text(paragraph) for paragraph in paragraphs)
+    assert re.findall(r"[A-G]#?[0-9]+", visible) == expected_names
+    assert pitch_to_json(analysis) == original_pitch
+
+
+def test_consecutive_note_names_compress_without_changing_raw_notes() -> None:
+    transcript, analysis = singing()
+    original_pitch = pitch_to_json(analysis)
+    associations = lyric_pitch_lines(transcript, analysis)
+    text = pitched_lyrics_text(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
+    rows = text.splitlines()
+    start = next(index for index, row in enumerate(rows) if row.startswith("[00:01] "))
+    assert rows[start - 1] == "        C#4 D#4  ?"
     assert rows[start].split()[1:] == ["Cœur", "поёт"]
+    assert associations[0].words[0].tracks[0].note_indices == [0, 1, 2]
+    assert pitch_to_json(analysis) == original_pitch
     assert display_width(rows[start - 1].split("  ?")[0]) + 2 == display_width(
         rows[start].split("поёт")[0]
     )
@@ -275,7 +362,7 @@ def test_reference_positions_survive_repeated_tokens_and_extras_sort() -> None:
     legacy = Transcript(words=transcript.words, reference=transcript.reference)
     legacy_text = pitched_lyrics_text(legacy, analysis, analysis.tracks[0])
     assert lyric_pitch_lines(legacy, analysis)[0].words == []
-    assert "Line pitches (approx.):" in legacy_text
+    assert "C4" in legacy_text
 
 
 def test_canonical_ids_use_exact_tokenization_for_decomposed_word_cells() -> None:

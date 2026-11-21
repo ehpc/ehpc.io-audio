@@ -4,6 +4,7 @@ import re
 import textwrap
 import unicodedata
 from dataclasses import dataclass
+from itertools import groupby
 
 from separator.lyric_pitch import LyricPitchLine, lyric_pitch_lines
 from separator.lyrics import (
@@ -92,6 +93,13 @@ def _printable(text: str) -> str:
     return "".join(" " if unicodedata.category(c) == "Cc" else c for c in text)
 
 
+def _pitch_sequence(track: PitchTrack, note_indices: list[int]) -> str:
+    """Render chronological note names, collapsing consecutive equal labels only."""
+    return " ".join(
+        name for name, _ in groupby(track.notes[index].note for index in note_indices)
+    )
+
+
 def pitched_lyrics_document(
     transcript: Transcript,
     analysis: PitchAnalysis,
@@ -135,7 +143,7 @@ def pitched_lyrics_document(
                     estimated.add(cell_index)
         pitches = [
             ("~" if index in estimated else "")
-            + " ".join(track.notes[note].note for note in sorted(cell_notes[index]))
+            + _pitch_sequence(track, sorted(cell_notes[index]))
             if cell_notes.get(index)
             else "?"
             for index in range(len(cells))
@@ -159,9 +167,9 @@ def pitched_lyrics_document(
         )
         rows = []
         if residual:
-            labels = " ".join(track.notes[index].note for index in residual)
+            labels = _pitch_sequence(track, residual)
             rows = textwrap.wrap(
-                f"Line pitches (approx.): {labels}",
+                labels,
                 width=LINE_COLUMNS,
                 subsequent_indent="  ",
                 break_long_words=False,
