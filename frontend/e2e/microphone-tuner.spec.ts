@@ -3,14 +3,25 @@ import { test, wavePath, writeMicrophoneWave } from './microphone-fixture';
 
 test.beforeAll(writeMicrophoneWave);
 
-async function expectGauge(tuner: Locator, cents: number) {
-  const { left, width, trackLeft, trackWidth } = await tuner.locator('.mic-tuner-fill').evaluate(element => {
-    const fill = element.getBoundingClientRect(), track = element.parentElement!.getBoundingClientRect();
-    return { left: fill.left, width: fill.width, trackLeft: track.left, trackWidth: track.width };
-  });
-  const clamped = Math.max(-25, Math.min(25, cents));
-  expect(Math.abs(left - (trackLeft + trackWidth * (0.5 + Math.min(clamped, 0) / 50)))).toBeLessThan(1);
-  expect(Math.abs(width - trackWidth * Math.abs(clamped) / 50)).toBeLessThan(1);
+async function expectGauge(tuner: Locator, phase: RegExp) {
+  await expect(async () => {
+    const sample = await tuner.evaluate(element => {
+      const note = element.querySelector('.mic-tuner-reading strong')?.textContent ?? '';
+      const centsText = element.querySelector('.mic-tuner-reading span')?.textContent ?? '';
+      const reading = `${note} ${centsText}`;
+      const fill = element.querySelector<HTMLElement>('.mic-tuner-fill');
+      if (!fill) return { reading, centsText, geometry: null };
+      const rect = fill.getBoundingClientRect(), track = fill.parentElement!.getBoundingClientRect();
+      return { reading, centsText, geometry: { left: rect.left, width: rect.width, trackLeft: track.left, trackWidth: track.width } };
+    });
+    expect(sample.reading).toMatch(phase);
+    expect(sample.geometry).not.toBeNull();
+    const cents = Number(sample.centsText.match(/^([+-]?\d+)\s+cents$/)![1]);
+    const { left, width, trackLeft, trackWidth } = sample.geometry!;
+    const clamped = Math.max(-25, Math.min(25, cents));
+    expect(Math.abs(left - (trackLeft + trackWidth * (0.5 + Math.min(clamped, 0) / 50)))).toBeLessThan(1);
+    expect(Math.abs(width - trackWidth * Math.abs(clamped) / 50)).toBeLessThan(1);
+  }).toPass({ timeout: 12_000 });
 }
 
 test.use({
@@ -41,17 +52,12 @@ for (const width of [390, 1440]) {
     expect(await page.evaluate(() => (window as unknown as { __micTest: { requests: number } }).__micTest.requests)).toBe(0);
     await button.click();
     await expect(tuner.getByRole('button', { name: 'Stop microphone pitch detection' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/E4\s*0 cents/, { timeout: 12_000 });
-    await expectGauge(tuner, 0);
-    await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/E4\s*\+(9|10|11) cents/, { timeout: 12_000 });
-    const cents = Number((await tuner.locator('.mic-tuner-reading').innerText()).match(/\+(\d+) cents/)![1]);
-    await expectGauge(tuner, cents);
-    await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/E4\s*\+3[4-6] cents/, { timeout: 12_000 });
-    await expectGauge(tuner, 35);
+    await expectGauge(tuner, /E4\s*0 cents/);
+    await expectGauge(tuner, /E4\s*\+(9|10|11) cents/);
+    await expectGauge(tuner, /E4\s*\+3[4-6] cents/);
     await expect(tuner.getByText('Listening for a clear note…')).toBeVisible({ timeout: 12_000 });
     await expect(tuner.locator('.mic-tuner-fill')).toHaveCount(0);
-    await expect(tuner.locator('.mic-tuner-reading')).toHaveText(/A3\s*-(29|30|31) cents/, { timeout: 12_000 });
-    await expectGauge(tuner, -30);
+    await expectGauge(tuner, /A3\s*-(29|30|31) cents/);
     await tuner.getByRole('button', { name: 'Stop microphone pitch detection' }).click();
     await expect(tuner.getByText('Microphone off')).toBeVisible();
     expect(await page.evaluate(() => (window as unknown as { __micTest: { streams: MediaStream[] } }).__micTest.streams[0].getTracks().every(track => track.readyState === 'ended'))).toBe(true);
