@@ -553,11 +553,13 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const open = view.getByRole('button', { name: 'Open karaoke fullscreen' });
       await open.click();
       const dialog = page.getByRole('dialog', { name: 'Karaoke fullscreen' });
-      await expect(dialog.getByRole('button', { name: 'Exit karaoke fullscreen' })).toBeFocused();
+      const exit = dialog.getByRole('button', { name: 'Exit karaoke fullscreen' });
+      await expect(exit).toBeFocused();
       await page.keyboard.press('Shift+Tab');
-      await expect(dialog.getByRole('button', { name: 'Forward 5 seconds' })).toBeFocused();
+      await expect(dialog.locator(':focus')).toBeVisible();
+      await expect(exit).not.toBeFocused();
       await page.keyboard.press('Tab');
-      await expect(dialog.getByRole('button', { name: 'Exit karaoke fullscreen' })).toBeFocused();
+      await expect(exit).toBeFocused();
       await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(before + 0.15);
       expect(await player.evaluate((audio, prior) => audio === prior, original)).toBe(true);
       const lyrics = dialog.getByRole('region', { name: 'Current karaoke line' });

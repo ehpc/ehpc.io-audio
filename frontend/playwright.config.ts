@@ -19,6 +19,7 @@ export default defineConfig({
     '**/visual.spec.ts',
     '**/youtube-key.spec.ts',
     '**/listening-clock.spec.ts',
+    '**/karaoke-transposition.spec.ts',
     '**/pitch-interactions.spec.ts',
     '**/live-pitch-trace.spec.ts',
     '**/job-status-dock.spec.ts',

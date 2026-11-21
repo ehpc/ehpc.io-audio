@@ -1,5 +1,5 @@
 import { expect, type Locator } from '@playwright/test';
-import { unlink } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 import { test } from './auth-fixture';
 import { cleanupLearning, seedLearning } from './learning-fixture';
 import type { LearningDocument } from '../src/api';
@@ -20,28 +20,43 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(original.ok()).toBe(true);
       expect(original.headers()['content-type']).toContain('audio');
 
-      // Click Chromium's native media play control, rather than replacing media APIs.
-      await audio.click({ position: { x: 20, y: 20 } });
-      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(0);
-      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
       const section = dialog.getByLabel('Practice section');
       const options = section.locator('option');
       await expect(options).toHaveCount(3);
       const firstSection = await options.nth(1).getAttribute('value');
       await section.selectOption(firstSection!);
+      await activate(dialog.getByRole('button', { name: 'Silver branches gently sway' }));
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeCloseTo(1.2, 1);
       await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
-      const repeat = dialog.getByRole('button', { name: 'Repeat section' });
-      await activate(repeat);
-      await expect(repeat).toHaveAttribute('aria-pressed', 'true');
+      const selected = await audio.evaluate((element: HTMLAudioElement) => ({ currentTime: element.currentTime, paused: element.paused }));
+      // Native playback advances inside the selected line and stops at its own end.
       await audio.click({ position: { x: 20, y: 20 } });
-      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
-      // Seek near the real end boundary; the native timeupdate must wrap to the start.
-      await audio.evaluate((element: HTMLAudioElement) => { element.currentTime = 2.05; });
-      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime), { timeout: 5000 }).toBeLessThan(1.5);
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(1.3);
+      const advancing = await audio.evaluate((element: HTMLAudioElement) => ({ currentTime: element.currentTime, paused: element.paused }));
+      expect(advancing.paused).toBe(false);
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+      const stopped = await audio.evaluate((element: HTMLAudioElement) => ({ currentTime: element.currentTime, paused: element.paused }));
+      expect(stopped.currentTime).toBeCloseTo(2.1, 1);
+      await writeFile(info.outputPath(`line-playback-${viewport.width}.json`), JSON.stringify({ selected, advancing, stopped }, null, 2));
+      const repeat = dialog.getByRole('button', { name: 'Repeat line' });
       await activate(repeat);
-      await expect(repeat).toHaveAttribute('aria-pressed', 'false');
-      await audio.evaluate((element: HTMLAudioElement) => { element.currentTime = 2.05; });
-      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(2.15);
+      const wrapped = audio.evaluate((element: HTMLAudioElement) => new Promise<boolean>(resolve => {
+        let previous = 1.2;
+        const timeout = window.setTimeout(() => { element.removeEventListener('timeupdate', observe); resolve(false); }, 5000);
+        function observe() {
+          if (element.currentTime < previous - 0.3) {
+            clearTimeout(timeout); element.removeEventListener('timeupdate', observe); resolve(true);
+          }
+          previous = element.currentTime;
+        }
+        element.addEventListener('timeupdate', observe);
+      }));
+      await audio.click({ position: { x: 20, y: 20 } });
+      expect(await wrapped).toBe(true);
+      await activate(repeat);
+      await activate(dialog.getByRole('button', { name: 'Amber lanterns softly shine' }));
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeLessThan(0.5);
+      await audio.evaluate((element: HTMLAudioElement) => element.pause());
 
       await activate(dialog.getByRole('button', { name: 'Practice', exact: true }));
       await expect(dialog.getByText('Partial words', { exact: true })).toBeVisible();
@@ -69,6 +84,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         if (rating === 'Remembered') {
           const afterReview = await response.json() as LearningDocument;
           expect(afterReview.progress.line_id).not.toBe(beforeReview.progress.line_id);
+          const next = afterReview.lines.find(item => item.id === afterReview.progress.line_id)!;
+          expect(next.onset_s).not.toBeNull();
+          await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeCloseTo(next.onset_s!, 1);
+          await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
         }
         expect(response.request().postDataJSON().rating).toBe(rating.toLowerCase());
       }
@@ -86,7 +105,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await activate(trigger);
       await expect(dialog.getByText('First letters', { exact: true })).toBeVisible();
       await expect(dialog.getByLabel('Practice section')).toHaveValue(firstSection!);
-      await expect(dialog.getByRole('button', { name: 'Repeat section' })).toHaveAttribute('aria-pressed', 'false');
+      await expect(dialog.getByRole('button', { name: 'Repeat line' })).toHaveAttribute('aria-pressed', 'false');
       await page.keyboard.press('Escape');
       await expect(dialog).toBeHidden();
       await expect(trigger).toBeFocused();
@@ -103,6 +122,7 @@ test('starting another real player pauses learning audio and closing stops it', 
   const audio = dialog.locator('audio');
   const other = page.locator('audio:not(.learn-audio)').first();
   await expect(other).toHaveCount(1);
+  await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBeGreaterThanOrEqual(1);
   await audio.click({ position: { x: 20, y: 20 } });
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
   // The modal makes the results player inert; real playback still exercises the global media guard.

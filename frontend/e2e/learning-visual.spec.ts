@@ -13,6 +13,9 @@ for (const viewport of [
     const { dialog } = await seedLearning(page);
     await page.evaluate(() => document.fonts.ready);
     const audio = dialog.locator('audio');
+    await expect.poll(() => audio.evaluate((element: HTMLAudioElement) =>
+      Number.isFinite(element.duration) && element.duration > 0)).toBe(true);
+    await expect(dialog.getByRole('button', { name: 'Repeat line' })).toBeEnabled();
     await page.mouse.move(0, 0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     const bounds = (await dialog.boundingBox())!;

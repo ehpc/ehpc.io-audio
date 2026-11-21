@@ -411,11 +411,14 @@ rotation that revisits harder lines more often; the ratings are self-reports,
 not a measured memory score. No microphone, typing or additional inference is
 required.
 
-An estimated section can be selected and repeated when its published boundaries
-are available. Unplaced lines remain manually accessible and are not assigned
-invented timestamps or included in a section loop. The original audio controls
-remain available for manual seeking; opening another player pauses the current
-one. Closing learning stops its playback.
+Selecting a timed line seeks the original recording to that line without starting
+playback when paused. Playback stops at its valid end or the next timed line's
+cue; the last line can use the loaded media duration. The next cue is a playback
+cutoff, not a measured vocal ending. **Repeat line** loops only the selected
+interval. If usable bounds are unavailable, unbounded playback pauses and the
+line remains available for manual practice. Original audio controls remain
+available for manual seeking; opening another player pauses the current one.
+Closing learning stops its playback.
 
 Progress, selected section and hint level are private to the signed-in account
 and the verified original recording. Ratings and hints remain available after
@@ -782,7 +785,7 @@ Word chips show only the lyric text, without appended note counts; literal
 numbers in lyrics are preserved. Selecting a word still seeks its first linked
 note and highlights all associated notes, or uses its word onset when unlinked.
 
-A **−5 s / Play–Pause / +5 s** row sits immediately above the karaoke lyrics,
+A transport row sits immediately above the karaoke lyrics,
 below the graph and selection details. The center icon and accessible action
 follow the native player's actual state, including external pauses and source
 changes; failed playback is reported rather than shown as playing. Native audio
@@ -790,6 +793,17 @@ controls, including volume, remain below the karaoke reader. All controls use
 the same player. Skips move five seconds on the selected audio's native clock,
 clamp to its available duration, and preserve playing/paused state, volume,
 background source and selected stem. Lyrics remain mapped to the output clock.
+The adjacent **−1 / +1** controls shift the displayed reference by one semitone;
+the octave buttons move it exactly 12 semitones when the full step fits. The
+signed offset is relative to the job's already processed pitch, starts at zero
+for each result, and is limited to ±24 semitones and the MIDI 0–127 range.
+Timeline notes, pitch labels and reference piano keys shift together; live
+microphone pitch remains the actual sung pitch. This is display-only: backing
+audio, processing and downloads do not change.
+**Octave guides** optionally adds translucent light-yellow reference notes one
+octave above and below the current displayed melody. These are visual guides,
+not additional detected voices; pitches outside MIDI 0–127 are omitted. The
+primary melody, piano playback, microphone and downloads are unchanged.
 
 With focus on the timeline's scroll region or time ruler, **Space** toggles that
 same native player without scrolling the page; holding Space does not repeatedly
@@ -811,14 +825,17 @@ idle, and reports unavailable audio.
 With **Follow playback** enabled, the timeline advances when the playhead passes
 about 75% of the visible note area, excluding the sticky note axis, leaving room
 to see upcoming notes. Manually panning by wheel, touch, scrollbar or keyboard
-pauses auto-follow while you browse. Only a manual horizontal return
-that brings the current playhead back into the visible note region resumes it,
-after the gesture finishes; the sticky note axis does not count as visible time.
+pauses auto-follow while you browse. A manual horizontal return that brings the
+current playhead back into the visible note region resumes it after the gesture
+finishes; the sticky note axis does not count as visible time.
 The clock moving into a stationary browsed view, seeking, skipping, source
 changes and restarting playback do not resume following. Turning Follow off is
 an explicit opt-out; turning it back on does not clear an existing browsing
 pause. Browsers without native scroll-end events use a best-effort
 stationary-frame fallback for gesture completion.
+Alternatively, **Resume auto-follow** restores Follow and moves the timeline to
+the current playback position without seeking or changing playback. It preserves
+the vertical view and focuses the timeline for keyboard use.
 A seek in the native audio controls reveals the playhead even with Follow off,
 without clearing an existing browsing pause.
 

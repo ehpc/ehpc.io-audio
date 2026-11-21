@@ -650,9 +650,6 @@ def transcript_export_text(
                 for section in transcript.sections[next_section:]
             )
         if timed_lines:
-            output.append(
-                "\n[ASR-only candidate extras/adlibs — not in canonical reference]\n"
-            )
             output.append(transcript_text(timed_lines, render_line=render_line))
         if transcript.sections and not has_anchors:
             output.append(

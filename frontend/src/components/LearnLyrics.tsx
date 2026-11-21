@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { JobDTO, LearningDocument, LearningHint, LearningPreferences, LearningRating } from "~/api";
 import { learningProgress, originalUrl, playbackUrl, reviewLearningLine, saveLearningPreferences } from "~/api";
 import { Button } from "~/components/button";
@@ -18,12 +18,6 @@ export default function LearnLyrics(props: { job: JobDTO }) {
   let audio: HTMLAudioElement | undefined;
   let live = true;
   const section = createMemo(() => document()?.sections.find(item => item.id === document()?.progress.section_id));
-  const repeatBounds = createMemo(() => {
-    const bounds = section(), duration = mediaDuration();
-    return bounds && Number.isFinite(bounds.start_s) && Number.isFinite(bounds.end_s)
-      && bounds.start_s >= 0 && bounds.start_s < bounds.end_s && bounds.end_s <= duration
-      ? bounds : null;
-  });
   const visibleLines = createMemo(() => {
     const bounds = section();
     return (document()?.lines ?? []).filter(line => !bounds || line.onset_s === null
@@ -32,6 +26,53 @@ export default function LearnLyrics(props: { job: JobDTO }) {
   const current = createMemo(() => visibleLines().find(line => line.id === document()?.progress.line_id) ?? visibleLines()[0]);
   const currentParts = createMemo(() => studyParts(current()?.text ?? ""));
   const hint = () => document()?.progress.hint_level ?? "full";
+  const lineBounds = createMemo(() => {
+    const value = document(), line = current(), duration = mediaDuration();
+    const start = line?.onset_s;
+    if (!value || !line || start == null || !Number.isFinite(start) || start < 0 || start >= duration) return null;
+    const index = value.lines.findIndex(item => item.id === line.id);
+    if (index < 0) return null;
+    let next: number | null = null;
+    let nextIndex = -1;
+    value.lines.forEach((item, position) => {
+      const onset = item.onset_s;
+      if (position !== index && onset !== null && Number.isFinite(onset)
+        && onset > start && onset <= duration && (next === null || onset < next)) {
+        next = onset;
+        nextIndex = position;
+      }
+    });
+    const intervening = nextIndex > index
+      && value.lines.slice(index + 1, nextIndex).some(item => item.onset_s === null);
+    const explicit = line.end_s !== null && Number.isFinite(line.end_s) && line.end_s > start && line.end_s <= duration ? line.end_s : null;
+    const cutoff = intervening ? null : next;
+    const hasUnknownLater = value.lines.slice(index + 1).some(item => item.onset_s === null);
+    const end = explicit !== null && cutoff !== null ? Math.min(explicit, cutoff)
+      : explicit ?? cutoff ?? (next === null && !hasUnknownLater ? duration : null);
+    return end !== null && end > start ? { start, end } : null;
+  });
+  let syncedLine: string | undefined;
+  let syncedDuration = 0;
+  let previousPractice = false;
+  let playbackFrame: number | undefined;
+  let boundaryTimer: number | undefined;
+  const stopClock = () => {
+    if (playbackFrame !== undefined) cancelAnimationFrame(playbackFrame);
+    clearTimeout(boundaryTimer);
+    playbackFrame = undefined;
+    boundaryTimer = undefined;
+  };
+  createEffect(() => {
+    const line = current(), duration = mediaDuration(), practice = hint() !== "full";
+    const changed = line?.id !== syncedLine || duration !== syncedDuration || (practice && !previousPractice);
+    syncedLine = line?.id;
+    syncedDuration = duration;
+    previousPractice = practice;
+    if (!changed || !audio || !duration) return;
+    const bounds = lineBounds();
+    if (!bounds) { audio.pause(); return; }
+    audio.currentTime = bounds.start;
+  });
   const clearReveals = () => { setRevealed(new Set<number>()); setLineRevealed(false); };
   onMount(() => {
     void learningProgress(props.job.id).then(value => {
@@ -40,12 +81,12 @@ export default function LearnLyrics(props: { job: JobDTO }) {
       if (live) setError(reason instanceof Error ? reason.message : "Learning progress could not be loaded.");
     });
   });
-  onCleanup(() => { live = false; setLoop(false); audio?.pause(); });
+  onCleanup(() => { live = false; stopClock(); audio?.pause(); });
   const patch = async (changes: Omit<LearningPreferences, "document_version">) => {
     const value = document();
     if (!value || busy()) return;
     clearReveals();
-    if ("section_id" in changes) { setLoop(false); audio?.pause(); }
+    if ("section_id" in changes) setLoop(false);
     if (!value.saving_available) {
       setDocument({ ...value, progress: { ...value.progress, ...changes } });
       return;
@@ -74,39 +115,77 @@ export default function LearnLyrics(props: { job: JobDTO }) {
     void patch({ hint_level: levels[index] });
   };
   const toggleLoop = () => {
-    const bounds = repeatBounds();
-    if (busy() || !bounds || !audio || !Number.isFinite(audio.duration)
-      || bounds.end_s > audio.duration) return;
-    if (!loop() && (audio.currentTime < bounds.start_s || audio.currentTime >= bounds.end_s)) audio.currentTime = bounds.start_s;
+    if (busy() || !lineBounds() || !audio) return;
     setLoop(!loop());
   };
-  const enforceLoop = () => {
-    const bounds = repeatBounds();
-    if (loop() && bounds && audio && Number.isFinite(audio.duration)
-      && bounds.end_s <= audio.duration && audio.currentTime >= bounds.end_s) audio.currentTime = bounds.start_s;
+  const enforceBoundary = () => {
+    if (!audio || audio.paused) return;
+    const bounds = lineBounds();
+    if (!bounds) { audio.pause(); stopClock(); return; }
+    if (audio.currentTime >= bounds.end) {
+      if (loop() && !busy() && !audio.ended) audio.currentTime = bounds.start;
+      else { audio.pause(); audio.currentTime = bounds.end; stopClock(); }
+    }
   };
-  const canSeekLine = (time: number | null) => time !== null && Number.isFinite(time)
-    && time >= 0 && time < mediaDuration();
+  const handleSeeking = () => {
+    const bounds = lineBounds();
+    if (audio && !audio.paused && (!bounds || audio.currentTime < bounds.start || audio.currentTime >= bounds.end)) {
+      audio.pause();
+      stopClock();
+    }
+  };
+  const startClock = () => {
+    stopClock();
+    if (!audio) return;
+    const bounds = lineBounds();
+    if (!bounds) { audio.pause(); return; }
+    if (audio.currentTime < bounds.start || audio.currentTime >= bounds.end) audio.currentTime = bounds.start;
+    const frame = () => {
+      playbackFrame = undefined;
+      if (!audio || audio.paused) return;
+      enforceBoundary();
+      if (!audio.paused) playbackFrame = requestAnimationFrame(frame);
+    };
+    const timer = () => {
+      boundaryTimer = undefined;
+      if (!audio || audio.paused) return;
+      enforceBoundary();
+      if (!audio.paused) {
+        const remaining = Math.max(0.01, (lineBounds()?.end ?? audio.currentTime) - audio.currentTime);
+        boundaryTimer = window.setTimeout(timer, Math.max(10, remaining * 1000 / Math.max(0.01, audio.playbackRate)));
+      }
+    };
+    playbackFrame = requestAnimationFrame(frame);
+    timer();
+  };
   const seekLine = (time: number | null) => {
-    if (audio && canSeekLine(time) && time !== null && Number.isFinite(audio.duration)
-      && time < audio.duration) audio.currentTime = time;
+    if (audio && time !== null && lineBounds() && time === lineBounds()?.start) audio.currentTime = time;
   };
   const syncDuration = () => {
     const duration = audio?.duration;
     setMediaDuration(duration !== undefined && Number.isFinite(duration) && duration > 0 ? duration : 0);
-    if (!repeatBounds()) setLoop(false);
+    if (!lineBounds()) setLoop(false);
   };
   return <div class="learn-body">
     <Show when={error()}><p role="alert" class="auth-error">{error()}</p></Show>
     <Show when={document()} fallback={<Show when={!error()}><p role="status">Loading lyrics…</p></Show>}>{value => <>
       <Show when={!value().saving_available}><p role="status">Saving unavailable: the original recording could not be verified. You can still practise manually in this view.</p></Show>
       <Show when={props.job.has_original} fallback={<p>Original audio is unavailable; lyrics can still be practised manually.</p>}>
-        <audio ref={audio} controls preload="metadata" class="learn-audio" src={playbackUrl(originalUrl(props.job.id))} onLoadedMetadata={syncDuration} onDurationChange={syncDuration} onTimeUpdate={enforceLoop} onEnded={() => {
-          const bounds = repeatBounds();
-          if (loop() && bounds && audio && Number.isFinite(audio.duration) && bounds.end_s <= audio.duration) {
-            audio.currentTime = bounds.start_s; void audio.play().catch(() => { if (live) setError("Audio playback could not be resumed."); });
-          }
-        }} />
+        <audio ref={audio} controls preload="metadata" class="learn-audio" src={playbackUrl(originalUrl(props.job.id))}
+          onLoadedMetadata={syncDuration} onDurationChange={syncDuration} onPlay={startClock} onPause={stopClock}
+          onTimeUpdate={enforceBoundary} onSeeking={handleSeeking} onSeeked={() => {
+            enforceBoundary();
+            if (audio && !audio.paused) startClock();
+          }}
+          onRateChange={() => { if (audio && !audio.paused) startClock(); }}
+          onEnded={() => {
+            stopClock();
+            const bounds = lineBounds();
+            if (loop() && !busy() && bounds && audio) {
+              audio.currentTime = bounds.start;
+              void audio.play().catch(() => { if (live) setError("Audio playback could not be resumed."); });
+            }
+          }} />
       </Show>
       <div class="learn-settings">
         <label for="learn-section">Practice section</label>
@@ -114,11 +193,11 @@ export default function LearnLyrics(props: { job: JobDTO }) {
           <option value="">All lyrics / manual navigation</option>
           <For each={value().sections}>{(item, index) => <option value={item.id}>{item.label} {index() + 1}</option>}</For>
         </select>
-        <Button type="button" variant="outline" disabled={busy() || !repeatBounds() || !props.job.has_original} aria-pressed={loop()} onClick={toggleLoop}>Repeat section</Button>
+        <Button type="button" variant="outline" disabled={busy() || !lineBounds() || !props.job.has_original} aria-pressed={loop()} onClick={toggleLoop}>Repeat line</Button>
       </div>
       <Show when={value().sections.length > 0}><p class="learn-note">Section labels and boundaries are automatic estimates.</p></Show>
-      <Show when={section() && mediaDuration() > 0 && !repeatBounds()}><p class="learn-note">This estimated section falls outside the recording and cannot be repeated.</p></Show>
-      <Show when={section() && visibleLines().some(line => line.onset_s === null)}><p class="learn-note">Unplaced lines have no section timing and are not included in section repeat.</p></Show>
+      <Show when={!lineBounds() && mediaDuration() > 0}><p class="learn-note">This line has no supported playback bounds. You can reveal it and seek manually; playback is paused until a timed line is selected.</p></Show>
+      <Show when={section() && visibleLines().some(line => line.onset_s === null)}><p class="learn-note">Unplaced lines have no section timing.</p></Show>
       <p class="learn-stage">{levelNames[hint()]}</p>
       <div class="learn-actions">
         <Show when={hint() === "full"}>
@@ -134,7 +213,7 @@ export default function LearnLyrics(props: { job: JobDTO }) {
         }}</For></div>
         <div class="learn-actions">
           <Button type="button" variant="outline" onClick={() => setLineRevealed(true)}>Reveal line</Button>
-          <Button type="button" variant="outline" disabled={!canSeekLine(line().onset_s) || !props.job.has_original} onClick={() => seekLine(line().onset_s)}>Seek to line</Button>
+          <Button type="button" variant="outline" disabled={!lineBounds() || !props.job.has_original} onClick={() => seekLine(line().onset_s)}>Seek to line</Button>
         </div>
         <Show when={line().onset_source === "provider-synced"}><p class="learn-note">Line cue: provider-synced; not word timing.</p></Show>
         <Show when={line().onset_s === null}><p class="learn-note">No supported line timing; use the player to seek manually.</p></Show>

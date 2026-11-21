@@ -17,6 +17,16 @@ const AXIS_WIDTH = 54;
 const MIN_ZOOM = 40;
 const MAX_ZOOM = 640;
 const ZOOM_STEP = 20;
+const MAX_REFERENCE_SHIFT = 24;
+const OCTAVE = 12;
+const AXIS_PADDING = 2;
+const OCTAVE_OFFSETS = [-OCTAVE, OCTAVE];
+
+function shiftReferenceNote(note: PitchNoteDTO, semitones: number): PitchNoteDTO {
+  if (semitones === 0) return note;
+  const midi = note.midi + semitones;
+  return { ...note, midi, note: noteName(Math.round(midi)), frequency_hz: note.frequency_hz * 2 ** (semitones / 12) };
+}
 function timeLabel(seconds: number): string {
   const centiseconds = Math.round(seconds * 100);
   const minutes = Math.floor(centiseconds / 6000);
@@ -37,6 +47,15 @@ interface PitchTooltip {
   below: boolean;
 }
 
+interface HoverAnchor {
+  target: Element;
+  key: object;
+  lyrics: string;
+  note?: string;
+  x: number;
+  y: number;
+}
+
 const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const analysis = () => props.job.pitch!;
   const [trackLabel, setTrackLabel] = createSignal(analysis().tracks[0]?.label ?? "");
@@ -54,6 +73,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [karaokeFullscreen, setKaraokeFullscreen] = createSignal(false);
   const [karaokeFontSize, setKaraokeFontSize] = createSignal<number>(LYRIC_FONT.default);
   const [karaokePitches, setKaraokePitches] = createSignal(false);
+  const [referenceShift, setReferenceShift] = createSignal(0);
+  const [octaveGuides, setOctaveGuides] = createSignal(false);
   let fullscreenReturnFocus: HTMLElement | null = null;
   const openKaraokeFullscreen = (trigger: HTMLButtonElement) => {
     fullscreenReturnFocus = trigger;
@@ -65,7 +86,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [tooltip, setTooltip] = createSignal<PitchTooltip | null>(null);
   const tooltipId = createUniqueId();
   const backgroundHelpId = createUniqueId();
-  const dismissTooltip = () => setTooltip(null);
+  let hoverAnchor: HoverAnchor | undefined;
+  const dismissTooltip = () => { hoverAnchor = undefined; setTooltip(null); };
   let audio!: HTMLAudioElement;
   let viewport!: HTMLDivElement;
   const trace = new LivePitchTrace(analysis().duration_s);
@@ -221,10 +243,38 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const showNoteTooltip = (target: Element, note: PitchNoteDTO) => {
     showTooltip(target, note, note.word_indices.map(index => analysis().words[index]?.text).filter(Boolean).join(" "), note.note);
   };
+  const updateHoverPosition = (event: PointerEvent, target: Element, key: object) => {
+    if ((event.pointerType !== "mouse" && event.pointerType !== "pen") ||
+      hoverAnchor?.target !== target || hoverAnchor.key !== key || tooltip()?.key !== key) return false;
+    hoverAnchor.x = event.clientX;
+    hoverAnchor.y = event.clientY;
+    return true;
+  };
+  const hoverTooltip = (event: PointerEvent, target: Element, key: object, lyrics: string, note?: string) => {
+    if (event.pointerType === "mouse" || event.pointerType === "pen") {
+      hoverAnchor = { target, key, lyrics, note, x: event.clientX, y: event.clientY };
+    }
+    else hoverAnchor = undefined;
+    showTooltip(target, key, lyrics, note);
+  };
+  const hoverNote = (event: PointerEvent, target: Element, note: PitchNoteDTO) => {
+    if (updateHoverPosition(event, target, note)) return;
+    hoverTooltip(event, target, note, note.word_indices.map(index => analysis().words[index]?.text).filter(Boolean).join(" "), note.note);
+  };
+  const hoverWord = (event: PointerEvent, target: Element, word: { text: string }) => {
+    if (!updateHoverPosition(event, target, word)) hoverTooltip(event, target, word, word.text);
+  };
+  const scrollTooltip = () => {
+    const anchor = hoverAnchor;
+    if (!anchor || tooltip()?.key !== anchor.key || !anchor.target.isConnected) { dismissTooltip(); return; }
+    const hit = document.elementFromPoint(anchor.x, anchor.y);
+    if (!hit || !anchor.target.contains(hit)) { dismissTooltip(); return; }
+    showTooltip(anchor.target, anchor.key, anchor.lyrics, anchor.note);
+  };
   onMount(() => {
     const resize = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => setVisibleWidth(viewport?.clientWidth ?? 0));
     if (viewport) { setVisibleWidth(viewport.clientWidth); resize?.observe(viewport); }
-    window.addEventListener("scroll", dismissTooltip, true);
+    window.addEventListener("scroll", scrollTooltip, true);
     window.addEventListener("resize", dismissTooltip);
     const pointerEnded = (event: PointerEvent) => {
       if (event.pointerId !== activePointer) return;
@@ -267,7 +317,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       audio.removeAttribute("src");
       audio.load();
       document.removeEventListener("play", otherAudioStarted, true);
-      window.removeEventListener("scroll", dismissTooltip, true);
+      window.removeEventListener("scroll", scrollTooltip, true);
       window.removeEventListener("resize", dismissTooltip);
       window.removeEventListener("pointerup", pointerEnded);
       window.removeEventListener("pointercancel", pointerEnded);
@@ -280,12 +330,31 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     });
   });
   const track = createMemo(() => analysis().tracks.find(item => item.label === trackLabel()) ?? analysis().tracks[0]);
-  const notes = () => track()?.notes ?? [];
-  const pianoRangeNotes = createMemo(() => analysis().tracks.flatMap(item => item.notes));
+  const sourceNotes = () => track()?.notes ?? [];
+  const allSourceNotes = createMemo(() => analysis().tracks.flatMap(item => item.notes));
+  const shiftBounds = createMemo(() => {
+    const values = allSourceNotes().map(note => Math.round(note.midi));
+    return {
+      min: values.length ? Math.max(-MAX_REFERENCE_SHIFT, -Math.min(...values)) : -MAX_REFERENCE_SHIFT,
+      max: values.length ? Math.min(MAX_REFERENCE_SHIFT, 127 - Math.max(...values)) : MAX_REFERENCE_SHIFT,
+    };
+  });
+  const notes = createMemo(() => sourceNotes().map(note => shiftReferenceNote(note, referenceShift())));
+  const guideNotes = createMemo(() => {
+    if (!octaveGuides()) return [];
+    const guides: PitchNoteDTO[] = [];
+    for (const note of notes()) {
+      for (const offset of OCTAVE_OFFSETS) {
+        if (note.midi + offset >= 0 && note.midi + offset <= 127) guides.push(shiftReferenceNote(note, offset));
+      }
+    }
+    return guides;
+  });
+  const pianoRangeNotes = createMemo(() => allSourceNotes().map(note => shiftReferenceNote(note, referenceShift())));
   const rows = createMemo(() => {
-    const values = notes().map(note => Math.round(note.midi));
-    const low = values.length ? Math.min(...values) - 2 : 48;
-    const high = values.length ? Math.max(...values) + 2 : 72;
+    const values = sourceNotes().map(note => Math.round(note.midi));
+    const low = values.length ? Math.max(0, Math.min(...values) + shiftBounds().min - OCTAVE - AXIS_PADDING) : 48;
+    const high = values.length ? Math.min(127, Math.max(...values) + shiftBounds().max + OCTAVE + AXIS_PADDING) : 72;
     return Array.from({ length: high - low + 1 }, (_, index) => high - index);
   });
   const pitchHeight = () => rows().length * ROW_HEIGHT;
@@ -463,6 +532,24 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     seek(fromAudioTime(Math.max(0, Math.min(limit, seconds))), fromAudioTime(limit));
   };
   const skipMedia = (seconds: number) => seekMedia((audio?.currentTime ?? toAudioTime(position())) + seconds);
+  const resumeFollow = () => {
+    cancelSettling();
+    activePointer = null;
+    touching = false;
+    heldScrollKeys.clear();
+    userScroll = false;
+    legacyScroll = false;
+    userScrolled = false;
+    returnedToPlayhead = false;
+    scrollSettled = false;
+    setFollow(true);
+    setBrowsing(false);
+    if (!viewport?.isConnected || !audio || !Number.isFinite(audio.currentTime)) return;
+    const current = fromAudioTime(audio.currentTime);
+    setPosition(current);
+    moveViewport(AXIS_WIDTH + current * zoom() - viewport.clientWidth * 0.25);
+    viewport.focus();
+  };
   let rulerGesture: { x: number; y: number; scrollLeft: number; moved: boolean } | undefined;
   const seekRuler = (event: MouseEvent & { currentTarget: HTMLDivElement }) => {
     const gesture = rulerGesture;
@@ -537,9 +624,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     setSelectedWord(null);
   });
   createEffect(() => {
-    // Keep the typical vocal register visible without hiding high/low outliers.
-    // All rows remain reachable by vertical scroll, including on short phones.
-    const pitches = notes().map(note => note.midi).sort((left, right) => left - right);
+    // Center on the source register on track changes, not each display shift:
+    // transposition must move reference notes within the viewport.
+    const pitches = sourceNotes().map(note => note.midi).sort((left, right) => left - right);
     if (!viewport || pitches.length === 0) return;
     const middle = pitches[Math.floor(pitches.length / 2)];
     const rowCenter = 32 + (rows()[0] - middle + 0.5) * ROW_HEIGHT;
@@ -577,9 +664,16 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           <For each={otherReferences()}>{item => <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === item.label ? "secondary" : "outline"} aria-pressed={reference() === item.label} onClick={() => changeReference(item.label)}>{displayOutputLabel(item.label, props.job.options)}</Button>}</For>
         </div>
   );
+  const changeReferencePitch = (delta: number) => {
+    setReferenceShift(value => Math.max(shiftBounds().min, Math.min(shiftBounds().max, value + delta)));
+    setSelectedNote(null);
+    dismissTooltip();
+  };
   const TransportControls = () => (
-        <div class="pitch-skip-controls" role="group" aria-label="Timeline playback">
-          <Button type="button" variant="outline" aria-label="Back 5 seconds" onClick={() => skipMedia(-5)}>−5 s</Button>
+        <div class="pitch-transport" role="group" aria-label="Timeline playback">
+          <div class="pitch-skip-controls">
+          <Button type="button" variant="outline" aria-label="Lower reference pitch one semitone" title="Lower displayed reference pitch one semitone; backing audio is unchanged" disabled={referenceShift() <= shiftBounds().min} onClick={() => changeReferencePitch(-1)}>−1 ♫</Button>
+          <Button type="button" variant="outline" aria-label="Back 5 seconds" title="Back 5 seconds" onClick={() => skipMedia(-5)}>−5 s</Button>
           <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl()} onClick={togglePlayback}>
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
               <Show when={nativePaused()} fallback={<><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>}>
@@ -587,7 +681,15 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
               </Show>
             </svg>
           </Button>
-          <Button type="button" variant="outline" aria-label="Forward 5 seconds" onClick={() => skipMedia(5)}>+5 s</Button>
+          <Button type="button" variant="outline" aria-label="Forward 5 seconds" title="Forward 5 seconds" onClick={() => skipMedia(5)}>+5 s</Button>
+          <Button type="button" variant="outline" aria-label="Raise reference pitch one semitone" title="Raise displayed reference pitch one semitone; backing audio is unchanged" disabled={referenceShift() >= shiftBounds().max} onClick={() => changeReferencePitch(1)}>+1 ♫</Button>
+          </div>
+          <div class="pitch-transpose-controls">
+            <Button type="button" variant="outline" aria-label="Lower reference pitch one octave" title="Lower displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() - 12 < shiftBounds().min} onClick={() => changeReferencePitch(-12)}>−12 ♫</Button>
+            <output class="pitch-transpose-value" aria-live="polite">Reference pitch: {referenceShift() > 0 ? "+" : ""}{referenceShift()} semitones</output>
+            <Button type="button" variant="outline" aria-label="Raise reference pitch one octave" title="Raise displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() + 12 > shiftBounds().max} onClick={() => changeReferencePitch(12)}>+12 ♫</Button>
+          </div>
+          <p class="pitch-transpose-help">Reference display only; backing audio and downloads are unchanged.</p>
         </div>
   );
 
@@ -605,6 +707,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             <For each={analysis().tracks}>{item => <option value={item.label}>{item.label}</option>}</For>
           </select>
         </label>
+        <Button type="button" class="min-h-11" variant={octaveGuides() ? "secondary" : "outline"} aria-label="Octave guides" aria-pressed={octaveGuides()} title="Show reference guides one octave above and below" onClick={() => setOctaveGuides(value => !value)}>Octave guides</Button>
         <BackgroundControls />
         <div class="pitch-zoom" role="group" aria-label="Timeline zoom">
           <Button type="button" variant="outline" aria-label="Zoom out melody" disabled={zoom() <= MIN_ZOOM} onClick={() => changeZoom(zoom() - ZOOM_STEP)}>−</Button>
@@ -688,6 +791,18 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
               <svg class="pitch-svg" width={width()} height={pitchHeight()} style={{ left: `${AXIS_WIDTH}px` }} aria-label={`${track()?.label} detected notes`}>
                 <For each={rows()}>{(_, index) => <line x1="0" x2={width()} y1={index() * ROW_HEIGHT} y2={index() * ROW_HEIGHT} class="pitch-grid" />}</For>
                 <For each={ticks()}>{tick => <line x1={tick.seconds * zoom()} x2={tick.seconds * zoom()} y1="0" y2={pitchHeight()} class="pitch-grid" />}</For>
+                <g class="pitch-octave-guides" aria-hidden="true" pointer-events="none">
+                  <For each={guideNotes()}>{note => {
+                    const x = () => note.start_s * zoom();
+                    const y = () => (rows()[0] - Math.round(note.midi)) * ROW_HEIGHT + 2;
+                    const noteWidth = () => Math.max(2, (note.end_s - note.start_s) * zoom());
+                    return <g data-note={note.note}>
+                      <rect x={x()} y={y()} width={noteWidth()} height={ROW_HEIGHT - 4} rx="3" />
+                      <text x={x() + noteWidth() / 2} y={y() + 14} text-anchor="middle" font-size="12"
+                        textLength={Math.min(note.note.length * 7.2, Math.max(1, noteWidth() - 2))} lengthAdjust="spacingAndGlyphs">{note.note}</text>
+                    </g>;
+                  }}</For>
+                </g>
                 <For each={notes()}>{note => {
                   const x = () => note.start_s * zoom();
                   const y = () => (rows()[0] - Math.round(note.midi)) * ROW_HEIGHT + 2;
@@ -695,9 +810,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
                   return <g class="pitch-note" classList={{ "pitch-note-selected": note === selectedNote() || (selectedWord() !== null && note.word_indices.includes(selectedWord()!)) }} role="button" tabIndex={0}
                     aria-label={noteDescription(note)} data-note={note.note} data-start={note.start_s} data-end={note.end_s}
                     aria-describedby={tooltip()?.key === note ? tooltipId : undefined}
-                    onPointerEnter={event => showNoteTooltip(event.currentTarget, note)} onPointerLeave={dismissTooltip}
-                    onPointerMove={event => { if ((event.pointerType === "mouse" || event.pointerType === "pen") && tooltip()?.key !== note) showNoteTooltip(event.currentTarget, note); }}
-                    onFocus={event => showNoteTooltip(event.currentTarget, note)} onBlur={dismissTooltip}
+                    onPointerEnter={event => hoverNote(event, event.currentTarget, note)} onPointerLeave={dismissTooltip}
+                    onPointerMove={event => { if (event.pointerType === "mouse" || event.pointerType === "pen") hoverNote(event, event.currentTarget, note); }}
+                    onFocus={event => { hoverAnchor = undefined; showNoteTooltip(event.currentTarget, note); }} onBlur={dismissTooltip}
                     onClick={event => { selectNote(note); showNoteTooltip(event.currentTarget, note); }}
                     onKeyDown={event => {
                       if (event.key === "Escape") dismissTooltip();
@@ -727,9 +842,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
                     style={{ left: `${AXIS_WIDTH + word.start_s * zoom()}px`, width: `${Math.max(4, (word.end_s - word.start_s) * zoom())}px` }}
                     aria-label={`${word.origin === "asr-extra" ? "ASR-only extra: " : ""}${word.text}, approximate word timing`}
                     aria-describedby={tooltip()?.key === word ? tooltipId : undefined}
-                    onPointerEnter={event => showTooltip(event.currentTarget, word, word.text)} onPointerLeave={dismissTooltip}
-                    onPointerMove={event => { if ((event.pointerType === "mouse" || event.pointerType === "pen") && tooltip()?.key !== word) showTooltip(event.currentTarget, word, word.text); }}
-                    onFocus={event => showTooltip(event.currentTarget, word, word.text)} onBlur={dismissTooltip}
+                    onPointerEnter={event => hoverWord(event, event.currentTarget, word)} onPointerLeave={dismissTooltip}
+                    onPointerMove={event => { if (event.pointerType === "mouse" || event.pointerType === "pen") hoverWord(event, event.currentTarget, word); }}
+                    onFocus={event => { hoverAnchor = undefined; showTooltip(event.currentTarget, word, word.text); }} onBlur={dismissTooltip}
                     onKeyDown={event => { if (event.key === "Escape") dismissTooltip(); }}
                     onClick={event => {
                       setSelectedWord(index()); setSelectedNote(null); seek(firstLinked()?.start_s ?? word.start_s);
@@ -762,6 +877,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <p class="pitch-follow-status" role="status">
           <Show when={follow() && browsing()}>Auto-follow paused while browsing. Scroll back to the playhead to resume.</Show>
         </p>
+        <Show when={browsing() || !follow()}>
+          <Button type="button" class="min-h-11" variant="outline" aria-label="Resume timeline auto-follow" onClick={resumeFollow}>Resume auto-follow</Button>
+        </Show>
         <Show when={playbackError()}><p role="alert" class="text-sm text-destructive">{playbackError()}</p></Show>
         <Show when={referenceError()}><p role="alert" class="text-sm text-destructive">{referenceError()}</p></Show>
         <TimelineKaraoke job={props.job} position={position()} notes={notes()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey}

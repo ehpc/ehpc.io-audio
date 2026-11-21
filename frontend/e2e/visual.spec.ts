@@ -679,6 +679,41 @@ for (const viewport of [mobile, desktop]) {
     await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
     await expect(reader.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
     await expect(reader.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
+    // Keep the captured melody and selected word at the same paused source frame;
+    // octave guides are a visual-only reference layer over that real timeline.
+    await note.scrollIntoViewIfNeeded();
+    const guideToggle = view.getByRole('button', { name: 'Octave guides', exact: true });
+    await expect(guideToggle).toHaveAttribute('aria-pressed', 'false');
+    const beforeGuides = await player.evaluate(element => ({
+      time: element.currentTime, rate: element.playbackRate, source: element.currentSrc,
+      paused: element.paused, seeking: element.seeking,
+    }));
+    expect(beforeGuides.paused).toBe(true);
+    expect(beforeGuides.seeking).toBe(false);
+    await player.evaluate(element => {
+      const media = element as HTMLAudioElement & { __octaveVisualSeekEvents: number };
+      media.__octaveVisualSeekEvents = 0;
+      media.addEventListener('seeking', () => { media.__octaveVisualSeekEvents++; });
+    });
+    await guideToggle.click();
+    await expect(guideToggle).toHaveAttribute('aria-pressed', 'true');
+    const guides = view.locator('.pitch-octave-guides');
+    await expect(guides).toHaveAttribute('aria-hidden', 'true');
+    expect(await guides.locator('g[data-note]').count()).toBeGreaterThan(0);
+    await compare(view, info, `vocal-melody-${viewport.width}-octave-guides.png`, [player]);
+    const afterGuides = await player.evaluate(element => {
+      const media = element as HTMLAudioElement & { __octaveVisualSeekEvents: number };
+      return {
+        time: media.currentTime, rate: media.playbackRate, source: media.currentSrc,
+        paused: media.paused, seeking: media.seeking, seekEvents: media.__octaveVisualSeekEvents,
+      };
+    });
+    expect(afterGuides.time).toBe(beforeGuides.time);
+    expect(afterGuides.rate).toBe(beforeGuides.rate);
+    expect(afterGuides.source).toBe(beforeGuides.source);
+    expect(afterGuides.paused).toBe(true);
+    expect(afterGuides.seeking).toBe(false);
+    expect(afterGuides.seekEvents).toBe(0);
   });
 }
 

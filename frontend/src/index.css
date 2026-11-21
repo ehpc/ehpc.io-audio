@@ -392,6 +392,9 @@ html:has(.job-dock) { scroll-padding-bottom: calc(var(--job-dock-height, 0px) + 
 .pitch-note rect { fill: hsl(var(--primary)); fill-opacity: .66; stroke: hsl(var(--primary)); }
 .pitch-note text { fill: hsl(var(--background)); font-family: ui-monospace, monospace; font-weight: 700; pointer-events: none; }
 .pitch-note-selected rect { fill-opacity: 1; stroke: #fbbf24; stroke-width: 2; }
+.pitch-octave-guides { --octave-guide-color: #fff1a8; }
+.pitch-octave-guides rect { fill: var(--octave-guide-color); fill-opacity: .3; stroke: var(--octave-guide-color); stroke-opacity: .45; }
+.pitch-octave-guides text { fill: var(--octave-guide-color); fill-opacity: .55; font-family: ui-monospace, monospace; font-weight: 700; }
 .pitch-playhead { stroke: #f97316; stroke-width: 2; pointer-events: none; }
 .pitch-voice-trace { fill: none; stroke: #38bdf8; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .pitch-voice-legend::before { content: ''; display: inline-block; width: 1.25em; border-top: 3px solid #38bdf8; vertical-align: middle; margin-right: .4em; }
@@ -406,8 +409,11 @@ html:has(.job-dock) { scroll-padding-bottom: calc(var(--job-dock-height, 0px) + 
 .pitch-footer { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding-top: 12px; border-top: 1px solid hsl(var(--border)); }
 .pitch-footer audio { display: block; }
 .pitch-follow-status { min-height: 1.5em; font-size: 12px; color: hsl(var(--muted-foreground)); }
-.pitch-skip-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
-.pitch-skip-controls button { min-width: 64px; min-height: 44px; }
+.pitch-transport { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+.pitch-skip-controls, .pitch-transpose-controls { display: flex; justify-content: center; align-items: center; gap: 4px; max-width: 100%; }
+.pitch-skip-controls button, .pitch-transpose-controls button { min-width: 44px; min-height: 44px; padding-inline: 8px; }
+.pitch-transpose-value { min-width: 19ch; text-align: center; font-variant-numeric: tabular-nums; font-size: 12px; }
+.pitch-transpose-help { text-align: center; font-size: 12px; color: hsl(var(--muted-foreground)); }
 .timeline-karaoke-controls { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
 .timeline-karaoke-controls button { min-width: 44px; min-height: 44px; }
 .timeline-karaoke { width: fit-content; max-width: 100%; min-width: 0; box-sizing: border-box; margin-inline: auto; padding: 10px; overflow-x: hidden; font-size: calc(var(--karaoke-base-size, clamp(1rem, 2.5vw, 1.25rem)) * var(--karaoke-scale, 1)); border-radius: 6px; background: hsl(var(--muted)); }

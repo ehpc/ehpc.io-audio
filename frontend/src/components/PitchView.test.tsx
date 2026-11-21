@@ -56,6 +56,82 @@ it("reloads same-job pitch media and downloads when regenerated output revision 
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+it("transposes the displayed reference without changing its processed source or playback time", async () => {
+  const source = job();
+  const [currentJob, setCurrentJob] = createSignal(source);
+  render(() => <PitchView job={currentJob()} />);
+  const player = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
+  player.currentTime = 12;
+  const timeline = screen.getByRole("region", { name: "Scrollable vocal melody timeline" });
+  timeline.scrollTop = 160;
+  timeline.scrollLeft = 90;
+  const noteY = (name: RegExp) => Number(within(timeline).getByRole("button", { name }).querySelector("rect")!.getAttribute("y"));
+  const originalY = noteY(/^C#4, \+25 cents/);
+  await userEvent.click(screen.getByRole("button", { name: "Raise reference pitch one semitone" }));
+  expect(noteY(/^D4, \+25 cents/)).toBe(originalY - 24);
+  expect(timeline.scrollTop).toBe(160);
+  expect(timeline.scrollLeft).toBe(90);
+  expect(screen.getByText("Reference pitch: +1 semitones")).toBeInTheDocument();
+  expect(player.currentTime).toBe(12);
+  expect(source.pitch!.tracks[0].notes[0].note).toBe("C#4");
+  await userEvent.click(screen.getByRole("button", { name: "Raise reference pitch one octave" }));
+  expect(within(timeline).getByRole("button", { name: /^D5, \+25 cents/ })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Lower reference pitch one octave" }));
+  expect(within(timeline).getByRole("button", { name: /^D4, \+25 cents/ })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Lower reference pitch one semitone" }));
+  await userEvent.click(screen.getByRole("button", { name: "Lower reference pitch one semitone" }));
+  expect(noteY(/^C4, \+25 cents/)).toBe(originalY + 24);
+  setCurrentJob({ ...source, id: 8 });
+  expect(screen.getByText("Reference pitch: 0 semitones")).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Scrollable vocal melody timeline" })).getByRole("button", { name: /^C#4, \+25 cents/ })).toBeInTheDocument();
+});
+
+it("only offers octave shifts when a full twelve semitones fit", async () => {
+  render(() => <PitchView job={job()} />);
+  const upOctave = screen.getByRole("button", { name: "Raise reference pitch one octave" });
+  const downOctave = screen.getByRole("button", { name: "Lower reference pitch one octave" });
+  await userEvent.click(upOctave);
+  await userEvent.click(screen.getByRole("button", { name: "Raise reference pitch one semitone" }));
+  expect(screen.getByText("Reference pitch: +13 semitones")).toBeInTheDocument();
+  expect(upOctave).toBeDisabled();
+  await userEvent.click(downOctave);
+  expect(screen.getByText("Reference pitch: +1 semitones")).toBeInTheDocument();
+  await userEvent.click(downOctave);
+  await userEvent.click(screen.getByRole("button", { name: "Lower reference pitch one semitone" }));
+  await userEvent.click(screen.getByRole("button", { name: "Lower reference pitch one semitone" }));
+  expect(screen.getByText("Reference pitch: -13 semitones")).toBeInTheDocument();
+  expect(downOctave).toBeDisabled();
+  await userEvent.click(upOctave);
+  expect(screen.getByText("Reference pitch: -1 semitones")).toBeInTheDocument();
+});
+
+it("toggles both octave guides around the shifted reference without moving or altering the primary notes", async () => {
+  const source = job();
+  render(() => <PitchView job={source} />);
+  const viewport = screen.getByRole("region", { name: "Scrollable vocal melody timeline" });
+  const player = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
+  player.currentTime = 9;
+  viewport.scrollLeft = 100;
+  viewport.scrollTop = 140;
+  await userEvent.click(screen.getByRole("button", { name: "Raise reference pitch one semitone" }));
+  const primary = within(viewport).getByRole("button", { name: /^D4, \+25 cents/ });
+  const y = Number(primary.querySelector("rect")!.getAttribute("y"));
+  const toggle = screen.getByRole("button", { name: "Octave guides" });
+  expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(toggle);
+  const guides = viewport.querySelector(".pitch-octave-guides")!;
+  expect(guides.querySelector('[data-note="D3"] rect')).toHaveAttribute("y", String(y + 288));
+  expect(guides.querySelector('[data-note="D5"] rect')).toHaveAttribute("y", String(y - 288));
+  expect(Number(primary.querySelector("rect")!.getAttribute("y"))).toBe(y);
+  expect(viewport.scrollLeft).toBe(100);
+  expect(viewport.scrollTop).toBe(140);
+  expect(player.currentTime).toBe(9);
+  expect(source.pitch!.tracks[0].notes[0].note).toBe("C#4");
+  await userEvent.click(toggle);
+  expect(guides.querySelectorAll("rect")).toHaveLength(0);
+  expect(toggle).toHaveAttribute("aria-pressed", "false");
+});
+
 function scrollPlayer(source = job()) {
   const rendered = render(() => <PitchView job={source} />);
   const audio = source.has_original && source.manifest?.some(item => item.label === "vocals")
@@ -70,7 +146,7 @@ function scrollPlayer(source = job()) {
     clientWidth: { configurable: true, value: 300 },
     clientHeight: { configurable: true, value: 240 },
     scrollWidth: { configurable: true, value: 50_000 },
-    scrollHeight: { configurable: true, value: 1000 },
+    scrollHeight: { configurable: true, value: 4000 },
     onscrollend: { configurable: true, value: null },
   });
   fireEvent.input(screen.getByRole("slider", { name: "Melody zoom" }), { target: { value: "100" } });
@@ -896,11 +972,34 @@ it("shows immediate pitch-and-lyrics note tooltips and lyrics-only word tooltips
   expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 });
 
+it.each(["note", "word"])("keeps a hovered %s tooltip only while scrolling leaves the pointer on its target", kind => {
+  render(() => <PitchView job={job()} />);
+  const target = kind === "note"
+    ? document.querySelector<SVGGElement>(".pitch-note")!
+    : screen.getByRole("button", { name: /^world,/ });
+  const hit = vi.fn(() => target as Element | null);
+  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: hit });
+  try {
+    fireEvent(target, Object.assign(new Event("pointermove", { bubbles: true }), { pointerType: "mouse", clientX: 42, clientY: 52 }));
+    expect(screen.getByRole("tooltip")).toBeVisible();
+    fireEvent(target, Object.assign(new Event("pointermove", { bubbles: true }), { pointerType: "mouse", clientX: 47, clientY: 57 }));
+    fireEvent.scroll(window);
+    expect(hit).toHaveBeenCalledWith(47, 57);
+    expect(screen.getByRole("tooltip")).toBeVisible();
+    hit.mockReturnValue(null);
+    fireEvent.scroll(window);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  } finally {
+    Reflect.deleteProperty(document, "elementFromPoint");
+  }
+});
+
 it.each(["note", "word"])("restores a %s tooltip when scrolling leaves the pointer within its target", kind => {
   render(() => <PitchView job={job()} />);
   const target = kind === "note"
     ? document.querySelector<SVGGElement>(".pitch-note")!
     : screen.getByRole("button", { name: /^world,/ });
+  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => null });
   fireEvent.pointerEnter(target);
   fireEvent.scroll(window);
   expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
@@ -916,6 +1015,7 @@ it.each(["note", "word"])("restores a %s tooltip when scrolling leaves the point
   expect(screen.getByRole("tooltip")).toBeVisible();
   expect(screen.getByRole("tooltip")).toHaveTextContent("world");
   if (kind === "note") expect(screen.getByRole("tooltip")).toHaveTextContent("C#4");
+  Reflect.deleteProperty(document, "elementFromPoint");
 });
 it("does not invent lyrics for an unlinked note", () => {
   render(() => <PitchView job={job()} />);
@@ -981,6 +1081,35 @@ it("does not confuse automatic scrolling with browsing, and resumes only after a
   expect(player.browsing()).toBe(false);
   player.time(28);
   expect(player.viewport.scrollLeft).toBeGreaterThan(2300);
+});
+
+it.each([true, false])("resumes following at the native original clock without seeking (paused=%s)", paused => {
+  const player = scrollPlayer({ ...job(), has_pitch_vocals: false, manifest: [] });
+  player.state.paused = paused;
+  player.audio.currentTime = 12.5;
+  player.viewport.scrollTop = 120;
+  player.wheel(3000, 120);
+  expect(player.browsing()).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Resume timeline auto-follow" }));
+  expect(player.audio.currentTime).toBe(12.5);
+  expect(player.audio.paused).toBe(paused);
+  expect(player.viewport.scrollLeft).toBe(54 + 10 * 100 - 300 * 0.25);
+  expect(player.viewport.scrollTop).toBe(120);
+  expect(player.viewport).toHaveFocus();
+  expect(player.browsing()).toBe(false);
+  player.end();
+  player.wheel(3000, 120);
+  expect(player.browsing()).toBe(true);
+});
+
+it("offers resume when follow is switched off", () => {
+  const player = scrollPlayer();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Follow playback" }));
+  player.audio.currentTime = 8;
+  fireEvent.click(screen.getByRole("button", { name: "Resume timeline auto-follow" }));
+  expect(screen.getByRole("checkbox", { name: "Follow playback" })).toBeChecked();
+  expect(player.audio.currentTime).toBe(8);
+  expect(screen.queryByRole("button", { name: "Resume timeline auto-follow" })).not.toBeInTheDocument();
 });
 
 it.each(["no motion", "pinch", "prevented"])("does not strand following after %s wheel input", kind => {
