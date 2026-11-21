@@ -1,0 +1,97 @@
+{
+  "pitch": {
+    "source_duration_s": 141.5456875,
+    "duration_s": 141.5456875,
+    "tracks": [
+      {
+        "label": "vocals",
+        "notes": [
+          { "start_s": 2.0, "end_s": 2.5, "midi": 60, "frequency_hz": 261.6256, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 2.5, "end_s": 3.0, "midi": 62, "frequency_hz": 293.6648, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 3.8, "end_s": 4.0, "midi": 64, "frequency_hz": 329.6276, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 4.0, "end_s": 4.4, "midi": 65, "frequency_hz": 349.2282, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 5.2, "end_s": 5.7, "midi": 67, "frequency_hz": 391.9954, "confidence": 0.98, "word_indices": [0] },
+          { "start_s": 5.8, "end_s": 6.2, "midi": 69, "frequency_hz": 440.0, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 6.6, "end_s": 7.1, "midi": 71, "frequency_hz": 493.8833, "confidence": 0.98, "word_indices": [1] },
+          { "start_s": 7.2, "end_s": 7.8, "midi": 72, "frequency_hz": 523.2511, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 7.8, "end_s": 8.0, "midi": 74, "frequency_hz": 587.3295, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 8.0, "end_s": 8.4, "midi": 76, "frequency_hz": 659.2551, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 9.8, "end_s": 10.0, "midi": 77, "frequency_hz": 698.4565, "confidence": 0.98, "word_indices": [] },
+          { "start_s": 10.1, "end_s": 10.5, "midi": 79, "frequency_hz": 783.9909, "confidence": 0.98, "word_indices": [2] }
+        ]
+      },
+      {
+        "label": "backing",
+        "notes": [
+          { "start_s": 2.2, "end_s": 3.5, "midi": 48, "frequency_hz": 130.8128, "confidence": 0.97, "word_indices": [] },
+          { "start_s": 7.8, "end_s": 8.2, "midi": 55, "frequency_hz": 195.9977, "confidence": 0.97, "word_indices": [] },
+          { "start_s": 10.0, "end_s": 10.4, "midi": 59, "frequency_hz": 246.9417, "confidence": 0.97, "word_indices": [] }
+        ]
+      }
+    ],
+    "words": [
+      { "start_s": 5.2, "end_s": 5.7, "text": "go", "probability": 0.97, "alignment_score": 0.96, "origin": "reference-aligned" },
+      { "start_s": 6.6, "end_s": 7.1, "text": "stop", "probability": 0.95, "alignment_score": 0.94, "origin": "reference-aligned" },
+      { "start_s": 10.1, "end_s": 10.5, "text": "Hey", "probability": 0.92, "alignment_score": 0.91, "origin": "asr-extra" }
+    ],
+    "pitch_shift_semitones": 0.0,
+    "tempo_percent": 100.0,
+    "timestamp_reference": "output",
+    "pitch_reference": "output",
+    "model": "torchcrepe/full",
+    "word_alignment": "line-first-fixture",
+    "version": 1
+  },
+  "transcript": {
+    "segments": [
+      { "start_s": 5.2, "end_s": 7.1, "text": "go stop" }
+    ],
+    "language": "en",
+    "timestamp_reference": "original",
+    "sections": [],
+    "structure_model": null,
+    "words": [
+      { "start_s": 5.2, "end_s": 5.7, "text": "go", "probability": 0.97, "alignment_score": 0.96, "origin": "reference-aligned" },
+      { "start_s": 6.6, "end_s": 7.1, "text": "stop", "probability": 0.95, "alignment_score": 0.94, "origin": "reference-aligned" },
+      { "start_s": 10.1, "end_s": 10.5, "text": "Hey", "probability": 0.92, "alignment_score": 0.91, "origin": "asr-extra" }
+    ],
+    "reference": {
+      "status": "partial",
+      "reason": "Private deterministic E2E source, independent of external lookup.",
+      "provider": "LRCLIB",
+      "source_url": null,
+      "record_id": 424242,
+      "artist": "Test fixture",
+      "title": "Line-first pitch fallback",
+      "album": null,
+      "duration_s": 141.5456875,
+      "agreement": 0.9,
+      "fetched_at": "2026-11-20T00:00:00+00:00",
+      "cached": true,
+      "alignment_model": "fixture-alignment",
+      "lines": [
+        { "text": "Quiet river sings", "status": "unconfirmed", "support": 0.0, "start_s": null, "end_s": null, "reason": "Line onset is validated from synced source; no word timing is available.", "unconfirmed_words": ["Quiet", "river", "sings"], "recognized_variant": null, "group": 0, "provider_start_s": 2.0, "provider_end_s": 4.0 },
+        { "text": "go go don't stop again", "status": "unconfirmed", "support": 0.0, "start_s": null, "end_s": null, "reason": "Only two measured words anchor this reference line.", "unconfirmed_words": ["go", "don't", "again"], "recognized_variant": null, "group": 0, "provider_start_s": 4.0, "provider_end_s": 8.0 },
+        { "text": "Next cue", "status": "unconfirmed", "support": 0.0, "start_s": null, "end_s": null, "reason": "Line onset is validated from synced source; no word timing is available.", "unconfirmed_words": ["Next", "cue"], "recognized_variant": null, "group": 0, "provider_start_s": 8.0, "provider_end_s": 10.0 }
+      ],
+      "original_segments": [],
+      "original_words": [],
+      "original_untimed": [],
+      "corrections": [],
+      "provider_timing_status": "validated",
+      "provider_timing_reason": "Fixture supplies non-overlapping, duration-bounded source cues.",
+      "synced_lyrics_sha256": null
+    },
+    "asr_model": "fixture-asr",
+    "word_alignment": "fixture-alignment",
+    "recognition_chunks": [],
+    "untimed": [],
+    "asr_extras": [
+      { "start_s": 10.0, "end_s": 11.0, "text": "Hey" }
+    ],
+    "canonical_word_positions": [
+      { "word_index": 0, "reference_line_index": 1, "reference_token_index": 1 },
+      { "word_index": 1, "reference_line_index": 1, "reference_token_index": 3 }
+    ]
+  }
+}

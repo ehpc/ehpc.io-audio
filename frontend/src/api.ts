@@ -139,6 +139,30 @@ export interface PitchAnalysisDTO {
   words: AlignedWordDTO[];
 }
 
+export interface LyricPitchTrackDTO {
+  track_index: number;
+  note_indices: number[];
+}
+
+export interface LyricPitchWordDTO {
+  token_index: number;
+  start_s: number;
+  end_s: number;
+  origin: "measured" | "interpolated";
+  tracks: LyricPitchTrackDTO[];
+}
+
+export interface LyricPitchLineDTO {
+  source_kind: "canonical" | "asr-extra" | "asr-word" | "segment" | "untimed";
+  source_index: number;
+  canonical_line_index: number | null;
+  start_s: number | null;
+  end_s: number | null;
+  bounds_source: "provider-synced" | "acoustic" | "unknown";
+  words: LyricPitchWordDTO[];
+  tracks: LyricPitchTrackDTO[];
+}
+
 export interface ReferenceCorrectionDTO {
   word_index: number;
   original: string;
@@ -224,6 +248,8 @@ export interface JobDTO {
   /** Absent in historical API payloads predating vocal pitch analysis. */
   pitch?: PitchAnalysisDTO | null;
   pitched_lyrics?: PitchedLyricsTrackDTO[] | null;
+  /** Derived associations for ordered presentation lines, or null when unavailable. */
+  lyric_pitch_lines: LyricPitchLineDTO[] | null;
   /** Actual persisted full-vocal reference availability. */
   has_pitch_vocals: boolean;
   error_message: string | null;

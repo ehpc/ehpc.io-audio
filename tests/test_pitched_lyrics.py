@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import db, queue
+from separator.lyric_pitch import lyric_pitch_lines
 from separator.lyrics import (
     CanonicalWordPosition,
     Transcript,
@@ -159,11 +160,18 @@ def test_canonical_order_disputed_repeats_and_unconfirmed_lines_are_not_guessed(
         < text.index("glow  glow  stars")
         < text.index("Untimed  ending")
     )
-    assert "        ?     ?     D4\n[??:??] glow  glow  stars\n" in text
+    projected = lyric_pitch_lines(transcript, analysis)[1]
+    assert [word.origin for word in projected.words] == [
+        "interpolated",
+        "interpolated",
+        "measured",
+    ]
+    assert projected.words[-1].tracks[0].note_indices == [1]
+    assert "~C4" in text
     assert text.count("[??:??]") == 3
     assert "Reference line" not in text and "UNCONFIRMED" not in text
     assert "variant" not in text
-    assert "C4" not in text
+    assert projected.words[0].tracks[0].note_indices == [0]
 
 
 def test_incomplete_repeated_word_alignment_is_ambiguous_even_without_metadata() -> (
@@ -185,9 +193,14 @@ def test_incomplete_repeated_word_alignment_is_ambiguous_even_without_metadata()
         100,
         [TranscriptWord(1, 2, "go"), TranscriptWord(3, 4, "home")],
     )
-    assert "        ?   ?   D4\n[00:01] go  go  home\n" in pitched_lyrics_text(
-        transcript, analysis, analysis.tracks[0]
-    )
+    line = lyric_pitch_lines(transcript, analysis)[0]
+    assert [word.origin for word in line.words] == [
+        "interpolated",
+        "interpolated",
+        "measured",
+    ]
+    assert line.words[-1].tracks[0].note_indices == [1]
+    assert "~C4" in pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
 
 
 def test_unicode_column_padding_preserves_combining_cyrillic_and_wide_cells() -> None:
@@ -251,11 +264,18 @@ def test_reference_positions_survive_repeated_tokens_and_extras_sort() -> None:
         transcript.words,
     )
     text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert "        ?     C4    D4\n[??:??] glow  glow  stars\n" in text
-    assert "B3" not in text
+    projected = lyric_pitch_lines(transcript, analysis)[0]
+    assert [word.origin for word in projected.words] == [
+        "interpolated",
+        "measured",
+        "measured",
+    ]
+    assert [word.tracks[0].note_indices for word in projected.words] == [[0], [1], [2]]
+    assert "~B3" in text
     legacy = Transcript(words=transcript.words, reference=transcript.reference)
     legacy_text = pitched_lyrics_text(legacy, analysis, analysis.tracks[0])
-    assert "        ?     ?     ?\n[??:??] glow  glow  stars\n" in legacy_text
+    assert lyric_pitch_lines(legacy, analysis)[0].words == []
+    assert "Line pitches (approx.):" in legacy_text
 
 
 def test_canonical_ids_use_exact_tokenization_for_decomposed_word_cells() -> None:
@@ -352,19 +372,7 @@ def test_provider_onset_and_partial_acoustic_word_reach_txt_and_odt() -> None:
     assert any("??[00:05]silentsky" in line for line in visible)
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [
-        {"text": "other"},
-        {"start_s": 3.9},
-        {"end_s": 4.7},
-        {"origin": "asr"},
-        {"alignment_score": 0.5},
-    ],
-)
-def test_canonical_pitch_requires_matching_source_word_identity_and_both_clocks(
-    changed: dict,
-) -> None:
+def test_stale_pitch_word_link_cannot_override_measured_overlap() -> None:
     source_word = TranscriptWord(5, 6, "stars", origin="reference-aligned")
     transcript = Transcript(
         words=[source_word],
@@ -372,15 +380,43 @@ def test_canonical_pitch_requires_matching_source_word_identity_and_both_clocks(
         canonical_word_positions=[CanonicalWordPosition(0, 0, 0)],
     )
     analysis = transform_analysis(
-        PitchAnalysis(10, 10, [PitchTrack("vocals", [PitchNote(5, 6, 60, 261, 0.9)])]),
+        PitchAnalysis(
+            10,
+            10,
+            [
+                PitchTrack(
+                    "vocals",
+                    [PitchNote(1, 2, 60, 261, 0.9), PitchNote(5, 6, 62, 294, 0.9)],
+                )
+            ],
+        ),
         0,
         125,
         transcript.words,
     )
-    mismatched = replace(analysis, words=[replace(analysis.words[0], **changed)])
-    text = pitched_lyrics_text(transcript, mismatched, mismatched.tracks[0])
-    assert "?\n[00:04] stars\n" in text
-    assert "C4" not in text
+    notes = analysis.tracks[0].notes
+    stale = replace(
+        analysis,
+        words=[replace(analysis.words[0], text="other")],
+        tracks=[
+            PitchTrack(
+                "vocals",
+                [
+                    replace(notes[0], word_indices=[0]),
+                    replace(notes[1], word_indices=[]),
+                ],
+            )
+        ],
+    )
+    original = pitch_to_json(stale)
+    line = lyric_pitch_lines(transcript, stale)[0]
+    assert (line.words[0].start_s, line.words[0].end_s) == (4, 4.8)
+    assert line.words[0].origin == "measured"
+    assert line.words[0].tracks[0].note_indices == [1]
+    text = pitched_lyrics_text(transcript, stale, stale.tracks[0])
+    assert "D4" in text and "C4" not in text
+    assert transcript.words == [source_word]
+    assert pitch_to_json(stale) == original
 
 
 @pytest.mark.parametrize(

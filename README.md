@@ -628,6 +628,12 @@ long lines together, **between whole-word cells**, at 78 columns, preserving
 each pitch/lyric pair. Continuation pairs retain the same left indent.
 An indivisible word/melisma wider than that remains intact: the browser/TXT
 can scroll, and ODT uses a wider page rather than shrinking the font.
+When measured word alignment is incomplete, bounded gaps can receive estimated
+word-to-pitch associations, marked `~`; measured word anchors are retained.
+If only line bounds are available, the detected pitches appear as an approximate
+line-level sequence rather than being assigned to individual words. The same
+derived formatting is available when older saved results are read, without
+rerunning inference or rewriting the stored job.
 The browser uses a horizontally scrolling monospace block on small screens.
 Accented Latin, Cyrillic, combining marks and East Asian wide/full-width lyric
 characters use shared display-column padding. The server also supplies the
@@ -843,12 +849,14 @@ The karaoke reader centers the current lyric line and a dimmed next timed line.
 Natural progression slides the next line upward; seeks jump directly, and
 reduced-motion preferences suppress animation. Known words fill progressively
 using published timings and the same output clock; untimed words remain neutral.
-Pitch labels are hidden initially; **Pitches** toggles unambiguously linked notes
-from the selected vocal track above each word in both inline and fullscreen
-readers. The inline reader fits its content within the available width and grows
-for wrapped word groups and long note sequences. No syllable timings or note
-links are invented. Pitch-only or ASR-gap words can appear as
-short individual cues.
+Pitch labels are hidden initially; **Pitches** toggles the selected vocal track's
+word-associated notes in both inline and fullscreen readers. A `~` marks an
+estimated word association; notes supported only by line bounds appear above the
+whole line instead of individual words. Estimated word intervals do not animate
+as measured word highlights. The inline reader fits its content within the
+available width and grows for wrapped groups and long note sequences. No
+syllable timings are invented. Pitch-only or ASR-gap words can appear as short
+individual cues.
 
 For an exact-metadata LRCLIB match with validated, ordered line cues, the reader
 and lyric exports use the provider-synced line onsets; these are estimates, not

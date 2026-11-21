@@ -235,6 +235,7 @@ const App: Component = () => {
         transcript: null,
         pitch: null,
         pitched_lyrics: null,
+        lyric_pitch_lines: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,

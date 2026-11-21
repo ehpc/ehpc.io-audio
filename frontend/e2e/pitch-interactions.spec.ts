@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator } from '@playwright/test';
 import { test } from './auth-fixture';
-import { jobLabel, type JobDTO, type SubmitResult } from '../src/api';
+import { jobLabel, type JobDTO, type PitchAnalysisDTO, type SubmitResult } from '../src/api';
 import { inspectAudio } from './audio';
 
 interface StemSignalFixture {
@@ -58,7 +58,12 @@ if value.get('complete_outputs',False):
   backgrounds={'song':StemResult(source,0),**backgrounds}
  assert set(backgrounds)==set(job.options.result_labels)
  manifest=_persist_results(job,backgrounds)
- db.mark_done(job.id,manifest,processed.transcript,processed.pitch_json)
+ persisted_transcript=processed.transcript
+ persisted_pitch=processed.pitch_json
+ if value.get('persist_fixture_analysis',False):
+  persisted_transcript=transcript_from_json(json.dumps(value['transcript']))
+  persisted_pitch=pitch_to_json(pitch_from_json(json.dumps(value['pitch'])))
+ db.mark_done(job.id,manifest,persisted_transcript,persisted_pitch)
 else:
  # Historical partial jobs intentionally retain stored analysis and no public
  # vocal output; loading them must not need producer provenance or credentials.
@@ -70,6 +75,22 @@ else:
   backgrounds[label]=StemResult(wav,0)
  manifest=_persist_results(job,backgrounds)
  db.mark_done(job.id,manifest,None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
+`;
+const cleanupLinePitchFixtureJob = String.raw`
+import os,sys
+from pathlib import Path
+from backend import config,db
+assert config.QUEUE_CONCURRENCY == 0
+assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
+job_id=int(sys.argv[1])
+owner=sys.argv[2]
+job=db.get_job(job_id)
+assert job is not None and job.session_id == owner and job.active_stage_key is None
+if job.status == 'queued':
+ assert job.modal_call_id is None
+ db.mark_done(job.id, [], None)
+else:
+ assert job.status == 'done'
 `;
 
 const corruptPrivateReference = String.raw`
@@ -833,6 +854,339 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
           boundary: 'Known synthetic stems replace neural inference only; real form/HTTP/DSP/native-media/download consumers.',
         })), contentType: 'application/json',
       });
+    });
+  });
+}
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  test.describe(`line-first pitch fallback ${viewport.width}px`, () => {
+    test.use({ viewport, isMobile: viewport.width <= 700, hasTouch: true });
+    test('keeps untimed canonical lines and estimated missing words tied to actual notes', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      expect(process.env.QUEUE_CONCURRENCY).toBe('0');
+      let jobId: number | undefined;
+      let ownerId: string | undefined;
+      const externalRequests: string[] = [];
+      const localOrigin = new URL(process.env.E2E_BASE_URL!).origin;
+      page.on('request', request => {
+        const url = new URL(request.url());
+        if (['http:', 'https:'].includes(url.protocol) && url.origin !== localOrigin) externalRequests.push(url.href);
+      });
+      const activate = async (control: Locator) => viewport.width <= 700 ? control.tap() : control.click();
+      let failed = false;
+      try {
+        const sourcePath = resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg');
+        const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/line-pitch-fallback.json'), 'utf8'));
+        await page.goto('/');
+        const identityResponse = await page.request.get('/api/auth/me');
+        expect(identityResponse.ok()).toBeTruthy();
+        const identity: unknown = await identityResponse.json();
+        if (typeof identity !== 'object' || identity === null || !('id' in identity) || typeof identity.id !== 'string') {
+          throw new Error('Authenticated fixture identity has no string id');
+        }
+        ownerId = identity.id;
+        await activate(page.getByRole('button', { name: 'Upload audio', exact: true }));
+        const analyzed = page.waitForResponse(response =>
+          response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
+        await page.getByLabel('Audio file', { exact: true }).setInputFiles(sourcePath);
+        expect((await analyzed).status()).toBe(200);
+        if (viewport.width <= 700) await activate(page.getByRole('tab', { name: 'Adjust', exact: true }));
+        await page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' }).fill('0');
+        await page.getByRole('spinbutton', { name: 'Tempo (% of original)' }).fill('100');
+        if (viewport.width <= 700) await activate(page.getByRole('tab', { name: 'Outputs', exact: true }));
+        await page.getByRole('checkbox', { name: 'Karaoke with pitches', exact: true }).check();
+        const submitted = page.waitForResponse(response =>
+          response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
+        await activate(page.getByRole('button', { name: 'Process audio', exact: true }));
+        const response = await submitted;
+        expect(response.status()).toBe(200);
+        const created = await response.json() as SubmitResult;
+        jobId = created.id;
+        const queuedResponse = await page.request.get(`/api/jobs/${jobId}`);
+        expect(queuedResponse.ok()).toBe(true);
+        const queued = await queuedResponse.json() as JobDTO;
+        expect(queued.status).toBe('queued');
+        expect(queued.options).toMatchObject({
+          detect_pitch: true, extract_lyrics: true, extract_pitched_lyrics: true,
+          pitch_semitones: 0, tempo_percent: 100,
+        });
+        execFileSync('uv', ['run', 'python', '-c', seedTimelineJob, String(jobId)], {
+          cwd: process.env.E2E_REPO_ROOT!,
+          input: JSON.stringify({ ...fixture, complete_outputs: true, persist_fixture_analysis: true, stem_signals: completeStemSignals }),
+          env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+        });
+        const completedResponse = await page.request.get(`/api/jobs/${jobId}`);
+        expect(completedResponse.ok()).toBe(true);
+        const completed = await completedResponse.json() as JobDTO;
+        expect(completed.status).toBe('done');
+        expect(completed.lyric_pitch_lines).not.toBeNull();
+        const associations = completed.lyric_pitch_lines!;
+        const line = (sourceIndex: number) => associations.find(item =>
+          item.source_kind === 'canonical' && item.source_index === sourceIndex)!;
+        const byTrack = (item: (typeof associations)[number], trackIndex: number) =>
+          item.tracks.find(track => track.track_index === trackIndex)!.note_indices;
+
+        const noWordLine = line(0);
+        expect(noWordLine).toMatchObject({
+          canonical_line_index: 0, start_s: 2, end_s: 4, bounds_source: 'provider-synced', words: [],
+        });
+        expect(byTrack(noWordLine, 0)).toEqual([0, 1, 2]);
+        expect(byTrack(noWordLine, 1)).toEqual([0]);
+
+        const partialLine = line(1);
+        expect(partialLine).toMatchObject({
+          canonical_line_index: 1, start_s: 4, end_s: 8, bounds_source: 'provider-synced',
+        });
+        expect(partialLine.words.map(word => [word.token_index, word.origin])).toEqual([
+          [0, 'interpolated'], [1, 'measured'], [2, 'interpolated'], [3, 'measured'], [4, 'interpolated'],
+        ]);
+        expect(partialLine.words.map(word => word.tracks[0].note_indices)).toEqual([[3], [4], [5], [6], [7, 8]]);
+        expect(partialLine.words.map(word => word.tracks[1].note_indices)).toEqual([[], [], [], [], [1]]);
+        expect(partialLine.words[0].start_s).toBe(4);
+        expect(partialLine.words[0].end_s).toBeCloseTo(5.2);
+        expect(partialLine.words[1].start_s).toBe(5.2);
+        expect(partialLine.words[1].end_s).toBeCloseTo(5.7);
+        expect(partialLine.words[2].start_s).toBeCloseTo(5.7);
+        expect(partialLine.words[2].end_s).toBeCloseTo(6.6);
+        expect(partialLine.words[3].start_s).toBe(6.6);
+        expect(partialLine.words[3].end_s).toBeCloseTo(7.1);
+        expect(partialLine.words[4].start_s).toBeCloseTo(7.1);
+        expect(partialLine.words[4].end_s).toBe(8);
+        expect(byTrack(partialLine, 0)).toEqual([]);
+        expect(byTrack(partialLine, 1)).toEqual([]);
+
+        const nextLine = line(2);
+        expect(nextLine.words).toEqual([]);
+        expect(byTrack(nextLine, 0)).toEqual([9, 10]);
+        expect(byTrack(nextLine, 1)).toEqual([1]);
+        const extra = associations.find(item => item.source_kind === 'asr-extra' && item.source_index === 0)!;
+        expect(extra.words.map(word => [word.token_index, word.origin, word.tracks[0].note_indices])).toEqual([[0, 'measured', [11]]]);
+        expect(extra.tracks[0].note_indices).toEqual([]);
+        expect(byTrack(nextLine, 0)).not.toContain(11);
+
+        const rawPitchResponse = await page.request.get(`/api/jobs/${jobId}/pitch`);
+        expect(rawPitchResponse.ok()).toBe(true);
+        const rawPitch = await rawPitchResponse.json() as PitchAnalysisDTO;
+        expect(rawPitch.tracks.map(track => track.label)).toEqual(['vocals', 'backing']);
+        const storedWords = structuredClone(completed.transcript!.words);
+        const storedWordIndices = rawPitch.tracks.map(track => track.notes.map(note => note.word_indices));
+
+        await page.reload();
+        if (viewport.width <= 700) await activate(page.getByRole('button', { name: /^Library/ }));
+        const history = page.getByRole(viewport.width <= 700 ? 'dialog' : 'complementary', { name: 'Library', exact: true })
+          .getByRole('region', { name: 'History', exact: true });
+        const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), completed.created_at);
+        const historyCard = history.locator('.rounded-lg')
+          .filter({ has: page.getByRole('button', { name: jobLabel(completed), exact: true }) })
+          .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
+        if (viewport.width <= 700) await activate(page.getByRole('button', { name: 'Close library', exact: true }));
+        await activate(page.getByRole('button', { name: 'Start another job', exact: true }));
+        if (viewport.width <= 700) await activate(page.getByRole('button', { name: /^Library/ }));
+        await activate(historyCard.getByRole('button', { name: jobLabel(completed), exact: true }));
+        const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
+        await expect(view).toBeVisible();
+        const player = view.locator('audio:not([hidden])');
+        await expect(player).toHaveCount(1);
+        await player.evaluate(audio => { audio.preload = 'auto'; audio.load(); });
+        await expect.poll(() => player.evaluate(audio => Number.isFinite(audio.duration) && audio.seekable.length > 0)).toBe(true);
+        const sourceUrl = await player.evaluate(audio => audio.currentSrc);
+        expect(new URL(sourceUrl).pathname).toBe(`/api/jobs/${jobId}/original`);
+        expect((await page.request.get(sourceUrl, { headers: { Range: 'bytes=0-255' } })).status()).toBe(206);
+        const seekOutput = async (time: number) => {
+          await player.evaluate((audio, target) => { audio.currentTime = target; }, time);
+          await expect.poll(() => player.evaluate((audio, target) =>
+            !audio.seeking && Math.abs(audio.currentTime - target) < 0.05, time)).toBe(true);
+        };
+        await seekOutput(3);
+        const reader = view.getByLabel('Current karaoke line');
+        const current = reader.getByRole('group', { name: 'Current lyrics' });
+        const next = reader.getByRole('group', { name: 'Next lyrics' });
+        await expect(current).toContainText('Quiet river sings');
+        await expect(current.locator('.timeline-karaoke-word[aria-current="true"]')).toHaveCount(0);
+        await expect(next).toContainText(`go go don't stop again`);
+        const pitches = view.getByRole('button', { name: 'Pitches', exact: true });
+        await expect(pitches).toHaveAttribute('aria-pressed', 'false');
+        await expect(reader.locator('.timeline-karaoke-line-pitches, .timeline-karaoke-pitches')).toHaveCount(0);
+        await player.evaluate(audio => {
+          const media = audio as HTMLAudioElement & { __linePitchSeekEvents: number };
+          media.__linePitchSeekEvents = 0;
+          media.addEventListener('seeking', () => { media.__linePitchSeekEvents++; });
+        });
+        await activate(pitches);
+        const linePitch = (name: string) => current.getByRole('group', { name: `Estimated pitches for this line: ${name}`, exact: true });
+        const wordPitch = (kind: 'Estimated pitches' | 'Pitches', word: string, notes: string) =>
+          next.getByRole('group', { name: `${kind} for ${word}: ${notes}`, exact: true });
+        await expect(linePitch('C4 D4 E4')).toBeVisible();
+        await expect(current.locator('.timeline-karaoke-pitches')).toHaveCount(0);
+        await expect(wordPitch('Estimated pitches', 'go', 'F4')).toBeVisible();
+        await expect(wordPitch('Pitches', 'go', 'G4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', `don't`, 'A4')).toBeVisible();
+        await expect(wordPitch('Pitches', 'stop', 'B4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', 'again', 'C5 D5')).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+        const vocalStem = view.getByLabel('Pitch vocal stem');
+        await vocalStem.selectOption('backing');
+        await expect(linePitch('C3')).toBeVisible();
+        await expect(next.getByRole('group', { name: 'Estimated pitches for again: G3', exact: true })).toBeVisible();
+        await vocalStem.selectOption('vocals');
+        await expect(linePitch('C4 D4 E4')).toBeVisible();
+
+        await view.getByRole('button', { name: 'Raise reference pitch one semitone', exact: true }).click();
+        await expect(linePitch('C#4 D#4 F4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', 'go', 'F#4')).toBeVisible();
+        await expect(wordPitch('Pitches', 'go', 'G#4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', `don't`, 'A#4')).toBeVisible();
+        await expect(wordPitch('Pitches', 'stop', 'C5')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', 'again', 'C#5 D#5')).toBeVisible();
+        const lower = view.getByRole('button', { name: 'Lower reference pitch one semitone', exact: true });
+        await lower.click();
+        await lower.click();
+        await expect(linePitch('B3 C#4 D#4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', 'go', 'E4')).toBeVisible();
+        await expect(wordPitch('Pitches', 'go', 'F#4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', `don't`, 'G#4')).toBeVisible();
+        await expect(wordPitch('Pitches', 'stop', 'A#4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', 'again', 'B4 C#5')).toBeVisible();
+        await view.getByRole('button', { name: 'Raise reference pitch one semitone', exact: true }).click();
+        await expect(linePitch('C4 D4 E4')).toBeVisible();
+        await expect(wordPitch('Estimated pitches', 'again', 'C5 D5')).toBeVisible();
+        const unchangedWhilePaused = await player.evaluate(audio => {
+          const media = audio as HTMLAudioElement & { __linePitchSeekEvents: number };
+          return { time: audio.currentTime, rate: audio.playbackRate, source: audio.currentSrc, paused: audio.paused, seeking: audio.seeking, seekEvents: media.__linePitchSeekEvents };
+        });
+        expect(unchangedWhilePaused).toMatchObject({ time: 3, rate: 1, source: sourceUrl, paused: true, seeking: false, seekEvents: 0 });
+        await activate(pitches);
+        await expect(reader.locator('.timeline-karaoke-line-pitches, .timeline-karaoke-pitches')).toHaveCount(0);
+        await activate(pitches);
+        await expect(linePitch('C4 D4 E4')).toBeVisible();
+        const pausedFullscreenButton = view.getByRole('button', { name: 'Open karaoke fullscreen', exact: true });
+        await activate(pausedFullscreenButton);
+        const pausedFullscreen = page.getByRole('dialog', { name: 'Karaoke fullscreen', exact: true });
+        await expect(pausedFullscreen).toBeVisible();
+        const pausedReader = pausedFullscreen.getByLabel('Current karaoke line');
+        const pausedCurrent = pausedReader.getByRole('group', { name: 'Current lyrics' });
+        const pausedNext = pausedReader.getByRole('group', { name: 'Next lyrics' });
+        await expect(pausedCurrent.getByRole('group', { name: 'Estimated pitches for this line: C4 D4 E4', exact: true })).toBeVisible();
+        await expect(pausedNext.getByRole('group', { name: 'Estimated pitches for go: F4', exact: true })).toBeVisible();
+        await expect(pausedNext.getByRole('group', { name: 'Pitches for go: G4', exact: true })).toBeVisible();
+        expect(await pausedFullscreen.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        await activate(pausedFullscreen.getByRole('button', { name: 'Exit karaoke fullscreen', exact: true }));
+        await expect(pausedFullscreen).toHaveCount(0);
+        const afterPausedFullscreen = await player.evaluate(audio => {
+          const media = audio as HTMLAudioElement & { __linePitchSeekEvents: number };
+          return { time: audio.currentTime, rate: audio.playbackRate, source: audio.currentSrc, paused: audio.paused, seeking: audio.seeking, seekEvents: media.__linePitchSeekEvents };
+        });
+        expect(afterPausedFullscreen).toMatchObject({ time: 3, rate: 1, source: sourceUrl, paused: true, seeking: false, seekEvents: 0 });
+
+        await seekOutput(5.4);
+        const partialCurrent = reader.getByRole('group', { name: 'Current lyrics' });
+        const partialWords = partialCurrent.locator('.timeline-karaoke-word');
+        await expect(partialWords).toHaveCount(5);
+        await expect(partialWords.nth(0)).toHaveAttribute('data-state', 'untimed');
+        await expect(partialWords.nth(1)).toHaveAttribute('data-state', 'active');
+        await expect(partialWords.nth(1)).toHaveAttribute('aria-current', 'true');
+        await expect(partialWords.nth(2)).toHaveAttribute('data-state', 'untimed');
+        await expect(partialWords.nth(3)).toHaveAttribute('data-state', 'pending');
+        await expect(partialWords.nth(4)).toHaveAttribute('data-state', 'untimed');
+        await seekOutput(6.8);
+        await expect(partialWords.nth(1)).toHaveAttribute('data-state', 'complete');
+        await expect(partialWords.nth(3)).toHaveAttribute('data-state', 'active');
+        await player.evaluate(audio => {
+          const media = audio as HTMLAudioElement & { __linePitchSeekEvents: number };
+          media.__linePitchSeekEvents = 0;
+        });
+        const play = view.getByRole('button', { name: 'Play', exact: true });
+        await activate(play);
+        await expect.poll(() => player.evaluate(audio => !audio.paused && audio.currentTime > 5.6)).toBe(true);
+        const playingAt = await player.evaluate(audio => ({ time: audio.currentTime, rate: audio.playbackRate, source: audio.currentSrc }));
+        const openFullscreen = view.getByRole('button', { name: 'Open karaoke fullscreen', exact: true });
+        await activate(openFullscreen);
+        const fullscreen = page.getByRole('dialog', { name: 'Karaoke fullscreen', exact: true });
+        await expect(fullscreen).toBeVisible();
+        const fullscreenReader = fullscreen.getByLabel('Current karaoke line');
+        await expect(fullscreenReader.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
+        await activate(fullscreen.getByRole('button', { name: 'Exit karaoke fullscreen', exact: true }));
+        await expect(fullscreen).toHaveCount(0);
+        const playingAfter = await player.evaluate(audio => {
+          const media = audio as HTMLAudioElement & { __linePitchSeekEvents: number };
+          return { time: audio.currentTime, rate: audio.playbackRate, source: audio.currentSrc, paused: audio.paused, seeking: audio.seeking, seekEvents: media.__linePitchSeekEvents };
+        });
+        expect(playingAfter.time).toBeGreaterThan(playingAt.time);
+        expect(playingAfter).toMatchObject({ rate: playingAt.rate, source: sourceUrl, paused: false, seeking: false, seekEvents: 0 });
+        await activate(view.getByRole('button', { name: 'Pause', exact: true }));
+        await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+
+        const reread = await (await page.request.get(`/api/jobs/${jobId}`)).json() as JobDTO;
+        const rawPitchAfter = await (await page.request.get(`/api/jobs/${jobId}/pitch`)).json() as PitchAnalysisDTO;
+        expect(reread.transcript!.words).toEqual(storedWords);
+        expect(rawPitchAfter.tracks.map(track => track.notes.map(note => note.word_indices))).toEqual(storedWordIndices);
+
+        const vocalLyrics = completed.pitched_lyrics!.find(track => track.label === 'vocals')!;
+        const text = vocalLyrics.text;
+        expect(text).toMatch(/C4 +D4 +E4\n\[00:02\] Quiet +river +sings/);
+        const exportedLines = text.split('\n');
+        const partialLyricRow = exportedLines.findIndex(row => row.includes('[00:04]') && row.includes('go') && row.includes('again'));
+        expect(partialLyricRow).toBeGreaterThan(0);
+        expect(exportedLines[partialLyricRow - 1]).toMatch(/~F4\s+G4\s+~A4\s+B4\s+~C5\s*D5/);
+        const results = page.getByRole('heading', { name: jobLabel(completed), exact: true }).locator('../..');
+        const lyricsWithPitches = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
+        const txtPending = page.waitForEvent('download');
+        await activate(lyricsWithPitches.getByRole('link', { name: 'Download lyrics with pitches TXT', exact: true }));
+        const txt = await txtPending;
+        expect(await readFile((await txt.path())!)).toEqual(Buffer.from(text, 'utf8'));
+        const odtPending = page.waitForEvent('download');
+        await activate(lyricsWithPitches.getByRole('link', { name: 'Download lyrics with pitches ODT', exact: true }));
+        const odt = await odtPending;
+        const inspectOdt = String.raw`
+import json,sys,zipfile
+from xml.etree import ElementTree as ET
+from separator.pitched_lyrics_odt import MIME_TYPE,NS
+from tests.pitched_lyrics_odt_fixture import odf_text
+with zipfile.ZipFile(sys.argv[1]) as archive:
+ assert archive.infolist()[0].filename=='mimetype'
+ assert archive.infolist()[0].compress_type==zipfile.ZIP_STORED
+ assert archive.read('mimetype').decode()==MIME_TYPE
+ body=ET.fromstring(archive.read('content.xml'))
+ paragraphs=body.findall('office:body/office:text/text:p',NS)
+ print(json.dumps(''.join(odf_text(p)+('\n\n' if p.find('text:line-break',NS) is not None else '\n') for p in paragraphs)))
+`;
+        const odtText = JSON.parse(execFileSync('uv', ['run', 'python', '-c', inspectOdt, (await odt.path())!], {
+          cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8',
+        }));
+        expect(odtText).toBe(text);
+        expect(odtText).toMatch(/C4 +D4 +E4\n\[00:02\] Quiet +river +sings/);
+        expect(odtText).toContain('~F4');
+        expect(externalRequests).toEqual([]);
+        await info.attach('line-pitch-fallback-native', {
+          body: Buffer.from(JSON.stringify({
+            viewport, jobId, apiLines: associations.length, noWordLine: noWordLine.tracks,
+            partialWordOrigins: partialLine.words.map(word => word.origin),
+            export: { txtBytes: (await readFile((await txt.path())!)).length, odtMatchesApi: odtText === text },
+            nativeAudio: { source: sourceUrl, persistedWordsUnchanged: true, pitchWordIndicesUnchanged: true },
+            externalRequests,
+          })), contentType: 'application/json',
+        });
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally {
+        let cleanupError: unknown;
+        try { await page.goto('about:blank'); } catch (error) { cleanupError = error; }
+        if (jobId !== undefined) {
+          try {
+            execFileSync('uv', ['run', 'python', '-c', cleanupLinePitchFixtureJob, String(jobId), ownerId!], {
+              cwd: process.env.E2E_REPO_ROOT!,
+              env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+            });
+            const deleted = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+            expect(deleted.status()).toBe(204);
+          } catch (error) { cleanupError ??= error; }
+        }
+        if (cleanupError !== undefined) {
+          if (!failed) throw cleanupError;
+          console.error('Fixture cleanup also failed:', cleanupError);
+        }
+      }
     });
   });
 }

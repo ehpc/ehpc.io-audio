@@ -57,6 +57,7 @@ function karaokeJob(): JobDTO {
     id: 9401, status: 'done', position: null, source_type: 'upload', source_value: 'karaoke-ui.ogg',
     title: 'Karaoke native-media UI fixture', original_key: 'C major', output_key: 'C# major', result_revision: null,
     error_message: null, created_at: 1, has_original: true, has_pitch_vocals: true,
+    lyric_pitch_lines: null,
     options: { extract_vocals: true, extract_instruments: true, extract_lyrics: true, detect_pitch: true,
       extract_pitched_lyrics: false, mixes: [], decrowd: true, decrowd_vocals: true, dereverb: true,
       genders: true, lead_backing: true, drums: true, pitch_semitones: 1.25, tempo_percent: 125 },
@@ -93,17 +94,29 @@ function karaokeJob(): JobDTO {
       pitch_shift_semitones: 1.25, tempo_percent: 125, timestamp_reference: 'output', pitch_reference: 'output',
       word_alignment: 'UI fixture', words: words.map(word => ({ ...word, start_s: word.start_s / 1.25, end_s: word.end_s / 1.25 })),
       tracks: ['lead', 'backing'].map(label => ({ label, notes: label === 'lead'
-        ? [...leadPitches.map((note, index) => ({ start_s: 4 + index * 0.08, end_s: 4.08 + index * 0.08,
+        ? [...leadPitches.map((note, index) => ({ start_s: 4 + index * 0.08, end_s: 4 + (index + 1) * 0.08 - 0.000001,
           midi: 61 + index, frequency_hz: 440 * 2 ** ((61 + index - 69) / 12), confidence: 0.8, note, cents: 0, word_indices: [0] })),
-          ...['F#4', 'G#4', 'A#4'].map((note, index) => ({ start_s: 9.5 + index * 0.2, end_s: 9.7 + index * 0.2,
+          ...['F#4', 'G#4', 'A#4'].map((note, index) => ({ start_s: 9.5 + index * 0.2, end_s: 9.5 + (index + 1) * 0.2 - 0.000001,
             midi: 66 + index * 2, frequency_hz: 440, confidence: 0.8, note, cents: 0, word_indices: [1] })),
-          ...['C#5', 'D#5', 'F#5'].map((note, index) => ({ start_s: 11 + index * 0.2, end_s: 11.2 + index * 0.2,
+          ...['C#5', 'D#5', 'F#5'].map((note, index) => ({ start_s: 11 + index * 0.2, end_s: 11 + (index + 1) * 0.2 - 0.000001,
             midi: 73 + index * 2, frequency_hz: 554.4, confidence: 0.8, note, cents: 0, word_indices: [2] }))]
         : [{ start_s: 4, end_s: 6, midi: 64, frequency_hz: 329.6, confidence: 0.8, note: 'E4', cents: 0, word_indices: [0] }] })) },
   };
 }
 
 async function mountFixture(page: Page, job = karaokeJob()) {
+  // Use the same read-time projection as real API jobs, including modified fixtures.
+  job.lyric_pitch_lines = JSON.parse(execFileSync('uv', ['run', 'python', '-c', String.raw`
+import json,sys
+from dataclasses import asdict
+from separator.lyric_pitch import lyric_pitch_lines
+from separator.lyrics import transcript_from_json
+from separator.pitch import pitch_from_json
+value=json.load(sys.stdin)
+print(json.dumps([asdict(line) for line in lyric_pitch_lines(
+    transcript_from_json(json.dumps(value['transcript'])),
+    pitch_from_json(json.dumps(value['pitch'])))]))
+`,], { cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify({ transcript: job.transcript, pitch: job.pitch }), encoding: 'utf8' }));
   await page.route('**/api/jobs**', async route => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -338,7 +351,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         const cells = [...line.querySelectorAll<HTMLElement>('.timeline-karaoke-cell')];
         const pitch = line.querySelector<HTMLElement>('.timeline-karaoke-pitches')!;
         const word = pitch.parentElement!.querySelector<HTMLElement>('.timeline-karaoke-word')!;
-        const node = pitch.firstChild!;
+        const node = [...pitch.childNodes].find(child => child.nodeType === Node.TEXT_NODE && child.textContent?.trim())!;
         const labels = node.textContent!.split(' ');
         let offset = 0;
         const notes = labels.map(label => {

@@ -319,18 +319,20 @@ async def download_pitched_lyrics(
         raise HTTPException(404, "pitched lyrics not found")
     assert job.transcript is not None
     filename = pitched_lyrics_filename(job.title, job_id, label, job.options)
-    options = {
-        "title": header_title(job.title),
-        "output_key": transposed_key(job.original_key, job.options.pitch_semitones),
-    }
+    title = header_title(job.title)
+    output_key = transposed_key(job.original_key, job.options.pitch_semitones)
     if format == "odt":
         content = pitched_lyrics_odt(
-            pitched_lyrics_document(job.transcript, analysis, track, **options)
+            pitched_lyrics_document(
+                job.transcript, analysis, track, title=title, output_key=output_key
+            )
         )
         filename = filename.removesuffix(".txt") + ".odt"
         media_type = MIME_TYPE
     else:
-        content = pitched_lyrics_text(job.transcript, analysis, track, **options)
+        content = pitched_lyrics_text(
+            job.transcript, analysis, track, title=title, output_key=output_key
+        )
         media_type = "text/plain; charset=utf-8"
     name = quote(filename)
     return Response(

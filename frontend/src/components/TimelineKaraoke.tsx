@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { JobDTO, PitchNoteDTO } from "~/api";
+import type { JobDTO, LyricPitchTrackDTO, PitchNoteDTO } from "~/api";
 import { currentKaraokeLine, karaokeLines, karaokeWordState, type KaraokeLine, type KaraokePart, type KaraokeWord } from "~/lib/karaoke";
 import { Button } from "~/components/button";
 
@@ -11,6 +11,7 @@ interface TimelineKaraokeProps {
   /** Output-clock seconds supplied by the timeline's single media clock. */
   position: number;
   notes?: PitchNoteDTO[];
+  trackIndex?: number;
   playing?: boolean;
   seeking?: boolean;
   seekRevision?: number;
@@ -72,6 +73,15 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     }
     return result;
   });
+  const associatedLabels = (tracks: LyricPitchTrackDTO[]) => {
+    const indices = tracks.find(track => track.track_index === (props.trackIndex ?? 0))?.note_indices ?? [];
+    const labels: string[] = [];
+    for (const index of indices) {
+      const note = props.notes?.[index];
+      if (note) labels.push(note.note);
+    }
+    return labels;
+  };
   const [localPitches, setLocalPitches] = createSignal(false);
   const showPitches = () => props.showPitches ?? localPitches();
   const togglePitches = () => props.onShowPitches ? props.onShowPitches(!showPitches()) : setLocalPitches(!showPitches());
@@ -177,24 +187,32 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     </div>
     <section ref={reader} class="timeline-karaoke" tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}
       onClick={event => {
-        if (!(event.target instanceof Element) || !event.target.closest(".timeline-karaoke-pitches")) reader?.focus({ preventScroll: true });
+        if (!(event.target instanceof Element) || !event.target.closest(".timeline-karaoke-pitches, .timeline-karaoke-line-pitches")) reader?.focus({ preventScroll: true });
       }} onKeyDown={event => props.onKeyDown?.(event)}>
       <Show when={current()} fallback={
         <p class="timeline-karaoke-line timeline-karaoke-hint">
           {hasTiming() ? "Lyrics begin shortly" : "No reliably timed lyrics available"}
         </p>
       }>
-        <For each={visibleLines()}>{line =>
-          <p class="timeline-karaoke-line" classList={{ "timeline-karaoke-next": line !== current(), "timeline-karaoke-slide": line === current() && sliding() }}
+        <For each={visibleLines()}>{line => {
+          const lineLabels = createMemo(() => line.pitchAssociation ? associatedLabels(line.pitchAssociation.tracks) : []);
+          return <p class="timeline-karaoke-line" classList={{ "timeline-karaoke-next": line !== current(), "timeline-karaoke-slide": line === current() && sliding() }}
             role="group" aria-label={line === current() ? "Current lyrics" : "Next lyrics"} tabIndex={line === current() ? undefined : 0}>
+            <Show when={showPitches() && lineLabels().length > 0}>
+              <span class="timeline-karaoke-line-pitches" role="group" tabIndex={0}
+                aria-label={`Estimated pitches for this line: ${lineLabels().join(" ")}`}>~{lineLabels().join(" ")}</span>
+            </Show>
             <For each={displayParts(line.parts)}>{part => {
               if (typeof part === "string") return part;
               const state = createMemo(() => karaokeWordState(part.word.timing, props.position));
-              const labels = () => part.word.pitchIndex === undefined ? undefined : pitches().get(part.word.pitchIndex);
+              const association = line.pitchAssociation?.words.find(word => word.token_index === part.word.tokenIndex);
+              const labels = createMemo(() => line.pitchAssociation
+                ? association ? associatedLabels(association.tracks) : undefined
+                : props.job.transcript || part.word.pitchIndex === undefined ? undefined : pitches().get(part.word.pitchIndex));
               return <span class="timeline-karaoke-cell">
                 <Show when={showPitches() && labels()?.length}>
                   <span class="timeline-karaoke-pitches" role="group" tabIndex={0}
-                    aria-label={`Pitches for ${part.word.text}: ${labels()!.join(" ")}`}>{labels()!.join(" ")}</span>
+                    aria-label={`${association?.origin === "interpolated" ? "Estimated pitches" : "Pitches"} for ${part.word.text}: ${labels()!.join(" ")}`}>{association?.origin === "interpolated" ? "~" : ""}{labels()!.join(" ")}</span>
                 </Show>
                 <span class="timeline-karaoke-lyric"><span class="timeline-karaoke-word"
                   data-state={state().state}
@@ -204,7 +222,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
               </span>;
             }}</For>
           </p>
-        }</For>
+        }}</For>
       </Show>
     </section>
   </>;

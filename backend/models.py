@@ -19,6 +19,7 @@ from pydantic import (
 
 from backend import config, events
 from separator.audio import modification_suffix, transposed_key
+from separator.lyric_pitch import LyricPitchLine, lyric_pitch_lines
 from separator.lyrics import (
     CanonicalWordPosition,
     LyricLineProjection,
@@ -248,6 +249,7 @@ class JobDTO(BaseModel):
     output_key: str | None
     transcript: TranscriptDTO | None = None
     pitch: PitchAnalysis | None = None
+    lyric_pitch_lines: list[LyricPitchLine] | None = None
     pitched_lyrics: list[PitchedLyricsTrack] | None = None
     has_pitch_vocals: bool = False
 
@@ -309,6 +311,11 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
     pitch = pitch_from_json(job.pitch_json) if job.pitch_json else None
     title = header_title(job.title)
     output_key = transposed_key(job.original_key, job.options.pitch_semitones)
+    associations = (
+        lyric_pitch_lines(job.transcript, pitch)
+        if job.transcript is not None and pitch is not None
+        else None
+    )
     return JobDTO(
         id=job.id,
         status=job.status,
@@ -352,10 +359,15 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
             else None
         ),
         pitch=pitch,
+        lyric_pitch_lines=associations,
         has_pitch_vocals=pitch_vocals_path(job) is not None,
         pitched_lyrics=(
             pitched_lyrics_tracks(
-                job.transcript, pitch, title=title, output_key=output_key
+                job.transcript,
+                pitch,
+                title=title,
+                output_key=output_key,
+                associations=associations,
             )
             if pitched_lyrics_available(job)
             and job.transcript is not None

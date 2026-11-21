@@ -47,6 +47,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     result_revision: null,
     manifest: [],
     transcript: null,
+    lyric_pitch_lines: null,
     error_message: null,
     created_at: 1700000000,
     has_original: true,

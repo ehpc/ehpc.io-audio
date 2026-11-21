@@ -10,6 +10,7 @@ interface KaraokeFullscreenProps {
   mediaPosition: number;
   mediaDuration: number;
   notes: PitchNoteDTO[];
+  trackIndex: number;
   playing: boolean;
   seeking: boolean;
   seekRevision: number;
@@ -92,7 +93,7 @@ export default function KaraokeFullscreen(props: KaraokeFullscreenProps) {
       <div ref={background} class="karaoke-fullscreen-background">{props.background}</div>
       <Show when={props.error}><p role="alert" class="text-sm text-destructive">{props.error}</p></Show>
       <div class="karaoke-fullscreen-reader">
-        <TimelineKaraoke job={props.job} position={props.position} notes={props.notes} playing={props.playing}
+        <TimelineKaraoke job={props.job} position={props.position} notes={props.notes} trackIndex={props.trackIndex} playing={props.playing}
           seeking={props.seeking} seekRevision={props.seekRevision} fontSize={props.fontSize} onFontSize={props.onFontSize}
           showPitches={props.showPitches} onShowPitches={props.onShowPitches} fit />
       </div>

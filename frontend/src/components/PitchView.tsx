@@ -330,6 +330,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     });
   });
   const track = createMemo(() => analysis().tracks.find(item => item.label === trackLabel()) ?? analysis().tracks[0]);
+  const trackIndex = createMemo(() => analysis().tracks.indexOf(track()!));
   const sourceNotes = () => track()?.notes ?? [];
   const allSourceNotes = createMemo(() => analysis().tracks.flatMap(item => item.notes));
   const shiftBounds = createMemo(() => {
@@ -882,11 +883,11 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         </Show>
         <Show when={playbackError()}><p role="alert" class="text-sm text-destructive">{playbackError()}</p></Show>
         <Show when={referenceError()}><p role="alert" class="text-sm text-destructive">{referenceError()}</p></Show>
-        <TimelineKaraoke job={props.job} position={position()} notes={notes()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey}
+        <TimelineKaraoke job={props.job} position={position()} notes={notes()} trackIndex={trackIndex()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey}
           fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize} showPitches={karaokePitches()} onShowPitches={setKaraokePitches}
           onFullscreen={openKaraokeFullscreen} />
         <Show when={karaokeFullscreen()}>
-          <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()} notes={notes()}
+          <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()} notes={notes()} trackIndex={trackIndex()}
             playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize}
             showPitches={karaokePitches()} onShowPitches={setKaraokePitches} background={<BackgroundControls />} activeSource={reference()} transport={<TransportControls />}
             error={referenceError() || playbackError()} onSeek={seekMedia} onKeyDown={togglePlaybackKey} onClose={() => setKaraokeFullscreen(false)} returnFocus={fullscreenReturnFocus} />

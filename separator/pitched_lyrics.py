@@ -1,9 +1,11 @@
 """Shared word-cell layout for browser, history, TXT and OpenDocument exports."""
 
 import re
+import textwrap
 import unicodedata
 from dataclasses import dataclass
 
+from separator.lyric_pitch import LyricPitchLine, lyric_pitch_lines
 from separator.lyrics import (
     UNKNOWN_TIMESTAMP,
     LyricDisplayLine,
@@ -30,6 +32,8 @@ class PitchedLyricsBlock:
     text: str
     pitch: str | None = None
     continuation: bool = False
+    pitch_only: bool = False
+    keep_with_next: bool = False
 
 
 def _word_pairs(
@@ -88,54 +92,6 @@ def _printable(text: str) -> str:
     return "".join(" " if unicodedata.category(c) == "Cc" else c for c in text)
 
 
-def _unique_word_cells(cells: list[str], heard: list[str]) -> dict[int, int]:
-    """Only links shared by every exact, ordered embedding of published words.
-
-    Filtered alignments omit disputed words. Greedy matching would falsely
-    assign a surviving repeated word to an earlier unconfirmed occurrence.
-    Prefix/suffix feasibility keeps ambiguous occurrences explicitly unknown.
-    No fuzzy spelling matches or timing interpolation are used.
-    """
-    expected = [tokens(unicodedata.normalize("NFKC", cell)) for cell in cells]
-    observed = [tokens(unicodedata.normalize("NFKC", word)) for word in heard]
-    n, m = len(expected), len(observed)
-    prefix = [[False] * (m + 1) for _ in range(n + 1)]
-    prefix[0][0] = True
-    for i in range(n):
-        for j in range(m + 1):
-            prefix[i + 1][j] = prefix[i][j] or (
-                j > 0
-                and bool(expected[i])
-                and expected[i] == observed[j - 1]
-                and prefix[i][j - 1]
-            )
-    if not prefix[n][m]:
-        return {}
-    suffix = [[False] * (m + 1) for _ in range(n + 1)]
-    suffix[n][m] = True
-    for i in range(n - 1, -1, -1):
-        for j in range(m, -1, -1):
-            suffix[i][j] = suffix[i + 1][j] or (
-                j < m
-                and bool(expected[i])
-                and expected[i] == observed[j]
-                and suffix[i + 1][j + 1]
-            )
-    links = {}
-    for j in range(m):
-        candidates = [
-            i
-            for i in range(n)
-            if expected[i]
-            and expected[i] == observed[j]
-            and prefix[i][j]
-            and suffix[i + 1][j + 1]
-        ]
-        if len(candidates) == 1:
-            links[candidates[0]] = j
-    return links
-
-
 def pitched_lyrics_document(
     transcript: Transcript,
     analysis: PitchAnalysis,
@@ -143,71 +99,52 @@ def pitched_lyrics_document(
     *,
     title: str | None = None,
     output_key: str | None = None,
+    associations: list[LyricPitchLine] | None = None,
 ) -> list[PitchedLyricsBlock]:
     rate = analysis.tempo_percent / 100
     rendered: list[list[PitchedLyricsBlock]] = []
+    if associations is None:
+        associations = lyric_pitch_lines(transcript, analysis)
+    by_source = {(line.source_kind, line.source_index): line for line in associations}
+    track_index = next(
+        (i for i, candidate in enumerate(analysis.tracks) if candidate is track), None
+    )
+    if track_index is None:
+        track_index = next(
+            (i for i, candidate in enumerate(analysis.tracks) if candidate == track),
+            None,
+        )
 
     def render(line: LyricDisplayLine) -> str:
         cells = re.findall(r"\S+", _printable(line.text))
-        aligned = [
-            (index, word)
-            for index, word in enumerate(analysis.words)
-            if line.start_s is not None
-            and line.end_s is not None
-            and word.start_s * rate >= line.start_s - 0.001
-            and word.end_s * rate <= line.end_s + 0.001
+        association = by_source.get((line.source_kind, line.source_index))
+        token_cells = [
+            cell_index for cell_index, cell in enumerate(cells) for _ in tokens(cell)
         ]
-        cell_words: dict[int, set[int]] = {}
-        if line.canonical_line_index is not None:
-            # Stable source provenance, never text matching against a filtered
-            # word subset. Old records without positions remain explicit '?'.
-            token_cells = [
-                cell_index
-                for cell_index, cell in enumerate(cells)
-                for _ in tokens(cell)
-            ]
-            canonical_tokens = tokens(line.text)
-            for position in transcript.canonical_word_positions:
-                if (
-                    position.reference_line_index != line.canonical_line_index
-                    or not 0 <= position.word_index < len(analysis.words)
-                    or not 0 <= position.word_index < len(transcript.words)
-                    or not 0 <= position.reference_token_index < len(token_cells)
-                    or position.reference_token_index >= len(canonical_tokens)
-                ):
+        cell_notes: dict[int, set[int]] = {}
+        estimated: set[int] = set()
+        if association is not None and track_index is not None:
+            for word in association.words:
+                if word.token_index >= len(token_cells):
                     continue
-                word = analysis.words[position.word_index]
-                source_word = transcript.words[position.word_index]
-                if (
-                    word.text != source_word.text
-                    or abs(word.start_s * rate - source_word.start_s) > 0.001
-                    or abs(word.end_s * rate - source_word.end_s) > 0.001
-                    or word.probability != source_word.probability
-                    or word.alignment_score != source_word.alignment_score
-                    or word.origin != source_word.origin
-                    or tokens(word.text)
-                    != [canonical_tokens[position.reference_token_index]]
-                ):
-                    continue
-                cell_index = token_cells[position.reference_token_index]
-                cell_words.setdefault(cell_index, set()).add(position.word_index)
-            cell_words = {
-                cell_index: word_indices
-                for cell_index, word_indices in cell_words.items()
-                if len(word_indices) == token_cells.count(cell_index)
-            }
-        else:
-            links = _unique_word_cells(cells, [word.text for _, word in aligned])
-            cell_words = {cell: {aligned[linked][0]} for cell, linked in links.items()}
-        pitches = []
-        for index in range(len(cells)):
-            word_indices = cell_words.get(index, set())
-            labels = [
-                note.note
-                for note in track.notes
-                if word_indices.intersection(note.word_indices)
-            ]
-            pitches.append(" ".join(labels) if labels else "?")
+                cell_index = token_cells[word.token_index]
+                cell_notes.setdefault(cell_index, set()).update(
+                    word.tracks[track_index].note_indices
+                )
+                if word.origin == "interpolated":
+                    estimated.add(cell_index)
+        pitches = [
+            ("~" if index in estimated else "")
+            + " ".join(track.notes[note].note for note in sorted(cell_notes[index]))
+            if cell_notes.get(index)
+            else "?"
+            for index in range(len(cells))
+        ]
+        residual = (
+            association.tracks[track_index].note_indices
+            if association is not None and track_index is not None
+            else []
+        )
         # NUL cannot occur in printable word cells. Placeholders let the common
         # transcript exporter retain sole ownership of metadata/section order.
         onset = line.onset_s
@@ -220,7 +157,36 @@ def pitched_lyrics_document(
             if line.canonical_line_index is not None
             else line.prefix
         )
-        rendered.append(_word_pairs(cells, pitches, f"[{prefix}] "))
+        rows = []
+        if residual:
+            labels = " ".join(track.notes[index].note for index in residual)
+            rows = textwrap.wrap(
+                f"Line pitches (approx.): {labels}",
+                width=LINE_COLUMNS,
+                subsequent_indent="  ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+        if association is not None and not association.words and residual:
+            lyric_rows = _word_pairs(cells, [""] * len(cells), f"[{prefix}] ")
+            blocks = [PitchedLyricsBlock(row, pitch_only=True) for row in rows[:-1]]
+            blocks.append(
+                PitchedLyricsBlock(
+                    lyric_rows[0].text, rows[-1], keep_with_next=len(lyric_rows) > 1
+                )
+            )
+            blocks.extend(
+                PitchedLyricsBlock(
+                    row.text,
+                    continuation=True,
+                    keep_with_next=index < len(lyric_rows) - 1,
+                )
+                for index, row in enumerate(lyric_rows[1:], start=1)
+            )
+        else:
+            blocks = [PitchedLyricsBlock(row, pitch_only=True) for row in rows]
+            blocks.extend(_word_pairs(cells, pitches, f"[{prefix}] "))
+        rendered.append(blocks)
         return f"\0{len(rendered) - 1}\0"
 
     body = transcript_export_text(
@@ -254,13 +220,19 @@ def pitched_lyrics_text(
     *,
     title: str | None = None,
     output_key: str | None = None,
+    associations: list[LyricPitchLine] | None = None,
 ) -> str:
     return "".join(
         f"{block.pitch}\n{block.text}\n\n"
         if block.pitch is not None
         else f"{block.text}\n"
         for block in pitched_lyrics_document(
-            transcript, analysis, track, title=title, output_key=output_key
+            transcript,
+            analysis,
+            track,
+            title=title,
+            output_key=output_key,
+            associations=associations,
         )
     )
 
@@ -271,11 +243,19 @@ def pitched_lyrics_tracks(
     *,
     title: str | None = None,
     output_key: str | None = None,
+    associations: list[LyricPitchLine] | None = None,
 ) -> list[PitchedLyricsTrack]:
+    if associations is None:
+        associations = lyric_pitch_lines(transcript, analysis)
     tracks = []
     for track in analysis.tracks:
         text = pitched_lyrics_text(
-            transcript, analysis, track, title=title, output_key=output_key
+            transcript,
+            analysis,
+            track,
+            title=title,
+            output_key=output_key,
+            associations=associations,
         )
         # Font-fallback correction uses the very same Unicode width authority
         # as text padding, rather than introducing browser-side Unicode tables.

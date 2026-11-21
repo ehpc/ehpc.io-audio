@@ -44,6 +44,7 @@ function job(): JobDTO {
     id: 37, status: "done", position: null, source_type: "upload", source_value: "fixture.wav", title: null,
     progress: { steps: ["source", "analysis", "separation", "lyrics", "pitch", "export"], current: null },
     original_key: null, output_key: null, result_revision: null, error_message: null, created_at: 1, has_original: true,
+    lyric_pitch_lines: null,
     has_pitch_vocals: true, manifest: null, transcript,
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,
       extract_pitched_lyrics: false, mixes: [], decrowd: false, decrowd_vocals: false, dereverb: false,
@@ -57,6 +58,66 @@ function job(): JobDTO {
 function lexicalWords(line: KaraokeLine): KaraokeWord[] {
   return line.parts.filter((part): part is KaraokeWord => typeof part !== "string");
 }
+
+it("shows partial-word estimates and line-only pitches for the selected projected track without inventing word highlights", () => {
+  const source = job();
+  const line = source.transcript!.presentation_lines[0];
+  source.lyric_pitch_lines = [{
+    source_kind: line.source_kind, source_index: line.source_index, canonical_line_index: line.canonical_line_index,
+    start_s: 4, end_s: 8, bounds_source: "acoustic",
+    words: [
+      { token_index: 1, start_s: 4, end_s: 5, origin: "measured", tracks: [{ track_index: 0, note_indices: [0] }] },
+      { token_index: 3, start_s: 7, end_s: 8, origin: "interpolated", tracks: [{ track_index: 0, note_indices: [1] }] },
+    ],
+    tracks: [{ track_index: 0, note_indices: [2] }, { track_index: 1, note_indices: [0] }],
+  }];
+  const note = (name: string) => ({ start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6,
+    confidence: 0.9, note: name, cents: 0, word_indices: [] });
+  const [notes, setNotes] = createSignal([note("C4"), note("D4"), note("E4")]);
+  const [trackIndex, setTrackIndex] = createSignal(0);
+  render(() => <TimelineKaraoke job={source} position={4.5} notes={notes()} trackIndex={trackIndex()} />);
+  const current = screen.getByRole("group", { name: "Current lyrics" });
+  expect(within(current).queryByRole("group", { name: /pitches/i })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  expect(within(current).getByRole("group", { name: "Pitches for go: C4" })).toBeVisible();
+  expect(within(current).getByRole("group", { name: "Estimated pitches for stop: D4" })).toHaveTextContent("~D4");
+  expect(within(current).getByRole("group", { name: "Estimated pitches for this line: E4" })).toBeVisible();
+  expect(within(current).getByText("stop")).toHaveAttribute("data-state", "untimed");
+  setNotes([note("G4")]);
+  setTrackIndex(1);
+  expect(within(current).getByRole("group", { name: "Estimated pitches for this line: G4" })).toBeVisible();
+  expect(within(current).queryByRole("group", { name: /pitches for stop/i })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  expect(within(current).queryByRole("group", { name: /pitches/i })).toBeNull();
+});
+
+it("keeps line-only pitch associations on their own repeated occurrence", () => {
+  const source = job();
+  const lines = source.transcript!.presentation_lines;
+  source.lyric_pitch_lines = lines.slice(0, 2).map((line, index) => ({
+    source_kind: line.source_kind, source_index: line.source_index, canonical_line_index: line.canonical_line_index,
+    start_s: 4 + 4 * index, end_s: 8 + 4 * index, bounds_source: "provider-synced" as const,
+    words: [], tracks: [{ track_index: 0, note_indices: [index] }],
+  }));
+  const note = (name: string) => ({ start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6,
+    confidence: 0.9, note: name, cents: 0, word_indices: [] });
+  const [position, setPosition] = createSignal(4.5);
+  render(() => <TimelineKaraoke job={source} position={position()} notes={[note("C4"), note("G4")]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  expect(within(screen.getByRole("group", { name: "Current lyrics" })).getByRole("group", { name: "Estimated pitches for this line: C4" })).toBeVisible();
+  setPosition(8.5);
+  expect(within(screen.getByRole("group", { name: "Current lyrics" })).getByRole("group", { name: "Estimated pitches for this line: G4" })).toBeVisible();
+});
+
+it("does not attach pitches to a transcript line when derived associations are unavailable", () => {
+  const source = job();
+  source.pitch!.words = [word("go", 4, 5)];
+  const note = { start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6,
+    confidence: 0.9, note: "C4", cents: 0, word_indices: [0] };
+  render(() => <TimelineKaraoke job={source} position={4.5} notes={[note]} />);
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  expect(within(screen.getByRole("group", { name: "Current lyrics" })).queryByRole("group", { name: /pitches/i })).toBeNull();
+});
 
 describe("karaoke provenance and output clock", () => {
   it("maps original words once at 125%, retaining partial and repeated canonical positions", () => {
@@ -130,7 +191,7 @@ describe("karaoke provenance and output clock", () => {
       ["Go, go—don't stop!", { start_s: 16, end_s: 24 }],
       ["Unknown refrain", null],
     ]);
-    expect(lexicalWords(lines[1])[0]).toMatchObject({ pitchIndex: 0, timing: { start_s: 10, end_s: 11 } });
+    expect(lexicalWords(lines[1])[0]).toMatchObject({ timing: { start_s: 10, end_s: 11 } });
     expect(currentKaraokeLine(lines, 10.5)?.text).toBe("actual");
     expect(currentKaraokeLine(lines, 16.5)?.text).toBe("Go, go—don't stop!");
     expect(currentKaraokeLine(lines, 12.5)?.text).toBe("adlib");
@@ -215,19 +276,6 @@ describe("karaoke provenance and output clock", () => {
     expect(karaokeLines(source)).toEqual([]);
   });
 
-  it("links only unambiguous projected word identities, not filtered transcript indices or repeated text", () => {
-    const source = job();
-    source.pitch!.words = [
-      word("unrelated", 1, 2), word("Go", 8, 9), word("go", 4, 5),
-      word("don't", 6, 7), word("don't", 6, 7),
-      { ...word("don't", 10, 11), origin: "asr" },
-    ];
-    const lines = karaokeLines(source);
-    expect(lexicalWords(lines[0]).map(part => part.pitchIndex)).toEqual([undefined, 2, undefined, undefined]);
-    expect(lexicalWords(lines[1]).map(part => part.pitchIndex)).toEqual([1, undefined, undefined, undefined]);
-    source.transcript!.words!.push(word("go", 5, 6.25));
-    expect(lexicalWords(karaokeLines(source)[0])[1].pitchIndex).toBeUndefined();
-  });
 
   it("retains direct pitch indices for historical pitch-only words", () => {
     const source = job();
@@ -328,6 +376,9 @@ describe("TimelineKaraoke reactive reader", () => {
   it("renders only the selected stem's linked pitches above their words and toggles them", () => {
     const source = job();
     source.pitch!.words = [word("go", 4, 5), word("Go", 8, 9)];
+    const line = source.transcript!.presentation_lines[0];
+    source.lyric_pitch_lines = [{ source_kind: line.source_kind, source_index: line.source_index, canonical_line_index: line.canonical_line_index,
+      start_s: 4, end_s: 8, bounds_source: "acoustic", words: [{ token_index: 1, start_s: 4, end_s: 5, origin: "measured", tracks: [{ track_index: 0, note_indices: [0, 1] }] }], tracks: [] }];
     const note = { start_s: 4, end_s: 5, midi: 60, frequency_hz: 261.6, note: "C4", cents: 0, confidence: 0.9, word_indices: [0] };
     const [notes, setNotes] = createSignal([note, { ...note, note: "D4" }]);
     render(() => <TimelineKaraoke job={source} position={4.5} notes={notes()} />);
@@ -351,6 +402,11 @@ describe("TimelineKaraoke reactive reader", () => {
   it("keeps repeated-word pitch sequences with their own occurrence through promotion and toggling", () => {
     const source = job();
     source.pitch!.words = [word("go", 4, 5), word("Go", 8, 9)];
+    source.lyric_pitch_lines = source.transcript!.presentation_lines.slice(0, 2).map((line, index) => ({
+      source_kind: line.source_kind, source_index: line.source_index, canonical_line_index: line.canonical_line_index,
+      start_s: 4 + index * 4, end_s: 8 + index * 4, bounds_source: "acoustic",
+      words: [{ token_index: index === 0 ? 1 : 0, start_s: 4 + index * 4, end_s: 5 + index * 4, origin: "measured", tracks: [{ track_index: 0, note_indices: index === 0 ? [0, 1] : [2] }] }], tracks: [],
+    }));
     const base = { start_s: 4, end_s: 5, midi: 61, frequency_hz: 277.2, cents: 0, confidence: 0.9 };
     const notes = [
       { ...base, note: "C#4", word_indices: [0] },

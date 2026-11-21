@@ -85,16 +85,25 @@ def pitched_lyrics_odt(blocks: list[PitchedLyricsBlock]) -> bytes:
     for block in blocks:
         if not block.continuation:
             bracket_depth = 0
-        paragraph = _element(
-            body,
-            "text:p",
-            **{"text:style-name": "Pair" if block.pitch is not None else "Heading"},
+        style = (
+            "PairContinue"
+            if block.pitch is not None and block.keep_with_next
+            else "Pair"
+            if block.pitch is not None
+            else "Plain"
+            if block.continuation and not block.keep_with_next
+            else "Heading"
         )
+        paragraph = _element(body, "text:p", **{"text:style-name": style})
         if block.pitch is not None:
             pitch = _element(paragraph, "text:span", **{"text:style-name": "Pitch"})
             _styled_text(pitch, block.pitch)
             _element(paragraph, "text:line-break")
-        bracket_depth = _styled_text(paragraph, block.text, bracket_depth)
+        if block.pitch_only:
+            pitch = _element(paragraph, "text:span", **{"text:style-name": "Pitch"})
+            _styled_text(pitch, block.text)
+        else:
+            bracket_depth = _styled_text(paragraph, block.text, bracket_depth)
 
     styles = ET.Element(
         _name("office:document-styles"), {_name("office:version"): "1.2"}
@@ -149,6 +158,8 @@ def pitched_lyrics_odt(blocks: list[PitchedLyricsBlock]) -> bytes:
     )
     for name, properties in (
         ("Pair", {"fo:keep-together": "always"}),
+        ("PairContinue", {"fo:keep-together": "always", "fo:keep-with-next": "always"}),
+        ("Plain", {}),
         ("Heading", {"fo:keep-with-next": "always"}),
     ):
         style = _element(

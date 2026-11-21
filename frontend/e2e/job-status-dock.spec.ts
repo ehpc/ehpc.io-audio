@@ -40,7 +40,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       // The fixture installs this stream in the same page before app startup.
       const fixtureWindow = window as unknown as { jobStream: { onmessage: (event: { data: string }) => void } };
       const stream = fixtureWindow.jobStream;
-      stream.onmessage({ data: JSON.stringify({ id: 42, status: 'running', position: null, progress: { steps: ['source', 'analysis', 'export'], current: 'analysis' }, title: 'A remarkably long title — An artist with an equally long name', source_type: 'url', source_value: 'https://example.test/song', options: { mixes: [], pitch_semitones: 0, tempo_percent: 100 }, manifest: null, transcript: null, pitch: null, error_message: null, created_at: 1700000000 }) });
+      stream.onmessage({ data: JSON.stringify({ id: 42, status: 'running', position: null, progress: { steps: ['source', 'analysis', 'export'], current: 'analysis' }, title: 'A remarkably long title — An artist with an equally long name', source_type: 'url', source_value: 'https://example.test/song', options: { mixes: [], pitch_semitones: 0, tempo_percent: 100 }, manifest: null, transcript: null, pitch: null, lyric_pitch_lines: null, error_message: null, created_at: 1700000000 }) });
       (document.activeElement as HTMLElement)?.blur();
       window.scrollTo(0, 0);
     });

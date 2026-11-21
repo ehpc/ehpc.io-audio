@@ -1,4 +1,4 @@
-import type { AlignedWordDTO, JobDTO } from "~/api";
+import type { AlignedWordDTO, JobDTO, LyricPitchLineDTO } from "~/api";
 
 export interface KaraokeTiming {
   start_s: number;
@@ -10,6 +10,8 @@ export interface KaraokeWord {
   timing: KaraokeTiming | null;
   /** Index in the separately published pitch word list, only when unambiguous. */
   pitchIndex?: number;
+  /** Lexical token index within its presentation line. */
+  tokenIndex?: number;
 }
 
 export type KaraokePart = string | KaraokeWord;
@@ -22,6 +24,7 @@ export interface KaraokeLine {
   /** Provenance of a projected onset, not of the individual word timings. */
   onsetSource?: "provider-synced" | "acoustic" | "unknown";
   sourceKind?: "canonical" | "asr-extra" | "asr-word" | "segment" | "untimed";
+  pitchAssociation?: LyricPitchLineDTO;
   projected?: boolean;
 }
 
@@ -46,23 +49,14 @@ function wordTiming(word: AlignedWordDTO, rate: number): KaraokeTiming | null {
   return validTiming(word.start_s / rate, word.end_s / rate);
 }
 
-interface WordPlacement {
-  timing: KaraokeTiming;
-  pitchIndex?: number;
-}
 
-function wordKey(word: AlignedWordDTO, timing: KaraokeTiming): string {
-  return JSON.stringify([word.text, timing.start_s, timing.end_s, word.origin ?? null]);
-}
-
-function makeLine(text: string, timings: Map<number, WordPlacement>): KaraokeLine {
+function makeLine(text: string, timings: Map<number, KaraokeTiming>): KaraokeLine {
   const parts: KaraokePart[] = [];
   let end = 0;
   lexicalMatches(text).forEach((match, index) => {
     const start = match.index!;
     if (start > end) parts.push(text.slice(end, start));
-    const placement = timings.get(index);
-    parts.push({ text: match[0], timing: placement?.timing ?? null, ...(placement?.pitchIndex === undefined ? {} : { pitchIndex: placement.pitchIndex }) });
+    parts.push({ text: match[0], timing: timings.get(index) ?? null, tokenIndex: index });
     end = start + match[0].length;
   });
   if (end < text.length) parts.push(text.slice(end));
@@ -70,39 +64,18 @@ function makeLine(text: string, timings: Map<number, WordPlacement>): KaraokeLin
 }
 
 /** Builds once per job, never once per animation frame. Does not infer syllables. */
-export function karaokeLines(job: Pick<JobDTO, "transcript" | "pitch" | "options">): KaraokeLine[] {
+export function karaokeLines(job: Pick<JobDTO, "transcript" | "pitch" | "options" | "lyric_pitch_lines">): KaraokeLine[] {
   const transcript = job.transcript;
   const rate = (job.pitch?.tempo_percent ?? job.options.tempo_percent) / 100;
   if (!Number.isFinite(rate) || rate <= 0) return [];
-  // Pitch words are a filtered output-clock projection, not transcript indices.
-  // Require a unique full identity on both sides; duplicates remain unlinked.
-  const pitchIndices = new Map<string, number | null>();
-  (job.pitch?.words ?? []).forEach((word, index) => {
-    const timing = wordTiming(word, 1);
-    if (!timing) return;
-    const key = wordKey(word, timing);
-    pitchIndices.set(key, pitchIndices.has(key) ? null : index);
-  });
-  const transcriptCounts = new Map<string, number>();
-  for (const word of transcript?.words ?? []) {
-    const timing = wordTiming(word, rate);
-    if (!timing) continue;
-    const key = wordKey(word, timing);
-    transcriptCounts.set(key, (transcriptCounts.get(key) ?? 0) + 1);
-  }
-  const placement = (word: AlignedWordDTO, timing: KaraokeTiming): WordPlacement => {
-    const key = wordKey(word, timing);
-    const pitchIndex = transcriptCounts.get(key) === 1 ? pitchIndices.get(key) : undefined;
-    return pitchIndex === null || pitchIndex === undefined ? { timing } : { timing, pitchIndex };
-  };
   if (transcript) {
-    const lines: KaraokeLine[] = transcript.presentation_lines.map(line => {
-      const timings = new Map<number, WordPlacement>();
+    const lines: KaraokeLine[] = transcript.presentation_lines.map((line, lineIndex) => {
+      const timings = new Map<number, KaraokeTiming>();
       for (const position of line.words) {
         const word = transcript.words?.[position.word_index];
         if (!word) continue;
         const timing = wordTiming(word, rate);
-        if (timing) timings.set(position.token_index, placement(word, timing));
+        if (timing) timings.set(position.token_index, timing);
       }
       const result = makeLine(line.text, timings);
       const onset = line.onset_s;
@@ -114,6 +87,9 @@ export function karaokeLines(job: Pick<JobDTO, "transcript" | "pitch" | "options
       }
       result.onsetSource = line.onset_source;
       result.sourceKind = line.source_kind;
+      const association = job.lyric_pitch_lines?.[lineIndex];
+      if (association && association.source_kind === line.source_kind && association.source_index === line.source_index
+        && association.canonical_line_index === line.canonical_line_index) result.pitchAssociation = association;
       result.projected = true;
       return result;
     });

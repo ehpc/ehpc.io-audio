@@ -273,6 +273,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         manifest: null,
         transcript: null,
         pitch: null,
+        lyric_pitch_lines: null,
         error_message: null,
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,

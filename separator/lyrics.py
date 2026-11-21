@@ -306,6 +306,10 @@ class LyricDisplayLine:
     canonical_line_index: int | None = None
     onset_s: float | None = None
     onset_source: Literal["provider-synced", "acoustic", "unknown"] = "unknown"
+    source_kind: (
+        Literal["canonical", "asr-extra", "asr-word", "segment", "untimed"] | None
+    ) = None
+    source_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -496,6 +500,8 @@ def transcript_text(
     segments: list[TranscriptSegment],
     sections: list[TranscriptSection] | None = None,
     render_line: LyricLineRenderer = _plain_line,
+    *,
+    source_lines: list[LyricLineProjection] | None = None,
 ) -> str:
     """One canonical TXT: model headings and intact ASR lines on the source clock.
 
@@ -504,18 +510,26 @@ def transcript_text(
     Model intervals without lyrics still have headings; gaps never acquire an
     invented musical label. Distinct same-label intervals remain distinct.
     """
-    if not sections:
-        return "".join(
-            render_line(
-                LyricDisplayLine(
-                    segment.text,
-                    format_timestamp(segment.start_s),
-                    segment.start_s,
-                    segment.end_s,
-                )
-            )
-            for segment in segments
+    identities = {
+        id(segment): line
+        for segment, line in zip(
+            segments, source_lines or [], strict=source_lines is not None
         )
+    }
+
+    def display(segment: TranscriptSegment) -> LyricDisplayLine:
+        source = identities.get(id(segment))
+        return LyricDisplayLine(
+            segment.text,
+            format_timestamp(segment.start_s),
+            segment.start_s,
+            segment.end_s,
+            source_kind=source.source_kind if source is not None else None,
+            source_index=source.source_index if source is not None else None,
+        )
+
+    if not sections:
+        return "".join(render_line(display(segment)) for segment in segments)
     assigned: list[list[TranscriptSegment]] = [[] for _ in sections]
     events = [(section.start_s, 0, index) for index, section in enumerate(sections)]
     first = 0
@@ -539,17 +553,7 @@ def transcript_text(
             if previous_was_section:
                 output.append("\n")
             lines = [segments[index]]
-        output.extend(
-            render_line(
-                LyricDisplayLine(
-                    segment.text,
-                    format_timestamp(segment.start_s),
-                    segment.start_s,
-                    segment.end_s,
-                )
-            )
-            for segment in lines
-        )
+        output.extend(render_line(display(segment)) for segment in lines)
         previous_was_section = kind == 0
     return "".join(output)
 
@@ -572,16 +576,25 @@ def transcript_export_text(
     clock = "Output" if output_tempo_percent is not None else "Original"
     head = _head_lines(transcript.reference, title, output_key)
     presentation = ordered_lyric_lines(transcript)
-    timed_lines = sorted(
+
+    def timed_onset(line: LyricLineProjection) -> float:
+        assert line.onset_s is not None
+        return line.onset_s
+
+    timed_projections = sorted(
         (
-            TranscriptSegment(line.onset_s, line.end_s, line.text)
+            line
             for line in presentation
             if line.source_kind in {"segment", "asr-extra", "asr-word"}
             and line.onset_s is not None
             and line.end_s is not None
         ),
-        key=lambda line: line.start_s,
+        key=timed_onset,
     )
+    timed_lines = []
+    for line in timed_projections:
+        assert line.onset_s is not None and line.end_s is not None
+        timed_lines.append(TranscriptSegment(line.onset_s, line.end_s, line.text))
     if transcript.reference is not None and transcript.reference.lines:
         review = transcript.reference
         output = list(head)
@@ -640,6 +653,8 @@ def transcript_export_text(
                         index,
                         projected.onset_s,
                         projected.onset_source,
+                        "canonical",
+                        index,
                     )
                 )
             )
@@ -650,7 +665,11 @@ def transcript_export_text(
                 for section in transcript.sections[next_section:]
             )
         if timed_lines:
-            output.append(transcript_text(timed_lines, render_line=render_line))
+            output.append(
+                transcript_text(
+                    timed_lines, render_line=render_line, source_lines=timed_projections
+                )
+            )
         if transcript.sections and not has_anchors:
             output.append(
                 "\n[Estimated musical structure — original mix; "
@@ -665,12 +684,19 @@ def transcript_export_text(
             )
         return "".join(output)
     text = "".join(head) + transcript_text(
-        timed_lines, transcript.sections, render_line
+        timed_lines, transcript.sections, render_line, source_lines=timed_projections
     )
     if transcript.untimed:
         text += "\n[Recognized text — alignment unavailable, NO TIMESTAMPS]\n"
-        for item in transcript.untimed:
-            text += render_line(LyricDisplayLine(item.text, UNKNOWN_TIMESTAMP))
+        for index, item in enumerate(transcript.untimed):
+            text += render_line(
+                LyricDisplayLine(
+                    item.text,
+                    UNKNOWN_TIMESTAMP,
+                    source_kind="untimed",
+                    source_index=index,
+                )
+            )
             text += f"[Alignment unavailable: {item.reason}]\n"
     return text
 

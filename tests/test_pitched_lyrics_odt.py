@@ -23,6 +23,7 @@ from separator.pitched_lyrics import (
     LINE_COLUMNS,
     display_width,
     pitched_lyrics_document,
+    pitched_lyrics_text,
 )
 from separator.pitched_lyrics_odt import MIME_TYPE, NS, pitched_lyrics_odt
 from tests.pitched_lyrics_odt_fixture import document_fixture, odf_text
@@ -527,6 +528,61 @@ def test_square_brackets_remain_bold_across_shared_wrapped_pairs() -> None:
     bold_content = bold_text(styles, content)
     assert all(word in bold_content for word in words)
     assert "[??:??]" in bold_content and "outside" not in bold_content
+
+
+def test_long_phrase_pitch_rows_stay_gray_and_lyrics_wrap_with_brackets() -> None:
+    words = [f"inside{index:02d}" for index in range(35)]
+    transcript = Transcript(
+        segments=[
+            TranscriptSegment(0, 20, "[" + " ".join(words) + "] outside"),
+            TranscriptSegment(20, 21, "next phrase"),
+        ]
+    )
+    notes = [PitchNote(i / 5, (i + 1) / 5, 60, 261, 0.9) for i in range(90)]
+    analysis = PitchAnalysis(21, 21, [PitchTrack("lead", notes)])
+    blocks = pitched_lyrics_document(transcript, analysis, analysis.tracks[0])
+    text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
+    assert text.split().count("C4") == len(notes)
+    assert all(text.count(word) == 1 for word in words)
+    assert text.count("[00:00]") == 1
+    assert all(display_width(row) <= LINE_COLUMNS for row in text.splitlines())
+
+    with zipfile.ZipFile(io.BytesIO(pitched_lyrics_odt(blocks))) as archive:
+        content = ET.fromstring(archive.read("content.xml"))
+        styles = ET.fromstring(archive.read("styles.xml"))
+    paragraphs = content.findall("office:body/office:text/text:p", NS)
+    pitches = [
+        (piece, props)
+        for paragraph in paragraphs
+        for piece, props in odf_runs(styles, paragraph)
+        if "C4" in piece
+    ]
+    assert sum(piece.split().count("C4") for piece, _ in pitches) == len(notes)
+    assert all(grayscale(props[f"{{{NS['fo']}}}color"]) > 0 for _, props in pitches)
+    assert any(
+        paragraph.find("text:line-break", NS) is not None
+        and odf_properties(styles, paragraph).get(f"{{{NS['fo']}}}keep-together")
+        == "always"
+        for paragraph in paragraphs
+    )
+    first = next(
+        i
+        for i, paragraph in enumerate(paragraphs)
+        if "Line pitches" in odf_text(paragraph)
+    )
+    last = next(
+        i for i, paragraph in enumerate(paragraphs) if "outside" in odf_text(paragraph)
+    )
+    assert last > first
+    keep_next = f"{{{NS['fo']}}}keep-with-next"
+    assert all(
+        odf_properties(styles, paragraph).get(keep_next) == "always"
+        for paragraph in paragraphs[first:last]
+    )
+    assert odf_properties(styles, paragraphs[last]).get(keep_next) != "always"
+    bold = bold_text(styles, content)
+    assert all(word in bold for word in words)
+    assert "outside" not in bold
 
 
 @pytest.mark.parametrize(

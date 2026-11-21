@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page, type TestInfo } from '@playwright/test';
 import { test } from './auth-fixture';
-import type { AdminCache, PitchAnalysisDTO } from '../src/api';
+import type { AdminCache, JobDTO, PitchAnalysisDTO } from '../src/api';
 import { songArtwork, songVersions } from './song-fixtures';
 import { cleanupSongRegenerationFixture, seedCachedSongs, seedSongRegenerationFixture, type SongRegenerationFixture } from './cache-fixture';
 
@@ -716,6 +716,91 @@ for (const viewport of [mobile, desktop]) {
     expect(afterGuides.seekEvents).toBe(0);
   });
 }
+
+// A complete unworded canonical cue and a partially measured repeated-word
+// line share one real persisted job; the browser consumes its derived API data.
+for (const viewport of [mobile, desktop]) {
+  test(`line-pitch fallback ${viewport.width} renders phrase and estimated word rows`, async ({ page }, info) => {
+    test.setTimeout(120_000);
+    expect(process.env.QUEUE_CONCURRENCY).toBe('0');
+    await page.setViewportSize(viewport);
+    let jobId: number | undefined;
+    try {
+      await page.goto('/');
+      const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
+      const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/line-pitch-fallback.json'), 'utf8'));
+      const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
+        file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+        detect_pitch: 'true', extract_lyrics: 'true', pitch_semitones: '0', tempo_percent: '100',
+      } });
+      expect(response.status()).toBe(200);
+      jobId = (await response.json()).id as number;
+      execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(jobId)], {
+        cwd: process.env.E2E_REPO_ROOT!,
+        input: JSON.stringify({ ...fixture, playback_labels: ['song'] }),
+        env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+      const completedResponse = await page.request.get(`/api/jobs/${jobId}`);
+      expect(completedResponse.ok()).toBe(true);
+      const completed = await completedResponse.json() as JobDTO;
+      expect(completed.status).toBe('done');
+      expect(completed.lyric_pitch_lines).not.toBeNull();
+      const associations = completed.lyric_pitch_lines!;
+      const lineOnly = associations.find(item => item.source_kind === 'canonical' && item.source_index === 0)!;
+      expect(lineOnly).toMatchObject({ start_s: 2, end_s: 4, bounds_source: 'provider-synced', words: [] });
+      expect(lineOnly.tracks.find(track => track.track_index === 0)?.note_indices).toEqual([0, 1, 2]);
+      const partial = associations.find(item => item.source_kind === 'canonical' && item.source_index === 1)!;
+      expect(partial.words.map(word => [word.token_index, word.origin])).toEqual([
+        [0, 'interpolated'], [1, 'measured'], [2, 'interpolated'], [3, 'measured'], [4, 'interpolated'],
+      ]);
+
+      await page.reload();
+      const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
+      await expect(view).toBeVisible();
+      const player = view.locator('audio[controls]');
+      await player.evaluate(audio => { audio.preload = 'auto'; audio.load(); });
+      await expect.poll(() => player.evaluate(audio => Number.isFinite(audio.duration) && audio.seekable.length > 0)).toBe(true);
+      expect(new URL(await player.evaluate(audio => audio.currentSrc)).pathname).toBe(`/api/jobs/${jobId}/results/song`);
+      await player.evaluate(audio => { audio.currentTime = 3; });
+      await expect.poll(() => player.evaluate(audio => !audio.seeking && Math.abs(audio.currentTime - 3) < 0.05)).toBe(true);
+      const reader = view.getByLabel('Current karaoke line');
+      await expect(reader.getByRole('group', { name: 'Current lyrics' })).toContainText('Quiet river sings');
+      await expect(reader.getByRole('group', { name: 'Next lyrics' })).toContainText(`go go don't stop again`);
+      const pitches = view.getByRole('button', { name: 'Pitches', exact: true });
+      await pitches.click();
+      await expect(reader.getByRole('group', { name: 'Current lyrics' })
+        .getByRole('group', { name: 'Estimated pitches for this line: C4 D4 E4', exact: true })).toBeVisible();
+      await expect(reader.getByRole('group', { name: 'Next lyrics' })
+        .getByRole('group', { name: 'Estimated pitches for go: F4', exact: true })).toBeVisible();
+      await expect(reader.getByRole('group', { name: 'Next lyrics' })
+        .getByRole('group', { name: 'Pitches for go: G4', exact: true })).toBeVisible();
+      const mediaBefore = await player.evaluate(audio => ({
+        time: audio.currentTime, source: audio.currentSrc, rate: audio.playbackRate, paused: audio.paused,
+      }));
+      expect(mediaBefore.paused).toBe(true);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await compare(reader, info, `line-pitch-fallback-${viewport.width}.png`);
+      expect(await player.evaluate(audio => ({
+        time: audio.currentTime, source: audio.currentSrc, rate: audio.playbackRate, paused: audio.paused,
+      }))).toEqual(mediaBefore);
+      await info.attach('line-pitch-fallback-api', {
+        body: Buffer.from(JSON.stringify({
+          viewport, jobId,
+          line: { start_s: lineOnly.start_s, end_s: lineOnly.end_s, note_indices: lineOnly.tracks[0].note_indices },
+          partialWordOrigins: partial.words.map(word => word.origin),
+          capturedRows: ['canonical phrase-level pitches', 'estimated missing-word pitches', 'measured word pitches'],
+        })), contentType: 'application/json',
+      });
+    } finally {
+      await page.goto('about:blank');
+      if (jobId !== undefined) {
+        const deleted = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+        expect(deleted.status()).toBe(204);
+      }
+    }
+  });
+}
+
 
 // Synthetic alignment stresses a crowded word without changing the captured
 // CREPE/Whisper provenance fixture above. Audio remains paused at a fixed seek.

@@ -36,6 +36,7 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
     original_key: "C major",
     output_key: "D major",
     result_revision: null,
+    lyric_pitch_lines: null,
     manifest: [{
       label: "song",
       display_name: "song",
