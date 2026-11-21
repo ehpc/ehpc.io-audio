@@ -71,13 +71,50 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
       }
       expect(actual).toEqual(expected);
     }
-    const melismaIndex = analysis.words.findIndex((word, wordIndex) => analysis.tracks[index].notes.filter(note => note.word_indices.includes(wordIndex)).length >= 2
-      && job!.transcript!.segments.some(segment => segment.start_s <= word.start_s * 1.25 && segment.end_s >= word.end_s * 1.25 && segment.text.split(/\s+/).filter(cell => cell.toLowerCase() === word.text.toLowerCase()).length === 1));
-    if (melismaIndex >= 0) {
-      const notes = analysis.tracks[index].notes.filter(note => note.word_indices.includes(melismaIndex));
-      const sequence = notes.map(note => note.note).join(' ');
-      expect(track.text).toContain(sequence);
-      proofs.push({ stem: track.label, word: analysis.words[melismaIndex].text, detected_notes: notes, sequence });
+    for (const [wordIndex, word] of analysis.words.entries()) {
+      const detectedNotes = analysis.tracks[index].notes.filter(note => note.word_indices.includes(wordIndex));
+      if (detectedNotes.length < 2) continue;
+      const segmentIndex = job!.transcript!.segments.findIndex(segment =>
+        segment.start_s <= word.start_s * 1.25 && segment.end_s >= word.end_s * 1.25
+        && segment.text.split(/\s+/).filter(cell => cell.toLowerCase() === word.text.toLowerCase()).length === 1);
+      if (segmentIndex < 0) continue;
+      const segment = job!.transcript!.segments[segmentIndex];
+      const cells = segment.text.split(/\s+/);
+      const cellIndex = cells.findIndex(cell => cell.toLowerCase() === word.text.toLowerCase());
+      // This known English fixture's selected word must be one complete token.
+      const tokenize = (cell: string) => [...cell.normalize('NFKC').matchAll(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)];
+      if (tokenize(cells[cellIndex]).length !== 1) continue;
+      const tokenIndex = cells.slice(0, cellIndex).reduce((count, cell) => count + tokenize(cell).length, 0);
+      const association = job!.lyric_pitch_lines?.find(line => line.source_kind === 'segment' && line.source_index === segmentIndex);
+      const associatedWord = association?.words.find(item => item.token_index === tokenIndex && item.origin === 'measured');
+      if (!associatedWord || Math.abs(associatedWord.start_s - word.start_s) > 1e-6
+        || Math.abs(associatedWord.end_s - word.end_s) > 1e-6) continue;
+      const noteIndices = associatedWord.tracks.find(item => item.track_index === index)?.note_indices;
+      if (!noteIndices?.length) continue;
+      const expectedIndices = analysis.tracks[index].notes.flatMap((note, noteIndex) =>
+        note.word_indices.includes(wordIndex) || (note.start_s < word.end_s && note.end_s > word.start_s) ? [noteIndex] : []);
+      expect(noteIndices).toEqual(expectedIndices);
+      const noteNames = expectedIndices.map(noteIndex => analysis.tracks[index].notes[noteIndex].note);
+      const sequence = noteNames.filter((name, position) => position === 0 || name !== noteNames[position - 1]).join(' ');
+      const seconds = Math.floor(segment.start_s / 1.25);
+      const timestamp = `[${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}]`;
+      let lyricRow = lines.findIndex(line => line.startsWith(`${timestamp} `));
+      expect(lyricRow).toBeGreaterThanOrEqual(1);
+      let offset = cellIndex;
+      let rowCells = [...lines[lyricRow].slice(timestamp.length + 1).matchAll(/\S+/g)];
+      while (offset >= rowCells.length) {
+        expect(rowCells.length).toBeGreaterThan(0);
+        offset -= rowCells.length;
+        lyricRow += 3;
+        expect(lyricRow).toBeLessThan(lines.length);
+        rowCells = [...lines[lyricRow].slice(timestamp.length + 1).matchAll(/\S+/g)];
+      }
+      expect(rowCells[offset][0].toLowerCase()).toBe(word.text.toLowerCase());
+      const cellStart = timestamp.length + 1 + rowCells[offset].index!;
+      const cellEnd = offset + 1 < rowCells.length ? timestamp.length + 1 + rowCells[offset + 1].index! : undefined;
+      expect(lines[lyricRow - 1].slice(cellStart, cellEnd).trim()).toBe(sequence);
+      proofs.push({ stem: track.label, word: word.text, detected_notes: detectedNotes, note_indices: noteIndices, sequence });
+      break;
     }
   }
   expect(proofs.some(proof => proof.stem === 'vocals')).toBe(true);
