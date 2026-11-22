@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections import Counter
 from typing import Annotated, Literal, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,10 +14,12 @@ from backend.routes.results import _tracked_thread
 from backend.session import get_session_id
 from backend.source_identity import open_source
 from separator.lyrics import (
+    LyricLineProjection,
     TranscriptSection,
     ordered_lyric_lines,
     transcript_from_json,
 )
+from separator.lyrics_reference import tokens
 
 router = APIRouter(tags=["learning progress"])
 Hint = Literal["full", "partial", "first", "hidden"]
@@ -32,6 +35,7 @@ class LearningLine(TypedDict):
     text: str
     onset_s: float | None
     end_s: float | None
+    playback_end_s: float | None
     onset_source: str
 
 
@@ -110,12 +114,25 @@ def _document(raw: str) -> LearningDocument:
             valid_sections.append((index, section))
     transcript = transcript_from_json(json.dumps(value))
     projected = ordered_lyric_lines(transcript)
+    word_claims = Counter(word.word_index for line in projected for word in line.words)
+
+    def playback_end(line: LyricLineProjection) -> float | None:
+        expected = tokens(line.text)
+        if not expected or line.onset_s is None:
+            return None
+        final = [word for word in line.words if word.token_index == len(expected) - 1]
+        if len(final) != 1 or word_claims[final[0].word_index] != 1:
+            return None
+        word = transcript.words[final[0].word_index]
+        return word.end_s if word.end_s > line.onset_s else None
+
     lines: list[LearningLine] = [
         {
             "id": _hash([i, line.text]),
             "text": line.text,
             "onset_s": line.onset_s,
             "end_s": line.end_s,
+            "playback_end_s": playback_end(line),
             "onset_source": line.onset_source,
         }
         for i, line in enumerate(projected)

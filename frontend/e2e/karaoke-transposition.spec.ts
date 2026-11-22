@@ -300,10 +300,13 @@ for (const viewport of [
       await fullscreen.click();
       const dialog = page.getByRole('dialog', { name: 'Karaoke fullscreen', exact: true });
       await expect(dialog).toBeVisible();
-      const fullscreenRaise = dialog.getByRole('button', { name: 'Raise reference pitch one semitone', exact: true });
-      await fullscreenRaise.click();
-      await expect(dialog.locator('.pitch-transpose-value')).toHaveText('Reference pitch: +13 semitones');
+      await expect(dialog.getByRole('button', { name: 'Raise reference pitch one semitone', exact: true })).toHaveCount(0);
+      await expect(dialog.getByRole('group', { name: 'Reference pitch controls' })).toHaveCount(0);
+      await expect(dialog.locator('.timeline-karaoke-pitches, .timeline-karaoke-line-pitches')).toHaveCount(0);
       await dialog.getByRole('button', { name: 'Exit karaoke fullscreen', exact: true }).click();
+      await expect(status).toHaveText('Reference pitch: +12 semitones');
+      await expect(note).toHaveAttribute('data-note', 'F5');
+      await raise.click();
       await expect(status).toHaveText('Reference pitch: +13 semitones');
       await expect(note).toHaveAttribute('data-note', 'F#5');
       const switchedAudio = await audio.evaluate(element => ({ time: element.currentTime, rate: element.playbackRate, paused: element.paused, source: element.currentSrc }));

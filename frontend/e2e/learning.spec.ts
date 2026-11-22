@@ -4,11 +4,59 @@ import { test } from './auth-fixture';
 import { cleanupLearning, seedLearning } from './learning-fixture';
 import type { LearningDocument } from '../src/api';
 
+type NativeTailAudio = HTMLAudioElement & {
+  tailStarted?: boolean;
+  tailSample?: { time: number; paused: boolean };
+};
+
 test.afterEach(async ({ page }) => { await cleanupLearning(page); });
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`learning at ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width < 500, hasTouch: viewport.width < 500 });
+    test('native original audio finishes a measured final word beyond the next provider cue', async ({ page }, info) => {
+      const tempo = viewport.width < 500 ? 80 : 125;
+      const { id, dialog } = await seedLearning(page, { wordTail: true, tempo });
+      const audio = dialog.locator('audio');
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.readyState)).toBeGreaterThanOrEqual(1);
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeCloseTo(0.2, 1);
+      await audio.evaluate((element: HTMLAudioElement) => {
+        const observed = element as NativeTailAudio;
+        const playing = () => { observed.tailStarted = true; };
+        const sample = () => {
+          if (!element.paused && element.currentTime > 1.45) {
+            observed.tailSample = { time: element.currentTime, paused: element.paused };
+            element.removeEventListener('timeupdate', sample);
+          }
+        };
+        element.addEventListener('playing', playing, { once: true });
+        element.addEventListener('timeupdate', sample);
+        element.addEventListener('pause', () => {
+          element.removeEventListener('playing', playing);
+          element.removeEventListener('timeupdate', sample);
+        }, { once: true });
+      });
+      await audio.click({ position: { x: 20, y: 20 } });
+      // Provider's next cue is 1.2; the separately measured final word is
+      // 1.45–1.9, and the next measured word starts at 2.2.
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) =>
+        (element as NativeTailAudio).tailStarted === true && element.paused)).toBe(true);
+      const { sample, stopped } = await audio.evaluate((element: HTMLAudioElement) => ({
+        sample: (element as NativeTailAudio).tailSample,
+        stopped: element.currentTime,
+      }));
+      expect(sample).toBeDefined();
+      expect(sample?.paused).toBe(false);
+      expect(sample!.time).toBeGreaterThan(1.45);
+      expect(stopped).toBeCloseTo(1.9, 1);
+      const document = await (await page.request.get(`/api/jobs/${id}/learning-progress`)).json() as LearningDocument;
+      expect(document.lines[0].playback_end_s).toBe(1.9);
+      await writeFile(info.outputPath(`learning-tail-${viewport.width}.json`), JSON.stringify({ tempo, sample, stopped, line: document.lines[0] }, null, 2));
+      const next = dialog.getByRole('button', { name: 'Silver branches gently sway' });
+      if (viewport.width < 500) await next.tap(); else await next.click();
+      await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.currentTime)).toBeCloseTo(1.2, 1);
+      expect(await audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
+    });
     test('practice stages, reviews, persistence and real section playback', async ({ page }, info) => {
       const { id, dialog, trigger } = await seedLearning(page);
       const activate = (control: Locator) => viewport.width < 500 ? control.tap() : control.click();

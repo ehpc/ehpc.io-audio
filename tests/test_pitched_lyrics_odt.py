@@ -10,7 +10,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import db, queue
-from separator.lyrics import Transcript, TranscriptSegment, TranscriptWord
+from separator.lyric_pitch import lyric_pitch_lines
+from separator.lyrics import (
+    CanonicalWordPosition,
+    Transcript,
+    TranscriptSegment,
+    TranscriptWord,
+)
 from separator.lyrics_reference import ReferenceLine, ReferenceReview
 from separator.pitch import (
     PitchAnalysis,
@@ -139,6 +145,89 @@ def test_odt_package_roundtrips_shared_pairs_spaces_unicode_and_styles() -> None
         assert face is not None
         assert face.get(f"{{{NS['style']}}}font-pitch") == "fixed"
         assert face.get(f"{{{NS['style']}}}font-family-generic") == "modern"
+
+
+def test_line_only_pitches_remain_separate_from_word_cells_in_txt_and_odt() -> None:
+    word = TranscriptWord(1, 1.7, "middle", alignment_score=0.8)
+    transcript = Transcript(
+        words=[word],
+        reference=ReferenceReview(
+            "matched",
+            "synthetic",
+            duration_s=13,
+            provider_timing_status="validated",
+            lines=[
+                ReferenceLine(
+                    "before middle after", provider_start_s=2, provider_end_s=6
+                ),
+                ReferenceLine(
+                    "entirely unanchored", provider_start_s=8, provider_end_s=12
+                ),
+            ],
+        ),
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 1)],
+    )
+    notes = [
+        PitchNote(1, 1.3, 60, 261.6, 0.9),
+        PitchNote(1.3, 1.6, 62, 293.7, 0.9),
+        *[
+            PitchNote(2 + i * 0.1, 2.08 + i * 0.1, midi, 261.6, 0.9)
+            for i, midi in enumerate([60, 60, 62, 60, 72] * 7)
+        ],
+        PitchNote(8.2, 8.4, 67, 392, 0.9),
+        PitchNote(8.5, 8.7, 69, 440, 0.9),
+    ]
+    analysis = PitchAnalysis(13, 13, [PitchTrack("lead", notes)], words=[word])
+    before = pitch_to_json(analysis)
+    associations = lyric_pitch_lines(transcript, analysis)
+    assert associations[0].tracks[0].note_indices == list(range(2, 37))
+    assert associations[1].words == []
+    assert associations[1].tracks[0].note_indices == [37, 38]
+    blocks = pitched_lyrics_document(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
+    text = pitched_lyrics_text(
+        transcript, analysis, analysis.tracks[0], associations=associations
+    )
+    first = next(
+        i for i, block in enumerate(blocks) if block.text.startswith("[00:02]")
+    )
+    residual = blocks[first - 2 : first]
+    assert all(block.pitch_only for block in residual)
+    assert residual[0].text.startswith("[line] ")
+    assert residual[1].text.startswith(" " * len("[line] "))
+    assert all(display_width(block.text) <= LINE_COLUMNS for block in residual)
+    expected_notes = ["C4", "D4", "C4", "C5"] * 7
+    assert " ".join(block.text[7:] for block in residual).split() == expected_notes
+    pair = blocks[first]
+    assert pair.pitch is not None
+    for cell, label in (("before", "?"), ("middle", "C4 D4"), ("after", "?")):
+        assert pair.pitch[pair.text.index(cell) :].startswith(label)
+    second = next(
+        i for i, block in enumerate(blocks) if block.text.startswith("[00:08]")
+    )
+    assert blocks[second - 1].pitch_only
+    assert blocks[second - 1].text == "[line] G4 A4"
+    unanchored_pitch = blocks[second].pitch
+    assert unanchored_pitch is not None and not unanchored_pitch.strip()
+    assert pitch_to_json(analysis) == before
+
+    with zipfile.ZipFile(io.BytesIO(pitched_lyrics_odt(blocks))) as archive:
+        content = ET.fromstring(archive.read("content.xml"))
+        styles = ET.fromstring(archive.read("styles.xml"))
+    paragraphs = content.findall("office:body/office:text/text:p", NS)
+    assert len(paragraphs) == len(blocks)
+    for block, paragraph in zip(blocks, paragraphs, strict=True):
+        expected = block.text if block.pitch is None else f"{block.pitch}\n{block.text}"
+        assert odf_text(paragraph) == expected
+        if block.pitch_only:
+            assert expected in text
+            properties = odf_properties(styles, paragraph)
+            assert properties[f"{{{NS['fo']}}}keep-with-next"] == "always"
+            pitch_properties = odf_properties(styles, paragraph[0], properties)
+            assert grayscale(pitch_properties[f"{{{NS['fo']}}}color"]) > grayscale(
+                properties[f"{{{NS['fo']}}}color"]
+            )
 
 
 def test_long_rows_wrap_only_between_cells_and_keep_timestamp_columns() -> None:

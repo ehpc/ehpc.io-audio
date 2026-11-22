@@ -16,6 +16,7 @@ from backend import config, db, drain, source_identity
 from backend.main import JobAccess
 from backend.routes import learning_progress, results
 from separator.lyrics import (
+    CanonicalWordPosition,
     Transcript,
     TranscriptSection,
     TranscriptSegment,
@@ -515,6 +516,94 @@ def test_sparse_difficulties_and_weighted_rotation_persist_across_requests(clien
             conn.execute("SELECT state_json FROM learning_progress").fetchone()[0]
         )
     assert stored["difficulties"] == {first: 5}
+
+
+def test_playback_end_unique_final_word_preserves_progress(client):
+    original = Transcript(
+        reference=ReferenceReview(
+            "matched",
+            "Validated timing",
+            duration_s=12,
+            provider_timing_status="validated",
+            lines=[
+                ReferenceLine("We pretend", provider_start_s=1, provider_end_s=3),
+                ReferenceLine("Next line", provider_start_s=3, provider_end_s=5),
+            ],
+        ),
+        words=[
+            TranscriptWord(3.1, 3.7, "PRETEND", origin="reference-aligned"),
+            TranscriptWord(4, 4.2, "Next", origin="reference-aligned"),
+            TranscriptWord(6.5, 7, "extra", origin="asr-extra"),
+        ],
+        canonical_word_positions=[
+            CanonicalWordPosition(0, 0, 1),
+            CanonicalWordPosition(1, 1, 0),
+        ],
+        asr_extras=[TranscriptSegment(6, 7.5, "extra")],
+    )
+    jid = job(client, document=original)
+    before = get(client, jid)
+    assert [
+        (line["onset_s"], line["end_s"], line["playback_end_s"])
+        for line in before["lines"]
+    ] == [(1, None, 3.7), (3, None, None), (6, 7.5, 7)]
+    saved = patch(
+        client, jid, before, hint_level="hidden", line_id=before["lines"][0]["id"]
+    )
+    saved = review(client, jid, saved, before["lines"][0]["id"])
+    retimed = replace(
+        original, words=[replace(original.words[0], end_s=3.8), *original.words[1:]]
+    )
+    db.mark_done(jid, [], retimed)
+    after = get(client, jid)
+    assert after["lines"][0]["playback_end_s"] == 3.8
+    assert after["document_version"] == before["document_version"]
+    assert [line["id"] for line in after["lines"]] == [
+        line["id"] for line in before["lines"]
+    ]
+    assert after["progress"] == saved["progress"]
+
+    ambiguous = replace(
+        retimed,
+        canonical_word_positions=[
+            *retimed.canonical_word_positions,
+            CanonicalWordPosition(0, 0, 1),
+        ],
+    )
+    db.mark_done(jid, [], ambiguous)
+    assert get(client, jid)["lines"][0]["playback_end_s"] is None
+
+    wrong_text = replace(
+        retimed, words=[replace(retimed.words[0], text="wrong"), *retimed.words[1:]]
+    )
+    db.mark_done(jid, [], wrong_text)
+    assert get(client, jid)["lines"][0]["playback_end_s"] is None
+
+
+def test_playback_end_requires_a_timed_line_and_a_final_word_after_its_onset(client):
+    document = Transcript(
+        reference=ReferenceReview(
+            "matched",
+            "Validated timing",
+            duration_s=8,
+            provider_timing_status="validated",
+            lines=[ReferenceLine("Early word", provider_start_s=2, provider_end_s=4)],
+        ),
+        words=[TranscriptWord(1, 1.5, "word")],
+        canonical_word_positions=[CanonicalWordPosition(0, 0, 1)],
+    )
+    assert (
+        get(client, job(client, document=document))["lines"][0]["playback_end_s"]
+        is None
+    )
+
+    independent = Transcript(
+        segments=[TranscriptSegment(1, 4, "A real ending")],
+        words=[TranscriptWord(2.5, 3.2, "ending")],
+    )
+    line = get(client, job(client, document=independent))["lines"][0]
+    assert line["onset_source"] == "acoustic"
+    assert (line["end_s"], line["playback_end_s"]) == (4, 3.2)
 
 
 def test_provider_and_word_retiming_versions_follow_displayed_projection(client):

@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { JobDTO, PitchNoteDTO } from "~/api";
+import type { JobDTO, LearningHint, PitchNoteDTO } from "~/api";
 import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, recoverPitchVocals, resultUrl } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
 import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
@@ -21,6 +21,7 @@ const MAX_REFERENCE_SHIFT = 24;
 const OCTAVE = 12;
 const AXIS_PADDING = 2;
 const OCTAVE_OFFSETS = [-OCTAVE, OCTAVE];
+const HINT_LEVELS: LearningHint[] = ["full", "partial", "first", "hidden"];
 
 function shiftReferenceNote(note: PitchNoteDTO, semitones: number): PitchNoteDTO {
   if (semitones === 0) return note;
@@ -70,7 +71,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [nativePaused, setNativePaused] = createSignal(true);
   const [seeking, setSeeking] = createSignal(false);
   const [seekRevision, setSeekRevision] = createSignal(0);
-  const [karaokeFullscreen, setKaraokeFullscreen] = createSignal(false);
+  const [karaokeFullscreen, setKaraokeFullscreen] = createSignal<"karaoke" | "learning" | null>(null);
+  const [learningHint, setLearningHint] = createSignal<LearningHint>("full");
+  const [learningLoading, setLearningLoading] = createSignal(false);
   const [karaokeFontSize, setKaraokeFontSize] = createSignal<number>(LYRIC_FONT.default);
   const [karaokePitches, setKaraokePitches] = createSignal(false);
   const [referenceShift, setReferenceShift] = createSignal(0);
@@ -78,7 +81,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   let fullscreenReturnFocus: HTMLElement | null = null;
   const openKaraokeFullscreen = (trigger: HTMLButtonElement) => {
     fullscreenReturnFocus = trigger;
-    setKaraokeFullscreen(true);
+    setKaraokeFullscreen("karaoke");
   };
   const [recoveredVocals, setRecoveredVocals] = createSignal(false);
   const [recoveringVocals, setRecoveringVocals] = createSignal(false);
@@ -194,15 +197,15 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (!userScroll) return;
     userScrolled = true;
     scrollSettled = false;
-    setBrowsing(true);
     if (left !== previousLeft) {
       const x = AXIS_WIDTH + position() * zoom();
       const visibleAt = (offset: number) => x >= offset + AXIS_WIDTH && x < offset + viewport.clientWidth;
-      const distanceAt = (offset: number) => Math.max(offset + AXIS_WIDTH - x, x - offset - viewport.clientWidth, 0);
-      const wasVisible = visibleAt(previousLeft);
       const isVisible = visibleAt(left);
-      if (!wasVisible && isVisible) returnedToPlayhead = true;
-      else if (!isVisible && (wasVisible || distanceAt(left) > distanceAt(previousLeft))) returnedToPlayhead = false;
+      if (isVisible) returnedToPlayhead = true;
+      else {
+        returnedToPlayhead = false;
+        setBrowsing(true);
+      }
     }
     settleLegacyScroll();
   };
@@ -412,7 +415,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [activeSlot, setActiveSlot] = createSignal(0);
   const sources = [createSignal({ url: referenceUrl() }), createSignal<{ url: string | undefined }>({ url: undefined })] as const;
   const slots: HTMLAudioElement[] = [];
-  let pending: { slot: number; label: string; phase: "loading" | "seeking" | "playing"; wasPlaying: boolean } | undefined;
+  let pending: { slot: number; label: string; phase: "loading" | "seeking" | "playing"; wasPlaying: boolean; learningEntry: boolean } | undefined;
   let nativeSeekPending = false;
   let internalSeekTime: number | null = null;
   const setAudioTime = (seconds: number) => {
@@ -439,7 +442,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
   const referenceFailed = (candidate: NonNullable<typeof pending>, error: unknown) => {
     if (pending !== candidate) return;
-    cancelReference();
+    cancelReference(!candidate.learningEntry);
+    if (candidate.learningEntry) setLearningLoading(false);
     setReferenceError(error instanceof Error || error instanceof DOMException
       ? error.message : "This reference audio could not be played.");
   };
@@ -460,6 +464,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     previous.load();
     sources[oldSlot][1]({ url: undefined });
     setReference(candidate.label);
+    if (candidate.learningEntry) setLearningLoading(false);
     syncMediaDuration();
     internalSeekTime = null;
     nativeSeekPending = false;
@@ -480,8 +485,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (target.readyState < 1) return;
     const current = Math.max(0, Math.min(analysis().duration_s, fromAudioTime(audio.currentTime)));
     const requestedTime = toAudioTime(current, candidate.label);
+    const shouldPlay = candidate.learningEntry ? candidate.wasPlaying : !audio.paused && !audio.ended;
     if (Number.isFinite(target.duration)
-      && (requestedTime > target.duration || (!audio.paused && !audio.ended && requestedTime >= target.duration))) {
+      && (requestedTime > target.duration || (shouldPlay && requestedTime >= target.duration))) {
       referenceFailed(candidate, new Error("This background does not cover the current playback position."));
       return;
     }
@@ -496,10 +502,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       }
       return;
     }
-    if (target.readyState < (audio.paused || audio.ended ? 2 : 3)) return;
+    if (target.readyState < (shouldPlay ? 3 : 2)) return;
     target.volume = audio.volume;
     target.muted = audio.muted;
-    if (audio.paused || audio.ended) {
+    if (!shouldPlay) {
       promoteReference(candidate);
       return;
     }
@@ -507,18 +513,46 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     candidate.wasPlaying = true;
     void target.play().then(() => promoteReference(candidate), error => referenceFailed(candidate, error));
   };
-  const changeReference = (label: string) => {
+  const changeReference = (label: string, learningIntent?: boolean) => {
+    if (karaokeFullscreen() === "learning" && label !== "instruments") return;
     cancelReference();
     if (label === reference()) return;
     const url = referenceUrl(label);
     if (!url) return;
     const slot = 1 - activeSlot();
-    pending = { slot, label, phase: "loading", wasPlaying: false };
+    pending = { slot, label, phase: "loading", wasPlaying: learningIntent ?? false, learningEntry: learningIntent !== undefined };
     setPlaybackError("");
     setReferenceError("");
     sources[slot][1]({ url });
     slots[slot].load();
   };
+  const openLearning = (trigger: HTMLButtonElement) => {
+    if (!hasOutput("instruments") || !audio) return;
+    fullscreenReturnFocus = trigger;
+    setLearningHint("full");
+    if (reference() !== "instruments" || pending) {
+      const wasPlaying = !audio.paused || Boolean(pending?.wasPlaying);
+      playAttempt++;
+      cancelReference(false);
+      setPosition(fromAudioTime(audio.currentTime));
+      audio.pause();
+      if (reference() !== "instruments") {
+        setLearningLoading(true);
+        changeReference("instruments", wasPlaying);
+      } else if (wasPlaying) {
+        void audio.play().catch(error => setPlaybackError(error instanceof Error ? error.message : "Playback could not be resumed."));
+      }
+    }
+    setKaraokeFullscreen("learning");
+  };
+  const closeKaraokeFullscreen = () => {
+    if (learningLoading()) {
+      cancelReference(false);
+      setLearningLoading(false);
+    }
+    setKaraokeFullscreen(null);
+  };
+  const learningBlocked = () => karaokeFullscreen() === "learning" && (learningLoading() || reference() !== "instruments");
   const seek = (seconds: number, maximum = analysis().duration_s) => {
     trace.break();
     const next = Math.max(0, Math.min(maximum, seconds));
@@ -529,6 +563,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
   const mediaLimit = () => mediaDuration() || toAudioTime(analysis().duration_s);
   const seekMedia = (seconds: number) => {
+    if (learningBlocked()) return;
     const limit = mediaLimit();
     seek(fromAudioTime(Math.max(0, Math.min(limit, seconds))), fromAudioTime(limit));
   };
@@ -562,7 +597,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     seek((event.clientX - event.currentTarget.getBoundingClientRect().left - AXIS_WIDTH) / zoom());
   };
   const togglePlayback = () => {
-    if (!referenceUrl()) return;
+    if (!referenceUrl() || learningBlocked()) return;
     if (pending?.phase === "playing") {
       cancelReference(false);
       syncNativePlayback();
@@ -670,32 +705,45 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     setSelectedNote(null);
     dismissTooltip();
   };
-  const TransportControls = () => (
+  const TransportControls = (control: { fullscreen?: boolean }) => (
         <div class="pitch-transport" role="group" aria-label="Timeline playback">
           <div class="pitch-skip-controls">
-          <Button type="button" variant="outline" aria-label="Lower reference pitch one semitone" title="Lower displayed reference pitch one semitone; backing audio is unchanged" disabled={referenceShift() <= shiftBounds().min} onClick={() => changeReferencePitch(-1)}>−1 ♫</Button>
-          <Button type="button" variant="outline" aria-label="Back 5 seconds" title="Back 5 seconds" onClick={() => skipMedia(-5)}>−5 s</Button>
-          <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl()} onClick={togglePlayback}>
+          <Show when={!control.fullscreen}>
+            <Button type="button" variant="outline" aria-label="Lower reference pitch one semitone" title="Lower displayed reference pitch one semitone; backing audio is unchanged" disabled={referenceShift() <= shiftBounds().min} onClick={() => changeReferencePitch(-1)}>−1 ♫</Button>
+          </Show>
+          <Show when={control.fullscreen && karaokeFullscreen() === "learning"}>
+            <Button type="button" variant="outline" class="min-h-11" disabled={learningHint() === "full"} onClick={() => setLearningHint(HINT_LEVELS[HINT_LEVELS.indexOf(learningHint()) - 1])}>More hints</Button>
+          </Show>
+          <Button type="button" variant="outline" aria-label="Back 5 seconds" title="Back 5 seconds" disabled={learningBlocked()} onClick={() => skipMedia(-5)}>−5 s</Button>
+          <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl() || learningBlocked()} onClick={togglePlayback}>
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
               <Show when={nativePaused()} fallback={<><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></>}>
                 <path d="M7 3v18l15-9z" />
               </Show>
             </svg>
           </Button>
-          <Button type="button" variant="outline" aria-label="Forward 5 seconds" title="Forward 5 seconds" onClick={() => skipMedia(5)}>+5 s</Button>
-          <Button type="button" variant="outline" aria-label="Raise reference pitch one semitone" title="Raise displayed reference pitch one semitone; backing audio is unchanged" disabled={referenceShift() >= shiftBounds().max} onClick={() => changeReferencePitch(1)}>+1 ♫</Button>
+          <Button type="button" variant="outline" aria-label="Forward 5 seconds" title="Forward 5 seconds" disabled={learningBlocked()} onClick={() => skipMedia(5)}>+5 s</Button>
+          <Show when={!control.fullscreen}>
+            <Button type="button" variant="outline" aria-label="Raise reference pitch one semitone" title="Raise displayed reference pitch one semitone; backing audio is unchanged" disabled={referenceShift() >= shiftBounds().max} onClick={() => changeReferencePitch(1)}>+1 ♫</Button>
+          </Show>
+          <Show when={control.fullscreen && karaokeFullscreen() === "learning"}>
+            <Button type="button" variant="outline" class="min-h-11" disabled={learningHint() === "hidden"} onClick={() => setLearningHint(HINT_LEVELS[HINT_LEVELS.indexOf(learningHint()) + 1])}>Less hints</Button>
+          </Show>
           </div>
-          <div class="pitch-transpose-controls">
-            <Button type="button" variant="outline" aria-label="Lower reference pitch one octave" title="Lower displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() - 12 < shiftBounds().min} onClick={() => changeReferencePitch(-12)}>−12 ♫</Button>
-            <output class="pitch-transpose-value" aria-live="polite">Reference pitch: {referenceShift() > 0 ? "+" : ""}{referenceShift()} semitones</output>
-            <Button type="button" variant="outline" aria-label="Raise reference pitch one octave" title="Raise displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() + 12 > shiftBounds().max} onClick={() => changeReferencePitch(12)}>+12 ♫</Button>
-          </div>
-          <p class="pitch-transpose-help">Reference display only; backing audio and downloads are unchanged.</p>
+          <Show when={!control.fullscreen}>
+            <div class="pitch-transpose-controls" role="group" aria-label="Reference pitch controls">
+              <Button type="button" variant="outline" aria-label="Lower reference pitch one octave" title="Lower displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() - 12 < shiftBounds().min} onClick={() => changeReferencePitch(-12)}>−12 ♫</Button>
+              <Button type="button" variant="outline" aria-label="Raise reference pitch one octave" title="Raise displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() + 12 > shiftBounds().max} onClick={() => changeReferencePitch(12)}>+12 ♫</Button>
+              <Button type="button" class="min-h-11" variant={octaveGuides() ? "secondary" : "outline"} aria-label="Octave guides" aria-pressed={octaveGuides()} title="Show reference guides one octave above and below" onClick={() => setOctaveGuides(value => !value)}>Octave guides</Button>
+              <output class="pitch-transpose-value" aria-live="polite">Reference pitch: {referenceShift() > 0 ? "+" : ""}{referenceShift()} semitones</output>
+            </div>
+            <p class="pitch-transpose-help">Reference display only; backing audio and downloads are unchanged.</p>
+          </Show>
         </div>
   );
 
   return (
-    <section class="pitch-view" aria-label="Karaoke with pitches" inert={karaokeFullscreen()}>
+    <section class="pitch-view" aria-label="Karaoke with pitches" inert={Boolean(karaokeFullscreen())}>
       <div class="pitch-heading">
         <h3 class="text-base font-semibold">Karaoke with pitches</h3>
         <a href={pitchDownloadUrl(props.job.id, props.job.result_revision)} download="" class="text-sm font-medium text-primary hover:underline">Download pitch JSON</a>
@@ -708,7 +756,6 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             <For each={analysis().tracks}>{item => <option value={item.label}>{item.label}</option>}</For>
           </select>
         </label>
-        <Button type="button" class="min-h-11" variant={octaveGuides() ? "secondary" : "outline"} aria-label="Octave guides" aria-pressed={octaveGuides()} title="Show reference guides one octave above and below" onClick={() => setOctaveGuides(value => !value)}>Octave guides</Button>
         <BackgroundControls />
         <div class="pitch-zoom" role="group" aria-label="Timeline zoom">
           <Button type="button" variant="outline" aria-label="Zoom out melody" disabled={zoom() <= MIN_ZOOM} onClick={() => changeZoom(zoom() - ZOOM_STEP)}>−</Button>
@@ -885,12 +932,14 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <Show when={referenceError()}><p role="alert" class="text-sm text-destructive">{referenceError()}</p></Show>
         <TimelineKaraoke job={props.job} position={position()} notes={notes()} trackIndex={trackIndex()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey}
           fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize} showPitches={karaokePitches()} onShowPitches={setKaraokePitches}
-          onFullscreen={openKaraokeFullscreen} />
+          onFullscreen={openKaraokeFullscreen} onLearning={openLearning}
+          learningUnavailableReason={hasOutput("instruments") ? undefined : "Instruments are unavailable for this job. Run Karaoke with pitches again to include them."} />
         <Show when={karaokeFullscreen()}>
-          <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()} notes={notes()} trackIndex={trackIndex()}
+          <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()}
             playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize}
-            showPitches={karaokePitches()} onShowPitches={setKaraokePitches} background={<BackgroundControls />} activeSource={reference()} transport={<TransportControls />}
-            error={referenceError() || playbackError()} onSeek={seekMedia} onKeyDown={togglePlaybackKey} onClose={() => setKaraokeFullscreen(false)} returnFocus={fullscreenReturnFocus} />
+            learningHint={karaokeFullscreen() === "learning" ? learningHint() : undefined} loading={learningBlocked()}
+            background={karaokeFullscreen() === "karaoke" ? <BackgroundControls /> : <span>Instruments only</span>} activeSource={reference()} transport={<TransportControls fullscreen />}
+            error={referenceError() || playbackError()} onSeek={seekMedia} onKeyDown={togglePlaybackKey} onClose={closeKaraokeFullscreen} returnFocus={fullscreenReturnFocus} />
         </Show>
         <For each={[0, 1]}>{index => <Show when={sources[index][0]()} keyed>{source =>
           <audio ref={element => { slots[index] = element; if (index === 0 && !audio) audio = element; }}

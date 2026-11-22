@@ -1,11 +1,17 @@
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal, Show } from "solid-js";
 import { beforeEach, expect, it, vi } from "vitest";
-import type { JobDTO } from "~/api";
+import type { JobDTO, LearningDocument } from "~/api";
+import * as api from "~/api";
 import PitchedLyricsView from "./PitchedLyricsView";
 import ResultsView, { type HistoryScrollRequest } from "./ResultsView";
 import HistoryView from "./HistoryView";
+
+vi.mock("~/api", async importOriginal => {
+  const actual = await importOriginal() as typeof api;
+  return { ...actual, learningProgress: vi.fn(), saveLearningPreferences: vi.fn() };
+});
 
 beforeEach(() => {
   // jsdom has no native media loading; real playback is covered by browser E2E.
@@ -177,4 +183,62 @@ it("scrolls a new history selection to its own karaoke, ignores metadata rerende
     if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
     else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   }
+});
+
+it("practises pitched-only lyrics and shares saved progress with the lyrics entry", async () => {
+  let document: LearningDocument = {
+    document_version: "same-song", saving_available: true,
+    lines: [{ id: "one", text: "Silver horizon", onset_s: 1, end_s: 3, playback_end_s: null, onset_source: "acoustic" }],
+    sections: [], progress: { hint_level: "full", section_id: null, line_id: "one", difficulties: {} },
+  };
+  vi.mocked(api.learningProgress).mockImplementation(async () => structuredClone(document));
+  vi.mocked(api.saveLearningPreferences).mockImplementation(async (_id, update) => {
+    const { document_version: _, ...changes } = update;
+    document = { ...document, progress: { ...document.progress, ...changes } };
+    return structuredClone(document);
+  });
+  const studied = { ...job, transcript: { ...job.transcript!, presentation_lines: [{
+    text: "Silver horizon", source_kind: "segment" as const, source_index: 0, canonical_line_index: null,
+    onset_s: 1, end_s: 3, onset_source: "acoustic" as const, words: [],
+  }] } };
+  const [current, setCurrent] = createSignal(studied);
+  render(() => <ResultsView job={current()} onReset={vi.fn()} />);
+  expect(screen.queryByRole("region", { name: "Lyrics transcript" })).not.toBeInTheDocument();
+  fireEvent.click(within(screen.getByRole("region", { name: "Lyrics with pitches" })).getByRole("button", { name: "Learn lyrics" }));
+  const dialog = await screen.findByRole("dialog", { name: "Learn lyrics" });
+  fireEvent.click(await within(dialog).findByRole("button", { name: "Practice" }));
+  expect(await within(dialog).findByRole("button", { name: "Reveal word 1" })).toHaveTextContent("Sil•••");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Reveal word 1" }));
+  expect(within(dialog).getByRole("button", { name: "Word 1: Silver" })).toBeVisible();
+  const audio = dialog.querySelector("audio")!;
+  const pause = vi.spyOn(audio, "pause");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Close learning" }));
+  await waitFor(() => expect(audio).not.toBeInTheDocument());
+  expect(pause).toHaveBeenCalled();
+  setCurrent({ ...studied, options: { ...studied.options, extract_lyrics: true } });
+  fireEvent.click(within(screen.getByRole("region", { name: "Lyrics transcript" })).getByRole("button", { name: "Learn lyrics" }));
+  expect(await screen.findByRole("button", { name: "Reveal word 1" })).toHaveTextContent("Sil•••");
+});
+
+it("keeps untimed manual practice available without original audio and closes on job change", async () => {
+  const document: LearningDocument = {
+    document_version: "manual", saving_available: false,
+    lines: [{ id: "one", text: "Manual practice", onset_s: null, end_s: null, playback_end_s: null, onset_source: "unknown" }],
+    sections: [], progress: { hint_level: "full", section_id: null, line_id: "one", difficulties: {} },
+  };
+  vi.mocked(api.learningProgress).mockResolvedValue(document);
+  const manual: JobDTO = { ...job, has_original: false, transcript: { ...job.transcript!, presentation_lines: [{
+    text: "Manual practice", source_kind: "untimed", source_index: 0, canonical_line_index: null,
+    onset_s: null, end_s: null, onset_source: "unknown", words: [],
+  }] } };
+  const [current, setCurrent] = createSignal(manual);
+  render(() => <PitchedLyricsView job={current()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Learn lyrics" }));
+  const dialog = await screen.findByRole("dialog", { name: "Learn lyrics" });
+  expect(await within(dialog).findByText(/Original audio is unavailable/)).toBeVisible();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Practice" }));
+  expect(within(dialog).getByRole("button", { name: "Reveal word 1" })).toBeVisible();
+  setCurrent({ ...job, id: 10 });
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Learn lyrics" })).not.toBeInTheDocument());
+  expect(screen.queryByRole("button", { name: "Learn lyrics" })).not.toBeInTheDocument();
 });

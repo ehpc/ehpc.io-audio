@@ -171,28 +171,25 @@ def pitched_lyrics_document(
             rows = textwrap.wrap(
                 labels,
                 width=LINE_COLUMNS,
-                subsequent_indent="  ",
+                initial_indent="[line] ",
+                subsequent_indent=" " * len("[line] "),
                 break_long_words=False,
                 break_on_hyphens=False,
             )
+        blocks = [PitchedLyricsBlock(row, pitch_only=True) for row in rows]
         if association is not None and not association.words and residual:
+            # Line-level notes are not linked to any particular lyric cell.
             lyric_rows = _word_pairs(cells, [""] * len(cells), f"[{prefix}] ")
-            blocks = [PitchedLyricsBlock(row, pitch_only=True) for row in rows[:-1]]
-            blocks.append(
-                PitchedLyricsBlock(
-                    lyric_rows[0].text, rows[-1], keep_with_next=len(lyric_rows) > 1
-                )
-            )
             blocks.extend(
                 PitchedLyricsBlock(
                     row.text,
-                    continuation=True,
+                    row.pitch,
+                    continuation=row.continuation,
                     keep_with_next=index < len(lyric_rows) - 1,
                 )
-                for index, row in enumerate(lyric_rows[1:], start=1)
+                for index, row in enumerate(lyric_rows)
             )
         else:
-            blocks = [PitchedLyricsBlock(row, pitch_only=True) for row in rows]
             blocks.extend(_word_pairs(cells, pitches, f"[{prefix}] "))
         rendered.append(blocks)
         return f"\0{len(rendered) - 1}\0"

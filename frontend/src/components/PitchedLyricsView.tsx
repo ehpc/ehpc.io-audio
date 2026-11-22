@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, type Component } from "solid-js";
 import type { JobDTO } from "~/api";
 import { pitchedLyricsDownloadUrl } from "~/api";
+import LearnLyricsDialog from "~/components/LearnLyricsDialog";
 import { displayOutputLabel } from "~/lib/expectedStems";
 
 const PitchedLyricsView: Component<{ job: JobDTO }> = (props) => {
@@ -33,13 +34,14 @@ const PitchedLyricsView: Component<{ job: JobDTO }> = (props) => {
             <For each={props.job.pitched_lyrics}>{item => <option value={item.label}>{displayOutputLabel(item.label, props.job.options)}</option>}</For>
           </select>
         </label>
+        <LearnLyricsDialog job={props.job} />
         <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "", "txt", props.job.result_revision)} download=""
           class="text-sm font-medium text-primary hover:underline">Download lyrics with pitches TXT</a>
         <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "", "odt", props.job.result_revision)} download=""
           class="text-sm font-medium text-primary hover:underline">Download lyrics with pitches ODT</a>
       </div>
       <p class="text-sm text-muted-foreground">Output clock · pitch {props.job.options.pitch_semitones >= 0 ? "+" : ""}{props.job.options.pitch_semitones} semitones · tempo {props.job.options.tempo_percent}%. Source detections projected, not re-measured.</p>
-      <p class="text-sm text-muted-foreground">Notes above whole words; multiple notes stay together over one word. Long lines continue as aligned pairs. Scroll horizontally on small screens. ODT keeps each pair together on the page, ready to import into Google Docs. ? means unknown, not a rest. Detected melody estimates may be wrong.</p>
+      <p class="text-sm text-muted-foreground">Notes above whole words; multiple notes stay together over one word. [line] notes are not linked to a word. Long lines continue as aligned pairs. Scroll horizontally on small screens. ODT keeps each pair together on the page, ready to import into Google Docs. ? means unknown, not a rest. Detected melody estimates may be wrong.</p>
       <pre class="pitched-lyrics-text" tabIndex={0} role="region" aria-label="Aligned pitch and lyric text">
         <For each={textRuns()}>{run => run.wide
           ? <span style={{ display: "inline-block", width: "2ch" }}>{run.text}</span>

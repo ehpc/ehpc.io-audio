@@ -32,6 +32,10 @@ export default function LearnLyrics(props: { job: JobDTO }) {
     if (!value || !line || start == null || !Number.isFinite(start) || start < 0 || start >= duration) return null;
     const index = value.lines.findIndex(item => item.id === line.id);
     if (index < 0) return null;
+    const measuredEnd = line.playback_end_s;
+    if (measuredEnd !== null && Number.isFinite(measuredEnd) && measuredEnd > start) {
+      return { start, end: Math.min(measuredEnd, duration) };
+    }
     let next: number | null = null;
     let nextIndex = -1;
     value.lines.forEach((item, position) => {

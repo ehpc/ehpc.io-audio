@@ -1,7 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import type { JobDTO, LyricPitchTrackDTO, PitchNoteDTO } from "~/api";
+import type { JobDTO, LearningHint, LyricPitchTrackDTO, PitchNoteDTO } from "~/api";
 import { currentKaraokeLine, karaokeLines, karaokeWordState, type KaraokeLine, type KaraokePart, type KaraokeWord } from "~/lib/karaoke";
 import { Button } from "~/components/button";
+import { studyHint, studyParts } from "~/lib/learning";
 
 // Percent of the normal reader size; shared by inline and fullscreen views.
 export const LYRIC_FONT = { default: 200, min: 75, max: 400, step: 25 } as const;
@@ -21,6 +22,9 @@ interface TimelineKaraokeProps {
   showPitches?: boolean;
   onShowPitches?: (show: boolean) => void;
   onFullscreen?: (trigger: HTMLButtonElement) => void;
+  onLearning?: (trigger: HTMLButtonElement) => void;
+  learningUnavailableReason?: string;
+  learningHint?: LearningHint;
   fit?: boolean;
 }
 
@@ -48,6 +52,14 @@ function displayParts(parts: KaraokePart[]): (string | DisplayWord)[] {
     if (part.length > suffix.length) result.push(part.slice(suffix.length));
   }
   return result;
+}
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+function hintText(text: string, hint: LearningHint | undefined): string {
+  if (!hint || hint === "full") return text;
+  return studyParts(text).map(part => part.word ? studyHint(part.text, hint)
+    : hint === "hidden" ? Array.from(graphemes.segment(part.text), item => /^\s+$/u.test(item.segment) ? item.segment : "•").join("")
+      : part.text).join("");
 }
 
 export default function TimelineKaraoke(props: TimelineKaraokeProps) {
@@ -87,7 +99,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     return labels;
   };
   const [localPitches, setLocalPitches] = createSignal(false);
-  const showPitches = () => props.showPitches ?? localPitches();
+  const showPitches = () => !props.fit && (props.showPitches ?? localPitches());
   const togglePitches = () => props.onShowPitches ? props.onShowPitches(!showPitches()) : setLocalPitches(!showPitches());
   const [sliding, setSliding] = createSignal(false);
   const hasTiming = createMemo(() => lines().some(line => line.timing !== null));
@@ -140,7 +152,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     });
   });
   createEffect(() => {
-    current(); next(); showPitches(); props.notes; props.fontSize;
+    current(); next(); showPitches(); props.notes; props.fontSize; props.learningHint;
     scheduleFit();
   });
   let previous: KaraokeLine | null = null;
@@ -165,7 +177,9 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
 
   return <>
     <div class="timeline-karaoke-controls">
-      <Button type="button" variant={showPitches() ? "secondary" : "outline"} aria-pressed={showPitches()} onClick={togglePitches}>Pitches</Button>
+      <Show when={!props.fit}>
+        <Button type="button" variant={showPitches() ? "secondary" : "outline"} aria-pressed={showPitches()} onClick={togglePitches}>Pitches</Button>
+      </Show>
       <Show when={props.onFontSize}>
         <Button type="button" variant="outline" aria-label="Smaller lyrics" disabled={(props.fontSize ?? LYRIC_FONT.default) <= LYRIC_FONT.min} onClick={() => props.onFontSize?.(Math.max(LYRIC_FONT.min, Math.min(props.fit ? LYRIC_FONT.default : LYRIC_FONT.max, props.fontSize ?? LYRIC_FONT.default) - LYRIC_FONT.step))}>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 19 9 4l6 15M5 14h8M16 12h6" /></svg>
@@ -179,10 +193,15 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" /></svg>
         </Button>
       </Show>
-      <Show when={lines().some(line => line.onsetSource === "provider-synced")}>
+      <Show when={props.onLearning}>
+        <Button type="button" variant="outline" class="min-h-11" disabled={Boolean(props.learningUnavailableReason)}
+          title={props.learningUnavailableReason} onClick={event => props.onLearning?.(event.currentTarget)}>Lyrics learning mode</Button>
+        <Show when={props.learningUnavailableReason}><span class="text-xs text-muted-foreground">{props.learningUnavailableReason}</span></Show>
+      </Show>
+      <Show when={!props.fit && lines().some(line => line.onsetSource === "provider-synced")}>
         <span title="Line cues are provider-synced; word timings are independently estimated.">Synced line cues</span>
       </Show>
-      <Show when={unscheduled().length > 0}>
+      <Show when={!props.fit && unscheduled().length > 0}>
         <details>
           <summary>Unscheduled lyrics ({unscheduled().length})</summary>
           <For each={unscheduled()}>{line => <p>{line.text}</p>}</For>
@@ -207,7 +226,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
                 aria-label={`Estimated pitches for this line: ${lineLabels().join(" ")}`}>~{lineLabels().join(" ")}</span>
             </Show>
             <For each={displayParts(line.parts)}>{part => {
-              if (typeof part === "string") return part;
+              if (typeof part === "string") return hintText(part, props.learningHint);
               const state = createMemo(() => karaokeWordState(part.word.timing, props.position));
               const association = line.pitchAssociation?.words.find(word => word.token_index === part.word.tokenIndex);
               const labels = createMemo(() => line.pitchAssociation
@@ -220,9 +239,11 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
                 </Show>
                 <span class="timeline-karaoke-lyric"><span class="timeline-karaoke-word"
                   data-state={state().state}
+                  data-timing={part.word.timingOrigin}
+                  title={part.word.timingOrigin === "estimated" ? "Estimated word timing" : undefined}
                   aria-current={line === current() && state().state === "active" ? "true" : undefined}
                   style={{ "--karaoke-progress": `${state().progress * 100}%` }}
-                >{part.word.text}</span>{part.suffix}</span>
+                >{hintText(part.word.text, props.learningHint)}</span>{hintText(part.suffix, props.learningHint)}</span>
               </span>;
             }}</For>
           </p>

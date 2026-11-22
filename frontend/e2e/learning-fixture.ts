@@ -80,11 +80,12 @@ manifest = _persist_results(job, {'song': StemResult(source, 0)})
 db.mark_done(job.id, manifest, transcript_from_json(sys.stdin.read()), None)
 `;
 
-export async function seedLearning(page: Page, options: { untimed?: boolean; missingOriginal?: boolean } = {}) {
+export async function seedLearning(page: Page, options: { untimed?: boolean; missingOriginal?: boolean; wordTail?: boolean; tempo?: number } = {}) {
   const source = Buffer.concat([await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav')), randomBytes(16)]);
   const owner = (await (await page.request.get('/api/auth/me')).json()).id as string;
   const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
     file: { name: 'learning-tone.wav', mimeType: 'audio/wav', buffer: source }, extract_lyrics: 'true',
+    tempo_percent: String(options.tempo ?? 100),
   } });
   expect(response.ok()).toBe(true);
   const id = (await response.json()).id as number;
@@ -101,6 +102,24 @@ export async function seedLearning(page: Page, options: { untimed?: boolean; mis
     sections: [{ start_s: 0.2, end_s: 2.1, label: 'verse' }, { start_s: 2.2, end_s: 3.5, label: 'chorus' }],
     structure_model: null, asr_model: 'synthetic', word_alignment: null, words: [],
     untimed: options.untimed ? [{ text: 'Unplaced moonlight', reason: 'No alignment' }] : [],
+    ...(options.wordTail ? {
+      words: [
+        { start_s: 1.45, end_s: 1.9, text: 'shine', origin: 'reference-aligned' },
+        { start_s: 2.2, end_s: 2.5, text: 'Silver', origin: 'reference-aligned' },
+      ],
+      canonical_word_positions: [
+        { word_index: 0, reference_line_index: 0, reference_token_index: 3 },
+        { word_index: 1, reference_line_index: 1, reference_token_index: 0 },
+      ],
+      reference: {
+        status: 'matched', reason: 'Synthetic measured word fixture', duration_s: 8,
+        provider_timing_status: 'validated',
+        lines: [
+          { text: 'Amber lanterns softly shine', provider_start_s: 0.2, provider_end_s: 1.2 },
+          { text: 'Silver branches gently sway', provider_start_s: 1.2, provider_end_s: 3.5 },
+        ],
+      },
+    } : {}),
   };
   execFileSync('uv', ['run', 'python', '-c', publish, String(id)], {
     cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(transcript),

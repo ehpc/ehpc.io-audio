@@ -104,7 +104,12 @@ function karaokeJob(): JobDTO {
   };
 }
 
-async function mountFixture(page: Page, job = karaokeJob()) {
+interface InstrumentGate {
+  gate: Promise<void>;
+  requested: () => void;
+}
+
+async function mountFixture(page: Page, job = karaokeJob(), instruments?: InstrumentGate) {
   // Use the same read-time projection as real API jobs, including modified fixtures.
   job.lyric_pitch_lines = JSON.parse(execFileSync('uv', ['run', 'python', '-c', String.raw`
 import json,sys
@@ -124,6 +129,10 @@ print(json.dumps([asdict(line) for line in lyric_pitch_lines(
     if (path === '/api/jobs/current' || path === `/api/jobs/${job.id}`) return route.fulfill({ json: job });
     if (path === '/api/jobs') return route.fulfill({ json: [] });
     const isOriginal = path === `/api/jobs/${job.id}/original`;
+    if (instruments && path === `/api/jobs/${job.id}/results/instruments`) {
+      instruments.requested();
+      await instruments.gate;
+    }
     if (isOriginal || path.startsWith(`/api/jobs/${job.id}/results/`) || path === `/api/jobs/${job.id}/pitch-reference/vocals`) {
       const listening = !isOriginal && url.searchParams.get('playback') === '1';
       const bytes = isOriginal ? original : listening ? transformedPlayback : transformed;
@@ -234,16 +243,34 @@ async function fittedRows(reader: Locator) {
   });
 }
 
+async function largerThanFitOverflows(reader: Locator) {
+  return reader.evaluate(element => {
+    const initial = element.style.fontSize;
+    element.style.fontSize = `${parseFloat(initial) * 1.05}px`;
+    const rows = [...element.querySelectorAll<HTMLElement>('.timeline-karaoke-line')];
+    const padding = getComputedStyle(element);
+    const available = element.clientHeight - parseFloat(padding.paddingTop) - parseFloat(padding.paddingBottom);
+    const overflows = rows.some(row => {
+      const text = document.createRange();
+      text.selectNodeContents(row);
+      return text.getBoundingClientRect().width > row.clientWidth;
+    }) || rows.reduce((total, row) => total + row.getBoundingClientRect().height, 0) > available;
+    element.style.fontSize = initial;
+    return overflows;
+  });
+}
+
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke native-media reader ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
-    test('shows a provider line before the independently timed word', async ({ page }, info) => {
+    test('shows an estimated leading highlight before the independently timed word', async ({ page }, info) => {
       const { view, player, reader } = await mountFixture(page);
       await seekNative(player, 4.3);
       const current = reader.getByRole('group', { name: 'Current lyrics' });
       await expect.poll(() => lyricText(current)).toBe('Before silver, after');
       await expect(view.getByText('Synced line cues')).toBeVisible();
-      await expect(current.locator('[aria-current="true"]')).toHaveCount(0);
+      await expect(current.locator('[aria-current="true"]')).toHaveText('Before');
+      await expect(current.locator('[aria-current="true"]')).toHaveAttribute('data-timing', 'estimated');
       await view.locator('.pitch-footer').screenshot({ path: info.outputPath(`provider-line-${viewport.width}.png`), animations: 'disabled' });
       await player.evaluate((audio: HTMLAudioElement) => audio.play());
       await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(5.05);
@@ -476,7 +503,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 
       await seekNative(player, 8.75);
       await expect.poll(() => lyricText(current)).toBe('Before silver, after');
-      await expect(reader.locator('[aria-current]')).toHaveCount(0);
+      await expect(reader.locator('[aria-current]')).toHaveText('after');
+      await expect(reader.locator('[aria-current]')).toHaveAttribute('data-timing', 'estimated');
       const promoted = await next.elementHandle();
       const transition = await samplePlayback(player, 550);
       expect(await current.evaluate((element, prior) => element === prior, promoted)).toBe(true);
@@ -550,6 +578,58 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke fullscreen ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('singing practice switches safely to instruments and masks both lyric lines', async ({ page }, info) => {
+      const gate = Promise.withResolvers<void>();
+      const requested = Promise.withResolvers<void>();
+      const { view, player } = await mountFixture(page, karaokeJob(), { gate: gate.promise, requested: requested.resolve });
+      await seekNative(player, 5.625);
+      await view.getByRole('button', { name: 'Pitches', exact: true }).click();
+      const source = await player.elementHandle();
+      const playing = viewport.width === 1440;
+      if (playing) await player.evaluate(audio => audio.play());
+      const before = await player.evaluate(audio => audio.currentTime / 1.25);
+      const open = view.getByRole('button', { name: 'Lyrics learning mode', exact: true });
+      await open.click();
+      const dialog = page.getByRole('dialog', { name: 'Lyrics learning mode', exact: true });
+      await expect(dialog).toBeVisible();
+      await requested.promise;
+      expect(await source!.evaluate(audio => audio.paused)).toBe(true);
+      await expect(dialog.getByRole('button', { name: 'Play', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('slider', { name: 'Karaoke playback position' })).toBeDisabled();
+      await dialog.getByRole('region', { name: 'Current karaoke line' }).focus();
+      await page.keyboard.press('Space');
+      expect(await source!.evaluate(audio => audio.paused)).toBe(true);
+      gate.resolve();
+      await expect.poll(() => player.evaluate(audio => new URL(audio.currentSrc).pathname)).toContain('/results/instruments');
+      await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(!playing);
+      const started = await player.evaluate(audio => audio.currentTime);
+      expect(Math.abs(started - before)).toBeLessThan(0.5);
+      await expect(dialog.getByRole('group', { name: 'Pitch background audio' })).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: 'Pitches', exact: true })).toHaveCount(0);
+      await expect(dialog.getByRole('group', { name: 'Reference pitch controls' })).toHaveCount(0);
+      const reader = dialog.getByRole('region', { name: 'Current karaoke line' });
+      const more = dialog.getByRole('button', { name: 'More hints' });
+      const less = dialog.getByRole('button', { name: 'Less hints' });
+      await expect(more).toBeDisabled();
+      await less.click();
+      await less.click();
+      await less.click();
+      await expect(less).toBeDisabled();
+      for (const name of ['Current lyrics', 'Next lyrics']) {
+        const line = reader.getByRole('group', { name });
+        await expect.poll(() => line.textContent()).toMatch(/^[•\s]+$/u);
+        expect(await line.evaluate(element => [...element.querySelectorAll('[title], [aria-label]')].every(item =>
+          !/Before|silver|after|Next|chorus/i.test(`${item.getAttribute('title')} ${item.getAttribute('aria-label')}`)))).toBe(true);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: info.outputPath(`singing-mode-${viewport.width}.png`), animations: 'disabled' });
+      await more.click();
+      await expect(less).toBeEnabled();
+      await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      await expect(open).toBeFocused();
+      await expect(view.getByRole('button', { name: 'Pitches', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await expect(view.getByRole('button', { name: /^Instruments/ })).toHaveAttribute('aria-pressed', 'true');
+    });
     test('keeps native playback, source, seeking and lyric sizing across fullscreen', async ({ page }, info) => {
       const { view, player, reader: inlineReader } = await mountFixture(page);
       expect(await inlineReader.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBe(viewport.width === 390 ? 32 : 40);
@@ -581,6 +661,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(Number(await slider.getAttribute('max'))).toBeCloseTo(await player.evaluate(audio => audio.duration), 1);
       expect(Number(await slider.inputValue())).toBeGreaterThanOrEqual(5.625);
       await expect(slider.locator('..')).toContainText('0:45');
+      await dialog.getByRole('button', { name: 'Pause', exact: true }).click();
+      await seekNative(player, 5.625);
       await expect.poll(() => lyrics.evaluate(element => element.style.fontSize)).not.toBe('');
       const initialSize = (await fittedRows(lyrics)).font;
       const larger = dialog.getByRole('button', { name: 'Larger lyrics' });
@@ -610,24 +692,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         expect(row.top).toBeGreaterThanOrEqual(geometry.frame.top);
         expect(row.bottom).toBeLessThanOrEqual(geometry.frame.bottom);
         expect(row.singleWordRow).toBe(true);
-        expect(row.pitches.every(count => count === 1)).toBe(true);
-        expect(row.pitchCenters.every(distance => distance <= 1)).toBe(true);
+        expect(row.pitches).toEqual([]);
       }
-      const largerWouldOverflow = await lyrics.evaluate(element => {
-        const initial = element.style.fontSize;
-        element.style.fontSize = `${parseFloat(initial) * 1.05}px`;
-        const rows = [...element.querySelectorAll<HTMLElement>('.timeline-karaoke-line')];
-        const padding = getComputedStyle(element);
-        const available = element.clientHeight - parseFloat(padding.paddingTop) - parseFloat(padding.paddingBottom);
-        const overflows = rows.some(row => {
-          const text = document.createRange();
-          text.selectNodeContents(row);
-          return text.getBoundingClientRect().width > row.clientWidth;
-        }) || rows.reduce((total, row) => total + row.getBoundingClientRect().height, 0) > available;
-        element.style.fontSize = initial;
-        return overflows;
-      });
-      expect(largerWouldOverflow).toBe(true);
+      expect(await largerThanFitOverflows(lyrics)).toBe(true);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
       const playbackFonts = await lyrics.evaluate(element => new Promise<string[]>(resolve => {
         const values: string[] = [];
         const sample = () => {
@@ -637,27 +705,20 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         requestAnimationFrame(sample);
       }));
       expect(new Set(playbackFonts).size).toBe(1);
-      await info.attach('fullscreen-fit-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
-      const togglePitches = dialog.getByRole('button', { name: 'Pitches', exact: true });
-      await togglePitches.click();
-      await expect(togglePitches).toHaveAttribute('aria-pressed', 'false');
-      await expect.poll(async () => (await fittedRows(lyrics)).font).toBeGreaterThan(initialSize);
-      const noPitch = await fittedRows(lyrics);
-      for (const row of noPitch.rows) {
-        expect(Math.abs(row.center - row.centerTarget)).toBeLessThanOrEqual(2);
-        expect(row.singleWordRow).toBe(true);
-        expect(row.left).toBeGreaterThanOrEqual(noPitch.frame.left);
-        expect(row.right).toBeLessThanOrEqual(noPitch.frame.right);
-      }
-      await page.screenshot({ path: info.outputPath(`fullscreen-no-pitches-${viewport.width}.png`), animations: 'disabled' });
-      await togglePitches.click();
+      await dialog.getByRole('button', { name: 'Pause', exact: true }).click();
+      await seekNative(player, 5.625);
       await expect.poll(async () => (await fittedRows(lyrics)).font).toBeCloseTo(initialSize, 1);
+      await info.attach('fullscreen-fit-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
+      await expect(dialog.getByRole('button', { name: 'Pitches', exact: true })).toHaveCount(0);
+      await expect(lyrics.locator('.timeline-karaoke-pitches, .timeline-karaoke-line-pitches')).toHaveCount(0);
+      await page.screenshot({ path: info.outputPath(`fullscreen-no-pitches-${viewport.width}.png`), animations: 'disabled' });
       await expect(dialog.locator('audio, canvas, svg.pitch-chart, .piano-keyboard')).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: info.outputPath(`fullscreen-${viewport.width}.png`), animations: 'disabled' });
       if (viewport.width === 390) {
         await page.setViewportSize({ width: 844, height: 390 });
-        await expect.poll(async () => (await fittedRows(lyrics)).font).toBeGreaterThan(initialSize);
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        await expect.poll(async () => (await fittedRows(lyrics)).frame.width).toBeGreaterThan(geometry.frame.width);
         const landscape = await fittedRows(lyrics);
         expect(Math.abs((landscape.rows[0].boxTop + landscape.rows[1].boxBottom) / 2
           - (landscape.frame.top + landscape.frame.bottom) / 2)).toBeLessThanOrEqual(2);
@@ -666,9 +727,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
           expect(row.left).toBeGreaterThanOrEqual(landscape.frame.left);
           expect(row.right).toBeLessThanOrEqual(landscape.frame.right);
           expect(row.singleWordRow).toBe(true);
-          expect(row.pitches.every(count => count === 1)).toBe(true);
-          expect(row.pitchCenters.every(distance => distance <= 1)).toBe(true);
+          expect(row.pitches).toEqual([]);
         }
+        expect(await largerThanFitOverflows(lyrics)).toBe(true);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         await expect(lyrics.getByText('silver', { exact: true })).toBeInViewport();
         await expect(dialog.getByRole('slider', { name: 'Karaoke playback position' })).toBeInViewport();
@@ -681,6 +742,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await page.setViewportSize(viewport);
         await expect.poll(async () => (await fittedRows(lyrics)).font).toBeCloseTo(initialSize, 1);
       }
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
       await dialog.getByRole('button', { name: 'Pause', exact: true }).click();
       await slider.fill('10');
       await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeCloseTo(10, 1);
@@ -762,8 +824,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await view.getByRole('button', { name: 'Open karaoke fullscreen' }).click();
       const dialog = page.getByRole('dialog', { name: 'Karaoke fullscreen' });
       const reader = dialog.getByRole('region', { name: 'Current karaoke line' });
-      const pitches = dialog.getByRole('button', { name: 'Pitches', exact: true });
-      await expect(pitches).toHaveAttribute('aria-pressed', 'false');
+      await expect(dialog.getByRole('button', { name: 'Pitches', exact: true })).toHaveCount(0);
       await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
       await expect.poll(() => reader.evaluate(element => element.style.fontSize)).not.toBe('');
       await expect.poll(() => lyricText(reader.getByRole('group', { name: 'Current lyrics' })))
@@ -777,22 +838,15 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         expect(row.left).toBeGreaterThanOrEqual(geometry.frame.left);
         expect(row.right).toBeLessThanOrEqual(geometry.frame.right);
         expect(row.singleWordRow).toBe(true);
-        expect(row.pitches.every(count => count === 1)).toBe(true);
-        expect(row.pitchCenters.every(distance => distance <= 1)).toBe(true);
+        expect(row.pitches).toEqual([]);
       }
       await expect(reader.getByText('silver', { exact: true })).toHaveAttribute('aria-current', 'true');
       await info.attach('typical-lyric-geometry', { body: JSON.stringify(geometry), contentType: 'application/json' });
       await page.screenshot({ path: info.outputPath(`fullscreen-typical-${viewport.width}.png`), animations: 'disabled' });
-      await pitches.click();
-      await expect(reader.getByRole('group', { name: /^Pitches for silver:/ })).toBeVisible();
-      await expect.poll(async () => (await fittedRows(reader)).rows.some(row => row.pitches.length > 0)).toBe(true);
-      const withPitches = await fittedRows(reader);
-      for (const row of withPitches.rows) {
-        expect(row.left).toBeGreaterThanOrEqual(withPitches.frame.left);
-        expect(row.right).toBeLessThanOrEqual(withPitches.frame.right);
-        expect(row.singleWordRow).toBe(true);
-        expect(row.pitches.every(count => count === 1)).toBe(true);
-      }
+      await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      await view.getByRole('button', { name: 'Pitches', exact: true }).click();
+      await expect(view.getByRole('button', { name: 'Pitches', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await expect(view.getByRole('region', { name: 'Current karaoke line' }).getByRole('group', { name: /^Pitches for silver:/ })).toBeVisible();
     });
   });
 }

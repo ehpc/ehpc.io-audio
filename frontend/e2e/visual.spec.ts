@@ -844,12 +844,12 @@ for (const viewport of [mobile, desktop]) {
     ] }];
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
       file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
-      detect_pitch: 'true', extract_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
+      detect_pitch: 'true', extract_lyrics: 'true', extract_instruments: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
     expect(response.ok()).toBe(true);
     const id = (await response.json()).id as number;
     execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
-      cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(fixture),
+      cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify({ ...fixture, playback_labels: ['song', 'instruments'] }),
       env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
     });
     await page.reload();
@@ -878,7 +878,25 @@ for (const viewport of [mobile, desktop]) {
     await expect(fullscreen.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
     await expect(fullscreen.getByRole('button', { name: 'Larger lyrics' })).toBeDisabled();
     await fullscreen.screenshot({ path: info.outputPath('fullscreen.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
-    await expect(fullscreen).toHaveScreenshot(`karaoke-fullscreen-${viewport.width}.png`);
+    await expect.soft(fullscreen).toHaveScreenshot(`karaoke-fullscreen-${viewport.width}.png`);
+    await fullscreen.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+    await view.getByRole('button', { name: 'Lyrics learning mode', exact: true }).click();
+    const singing = page.getByRole('dialog', { name: 'Lyrics learning mode', exact: true });
+    await expect(singing).toBeVisible();
+    await expect.poll(() => player.evaluate(audio => new URL(audio.currentSrc).pathname)).toContain('/results/instruments');
+    await expect.poll(() => player.evaluate(audio => audio.paused && !audio.seeking)).toBe(true);
+    const less = singing.getByRole('button', { name: 'Less hints', exact: true });
+    await less.click();
+    await less.click();
+    await less.click();
+    await expect(less).toBeDisabled();
+    for (const name of ['Current lyrics', 'Next lyrics']) {
+      await expect.poll(() => singing.getByRole('group', { name }).textContent()).toMatch(/^[•\s]+$/u);
+    }
+    await expect(singing.getByRole('button', { name: 'Pitches', exact: true })).toHaveCount(0);
+    await expect(singing.getByRole('group', { name: 'Reference pitch controls' })).toHaveCount(0);
+    await singing.screenshot({ path: info.outputPath(`singing-fullscreen-${viewport.width}-actual.png`), animations: 'disabled', caret: 'hide', scale: 'css' });
+    await expect.soft(singing).toHaveScreenshot(`singing-fullscreen-${viewport.width}.png`);
   });
 }
 

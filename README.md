@@ -402,9 +402,10 @@ authorization does not grant additional rights under the model licenses.
 
 ### Learn lyrics
 
-For processed lyrics, open **Learn lyrics** from the Lyrics header. Listen to
-the original recording with the full text, choose **Practice**, then use
-**Fewer hints** to progress from partial words to first letters and hidden text.
+For processed lyrics, open **Learn lyrics** from either the Lyrics header or
+the Lyrics with pitches panel. Both open the same private practice progress.
+Listen to the original recording with the full text, choose **Practice**, then
+use **Fewer hints** to progress from partial words to first letters and hidden text.
 **More hints**, individual word buttons and **Reveal line** are available at any
 time. Rate a line **Remembered**, **Hesitated** or **Forgot** to guide a fair
 rotation that revisits harder lines more often; the ratings are self-reports,
@@ -412,12 +413,15 @@ not a measured memory score. No microphone, typing or additional inference is
 required.
 
 Selecting a timed line seeks the original recording to that line without starting
-playback when paused. Playback stops at its valid end or the next timed line's
-cue; the last line can use the loaded media duration. The next cue is a playback
-cutoff, not a measured vocal ending. **Repeat line** loops only the selected
-interval. If usable bounds are unavailable, unbounded playback pauses and the
-line remains available for manual practice. Original audio controls remain
-available for manual seeking; opening another player pauses the current one.
+playback when paused. When a uniquely linked measured final word is available,
+playback can continue through its end even if it crosses the next provider cue,
+clamped to the loaded media duration. Otherwise the valid line end or next timed
+cue is the fallback; the last line can use the loaded media duration. These
+boundaries cannot separate overlapping vocals with certainty. **Repeat line**
+loops only the selected interval. If usable bounds are unavailable, unbounded
+playback pauses and the line remains available for manual practice. Original
+audio controls remain available for manual seeking; opening another player
+pauses the current one.
 Closing learning stops its playback.
 
 Progress, selected section and hint level are private to the signed-in account
@@ -633,8 +637,8 @@ An indivisible word/melisma wider than that remains intact: the browser/TXT
 can scroll, and ODT uses a wider page rather than shrinking the font.
 When measured word alignment is incomplete, bounded gaps can receive estimated
 word-to-pitch associations, marked `~`; measured word anchors are retained.
-If only line bounds are available, the detected pitches appear as an approximate
-line-level sequence rather than being assigned to individual words. The same
+Detected notes not linked to an individual word appear as a separate `[line]`
+sequence, including in partially timed lines. The same
 derived formatting is available when older saved results are read, without
 rerunning inference or rewriting the stored job.
 The browser uses a horizontally scrolling monospace block on small screens.
@@ -809,9 +813,10 @@ for each result, and is limited to ±24 semitones and the MIDI 0–127 range.
 Timeline notes, pitch labels and reference piano keys shift together; live
 microphone pitch remains the actual sung pitch. This is display-only: backing
 audio, processing and downloads do not change.
-**Octave guides** optionally adds translucent light-yellow reference notes one
-octave above and below the current displayed melody. These are visual guides,
-not additional detected voices; pitches outside MIDI 0–127 are omitted. The
+**Octave guides**, beside the octave-shift buttons, optionally adds translucent
+light-yellow reference notes one octave above and below the displayed melody.
+These are visual guides, not additional detected voices; pitches outside MIDI
+0–127 are omitted. The
 primary melody, piano playback, microphone and downloads are unchanged.
 
 With focus on the timeline's scroll region or time ruler, **Space** toggles that
@@ -833,8 +838,9 @@ idle, and reports unavailable audio.
 
 With **Follow playback** enabled, the timeline advances when the playhead passes
 about 75% of the visible note area, excluding the sticky note axis, leaving room
-to see upcoming notes. Manually panning by wheel, touch, scrollbar or keyboard
-pauses auto-follow while you browse. A manual horizontal return that brings the
+to see upcoming notes. A manual horizontal pan pauses auto-follow when it moves
+the playhead outside the visible note region; pointer movement or vertical-only
+scrolling does not pause it. A manual horizontal return that brings the
 current playhead back into the visible note region resumes it after the gesture
 finishes; the sticky note axis does not count as visible time.
 The clock moving into a stationary browsed view, seeking, skipping, source
@@ -851,12 +857,15 @@ without clearing an existing browsing pause.
 The karaoke reader centers the current lyric line and a dimmed next timed line.
 Natural progression slides the next line upward; seeks jump directly, and
 reduced-motion preferences suppress animation. Known words fill progressively
-using published timings and the same output clock; untimed words remain neutral.
-Pitch labels are hidden initially; **Pitches** toggles the selected vocal track's
-word-associated notes in both inline and fullscreen readers. A `~` marks an
-estimated word association; notes supported only by line bounds appear above the
-whole line instead of individual words. Estimated word intervals do not animate
-as measured word highlights. The inline reader fits its content within the
+using published timings and the same output clock. Display-only estimates can
+start at a validated line cue and fill safely bounded gaps between measured words
+or line cues, weighted by word length. Dotted underlines mark those estimates, not
+measured timings or new pitch evidence. Unbounded or
+ambiguous words remain neutral. Pitch labels are hidden initially; **Pitches**
+toggles the selected vocal track's word-associated notes in the inline reader.
+A `~` marks an estimated word-to-pitch association; notes supported only by
+line bounds appear above the whole line instead of individual words. The inline
+reader fits its content within the
 available width and grows for wrapped groups and long note sequences. No
 syllable timings are invented. Pitch-only or ASR-gap words can appear as short
 individual cues.
@@ -864,7 +873,7 @@ individual cues.
 For an exact-metadata LRCLIB match with validated, ordered line cues, the reader
 and lyric exports use the provider-synced line onsets; these are estimates, not
 measured word boundaries. Published word timings remain independent, and an
-unknown first word does not acquire a guessed onset. Saved jobs with validated
+unknown first word does not acquire a published measured onset. Saved jobs with validated
 cues use this presentation on read without rerunning analysis. In the absence of
 validated provider cues, only an independently published first word supplies a
 canonical line onset.
@@ -872,12 +881,18 @@ canonical line onset.
 The inline lyric size starts at twice the previous base size; **A−** and **A+**
 adjust it from 75% to 400% in 25% steps. The choice is shared within the view
 and is not stored between sessions. Fullscreen centers the current and next
-lines together and fits them, including associated pitches, without wrapping.
-Its **A−** can reduce the text; **A+** stops at the largest size that fits.
-Very long lines or note sequences may therefore appear small. Fullscreen
-recomputes the fit when the content, settings, or viewport changes.
-Fullscreen keeps the current player, backing and position, with a scrollable
-backing picker, pitch toggle, play/pause, five-second skips and a seek bar.
+lyrics and fits them without wrapping or showing pitch labels. Its **A−** can
+reduce the text; **A+** stops at the largest size that fits. Very long lines may
+therefore appear small. Fullscreen recomputes the fit when the content, settings,
+or viewport changes. Normal fullscreen keeps the current player, backing and
+position, with a scrollable backing picker, play/pause, five-second skips and a
+seek bar.
+**Lyrics learning mode** opens a separate pitch-free fullscreen reader using the
+generated instruments reference. It is unavailable when instruments are missing;
+the current player pauses while the reference loads, and playback remains blocked
+with an error if it cannot load. More/Less hints cycle full text, partial words,
+first letters and dots for both current and next lines. This singing mode does
+not change the separate saved guided-recall progress.
 The fullscreen progress bar follows the selected audio's own clock, which can
 differ from the output clock when the untransformed original plays at a changed
 tempo. Exit or Escape returns to the previous view; keyboard Space controls

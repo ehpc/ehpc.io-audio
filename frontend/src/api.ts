@@ -444,7 +444,7 @@ export type LearningHint = "full" | "partial" | "first" | "hidden";
 export type LearningRating = "remembered" | "hesitated" | "forgot";
 export interface LearningDocument {
   document_version: string;
-  lines: { id: string; text: string; onset_s: number | null; end_s: number | null; onset_source: "provider-synced" | "acoustic" | "unknown" }[];
+  lines: { id: string; text: string; onset_s: number | null; end_s: number | null; playback_end_s: number | null; onset_source: "provider-synced" | "acoustic" | "unknown" }[];
   sections: { id: string; label: string; start_s: number; end_s: number }[];
   saving_available: boolean;
   progress: { hint_level: LearningHint; section_id: string | null; line_id: string | null; difficulties: Record<string, number> };

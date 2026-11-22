@@ -59,7 +59,32 @@ function lexicalWords(line: KaraokeLine): KaraokeWord[] {
   return line.parts.filter((part): part is KaraokeWord => typeof part !== "string");
 }
 
-it("shows partial-word estimates and line-only pitches for the selected projected track without inventing word highlights", () => {
+it("masks both fullscreen lines and punctuation without leaking lyrics or pitch labels", () => {
+  const source = job();
+  const [hint, setHint] = createSignal<"full" | "partial" | "first" | "hidden">("full");
+  const [position, setPosition] = createSignal(4.5);
+  render(() => <TimelineKaraoke job={source} position={position()} fit showPitches learningHint={hint()} />);
+  const current = screen.getByRole("group", { name: "Current lyrics" });
+  const next = screen.getByRole("group", { name: "Next lyrics" });
+  expect(current).toHaveTextContent("Go, go—don't stop!");
+  expect(screen.queryByRole("button", { name: "Pitches" })).not.toBeInTheDocument();
+  setHint("partial");
+  expect(current).not.toHaveTextContent("don't");
+  setHint("hidden");
+  for (const line of [current, next]) {
+    expect(line.textContent).toMatch(/^[•\s]+$/u);
+    expect(line.querySelector("[title*=\"don't\"], [aria-label*=\"don't\"]")).toBeNull();
+    for (const estimated of line.querySelectorAll('[data-timing="estimated"]')) expect(estimated).toHaveAttribute("title", "Estimated word timing");
+  }
+  expect(current.querySelector('[aria-current="true"]')).toBeInTheDocument();
+  setPosition(7.5);
+  expect(current.querySelector('[aria-current="true"]')).toHaveAttribute("data-timing", "estimated");
+  expect(current.querySelector('[aria-current="true"]')).toHaveTextContent("••••");
+  setPosition(8.5);
+  expect(screen.getByRole("group", { name: "Current lyrics" }).textContent).toMatch(/^[•\s]+$/u);
+});
+
+it("shows partial-word estimates and line-only pitches on the selected projected track", () => {
   const source = job();
   const line = source.transcript!.presentation_lines[0];
   source.lyric_pitch_lines = [{
@@ -82,7 +107,7 @@ it("shows partial-word estimates and line-only pitches for the selected projecte
   expect(within(current).getByRole("group", { name: "Pitches for go: C4" })).toBeVisible();
   expect(within(current).getByRole("group", { name: "Estimated pitches for stop: D4" })).toHaveTextContent("~D4");
   expect(within(current).getByRole("group", { name: "Estimated pitches for this line: E4" })).toBeVisible();
-  expect(within(current).getByText("stop")).toHaveAttribute("data-state", "untimed");
+  expect(within(current).getByText("stop")).toHaveAttribute("data-timing", "estimated");
   setNotes([note("G4")]);
   setTrackIndex(1);
   expect(within(current).getByRole("group", { name: "Estimated pitches for this line: G4" })).toBeVisible();
@@ -161,11 +186,11 @@ it("compresses consecutive labels in the pitch-only fallback without merging wor
 describe("karaoke provenance and output clock", () => {
   it("maps original words once at 125%, retaining partial and repeated canonical positions", () => {
     const lines = karaokeLines(job());
-    expect(lexicalWords(lines[0]).map(part => [part.text, part.timing])).toEqual([
-      ["Go", null], ["go", { start_s: 4, end_s: 5 }], ["don't", { start_s: 6, end_s: 7 }], ["stop", null],
+    expect(lexicalWords(lines[0]).map(part => [part.text, part.timing, part.timingOrigin])).toEqual([
+      ["Go", null, undefined], ["go", { start_s: 4, end_s: 5 }, "measured"], ["don't", { start_s: 6, end_s: 7 }, "measured"], ["stop", { start_s: 7, end_s: 8 }, "estimated"],
     ]);
-    expect(lexicalWords(lines[1]).map(part => part.timing)).toEqual([
-      { start_s: 8, end_s: 9 }, null, { start_s: 10, end_s: 11 }, null,
+    expect(lexicalWords(lines[1]).map(part => [part.timing, part.timingOrigin])).toEqual([
+      [{ start_s: 8, end_s: 9 }, "measured"], [{ start_s: 9, end_s: 10 }, "estimated"], [{ start_s: 10, end_s: 11 }, "measured"], [null, undefined],
     ]);
     expect(lines[2].timing).toBeNull();
     expect(lines[0].parts.map(part => typeof part === "string" ? part : part.text).join("")).toBe("Go, go—don't stop!");
@@ -182,26 +207,27 @@ describe("karaoke provenance and output clock", () => {
       words: [0, 1, 2, 3, 4, 5, 7].map((token, index) => ({ word_index: index, token_index: token })),
     }];
     const line = karaokeLines(source)[0];
-    expect(lexicalWords(line).map(part => [part.text, part.timing !== null])).toEqual([
-      ["L’amour", true], ["can't", true], ["e", true], ["lan", true],
-      ["再见", true], ["１２³", true], ["Go", false], ["go", true],
+    expect(lexicalWords(line).map(part => [part.text, part.timingOrigin])).toEqual([
+      ["L’amour", "measured"], ["can't", "measured"], ["e", "measured"], ["lan", "measured"],
+      ["再见", "measured"], ["１２³", "measured"], ["Go", "estimated"], ["go", "measured"],
     ]);
     expect(line.parts.map(part => typeof part === "string" ? part : part.text).join("")).toBe(text);
   });
 
-  it("shows provider onset before supported words without manufacturing timing", () => {
+  it("uses provider onset as an explicitly estimated leading word", () => {
     const source = job();
     source.transcript!.presentation_lines[0].onset_s = 1.25;
     source.transcript!.presentation_lines[0].onset_source = "provider-synced";
     const lines = karaokeLines(source);
     expect(lines[0].timing).toEqual({ start_s: 1, end_s: 8 });
-    expect(lexicalWords(lines[0]).map(part => part.timing)).toEqual([
-      null, { start_s: 4, end_s: 5 }, { start_s: 6, end_s: 7 }, null,
+    expect(lexicalWords(lines[0]).map(part => [part.timing, part.timingOrigin])).toEqual([
+      [{ start_s: 1, end_s: 4 }, "estimated"], [{ start_s: 4, end_s: 5 }, "measured"],
+      [{ start_s: 6, end_s: 7 }, "measured"], [{ start_s: 7, end_s: 8 }, "estimated"],
     ]);
     const [position, setPosition] = createSignal(1);
     render(() => <TimelineKaraoke job={source} position={position()} />);
     expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Go, go—don't stop!");
-    expect(screen.getByRole("region", { name: "Current karaoke line" }).querySelector("[aria-current]")).toBeNull();
+    expect(screen.getByRole("region", { name: "Current karaoke line" }).querySelector("[aria-current]")).toHaveAttribute("title", "Estimated word timing");
     fireEvent.click(screen.getByText("Unscheduled lyrics (1)"));
     expect(screen.getByText("Unknown refrain")).toBeVisible();
     setPosition(4.5);
@@ -282,7 +308,7 @@ describe("karaoke provenance and output clock", () => {
     expect(karaokeWordState(null, 99)).toEqual({ state: "untimed", progress: 0 });
   });
 
-  it("keeps segment repeats separate and leaves ambiguous missing repeated words neutral", () => {
+  it("keeps repeated segments separate while estimating ambiguous missing words", () => {
     const source = job();
     source.transcript!.reference = null;
     source.transcript!.presentation_lines = [
@@ -296,7 +322,9 @@ describe("karaoke provenance and output clock", () => {
     source.transcript!.words = [word("go", 5, 6.25), word("home", 7.5, 8.75),
       word("Go", 10, 11.25), word("go", 11.25, 12.5), word("home", 12.5, 13.75)];
     const lines = karaokeLines(source);
-    expect(lexicalWords(lines[0]).map(part => part.timing)).toEqual([null, null, { start_s: 6, end_s: 7 }]);
+    expect(lexicalWords(lines[0]).map(part => [part.timing, part.timingOrigin])).toEqual([
+      [{ start_s: 4, end_s: 5 }, "estimated"], [{ start_s: 5, end_s: 6 }, "estimated"], [{ start_s: 6, end_s: 7 }, "measured"],
+    ]);
     expect(lexicalWords(lines[1]).map(part => part.timing)).toEqual([
       { start_s: 8, end_s: 9 }, { start_s: 9, end_s: 10 }, { start_s: 10, end_s: 11 },
     ]);
@@ -325,7 +353,7 @@ describe("karaoke provenance and output clock", () => {
 });
 
 describe("TimelineKaraoke reactive reader", () => {
-  it("shows the actual active word, neutral unknown slots and no active word during a gap", () => {
+  it("shows measured and estimated words without filling unsupported gaps", () => {
     const [position, setPosition] = createSignal(3);
     render(() => <TimelineKaraoke job={job()} position={position()} />);
     const region = screen.getByRole("region", { name: "Current karaoke line" });
@@ -335,7 +363,8 @@ describe("TimelineKaraoke reactive reader", () => {
     expect(region.querySelector("[aria-current]")).toBeNull();
     setPosition(4.5);
     expect(region.querySelector("[aria-current]")).toHaveTextContent(/^go$/);
-    expect([...screen.getByRole("group", { name: "Current lyrics" }).querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Go", "stop"]);
+    expect([...screen.getByRole("group", { name: "Current lyrics" }).querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Go"]);
+    expect(within(screen.getByRole("group", { name: "Current lyrics" })).getByText("stop")).toHaveAttribute("title", "Estimated word timing");
     setPosition(5.5);
     expect(region.querySelector("[aria-current]")).toBeNull();
     expect(screen.getByRole("group", { name: "Current lyrics" }).querySelector('[data-state="complete"]')).toHaveTextContent(/^go$/);
@@ -351,12 +380,13 @@ describe("TimelineKaraoke reactive reader", () => {
     const region = screen.getByRole("region", { name: "Current karaoke line" });
     expect(region.querySelector("[aria-current]")).toHaveTextContent("don't");
     setPosition(7);
-    expect(region.querySelector("[aria-current]")).toBeNull();
+    expect(region.querySelector("[aria-current]")).toHaveTextContent("stop");
+    expect(region.querySelector("[aria-current]")).toHaveAttribute("data-timing", "estimated");
     expect(region.querySelector('[data-state="pending"]')).toHaveTextContent(/^Go$/);
     setPosition(8.5);
     expect(region.querySelector("[aria-current]")).toHaveTextContent(/^Go$/);
     setPosition(24);
-    expect(region.querySelectorAll('[data-state="complete"]')).toHaveLength(2);
+    expect(region.querySelectorAll('[data-state="complete"]')).toHaveLength(3);
     expect(region.querySelector("[aria-current]")).toBeNull();
     setPosition(4.5);
     expect(region.querySelector("[aria-current]")).toHaveTextContent(/^go$/);
@@ -368,7 +398,7 @@ describe("TimelineKaraoke reactive reader", () => {
     expect(region.querySelector("[aria-current]")).toBeNull();
   });
 
-  it.each(["canonical", "segment"] as const)("keeps a partial %s phrase visible through its supported untimed tail", kind => {
+  it.each(["canonical", "segment"] as const)("keeps a partial %s phrase visible through its estimated tail", kind => {
     const source = job();
     const text = "Before known after";
     source.transcript!.words = [word("known", 6.25, 7.5), word("Next", 11.875, 13.125)];
@@ -403,8 +433,9 @@ describe("TimelineKaraoke reactive reader", () => {
     expect(region.querySelector("[aria-current]")).toHaveTextContent("known");
     setPosition(8.75);
     expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent(text);
-    expect(region.querySelector("[aria-current]")).toBeNull();
-    expect([...screen.getByRole("group", { name: "Current lyrics" }).querySelectorAll('[data-state="untimed"]')].map(word => word.textContent)).toEqual(["Before", "after"]);
+    expect(region.querySelector("[aria-current]")).toHaveTextContent("after");
+    expect(region.querySelector("[aria-current]")).toHaveAttribute("title", "Estimated word timing");
+    expect(within(screen.getByRole("group", { name: "Current lyrics" })).getByText("Before")).toHaveAttribute("data-timing", "estimated");
     setPosition(kind === "canonical" ? 9.5 : 9);
     expect(screen.getByRole("group", { name: "Current lyrics" })).toHaveTextContent("Next");
     if (kind === "segment") expect(region.querySelector("[aria-current]")).toBeNull();

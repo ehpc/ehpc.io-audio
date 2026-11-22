@@ -117,7 +117,10 @@ it("toggles both octave guides around the shifted reference without moving or al
   await userEvent.click(screen.getByRole("button", { name: "Raise reference pitch one semitone" }));
   const primary = within(viewport).getByRole("button", { name: /^D4, \+25 cents/ });
   const y = Number(primary.querySelector("rect")!.getAttribute("y"));
-  const toggle = screen.getByRole("button", { name: "Octave guides" });
+  const controls = screen.getByRole("group", { name: "Reference pitch controls" });
+  expect(within(controls).getByRole("button", { name: "Lower reference pitch one octave" })).toBeInTheDocument();
+  expect(within(controls).getByRole("button", { name: "Raise reference pitch one octave" })).toBeInTheDocument();
+  const toggle = within(controls).getByRole("button", { name: "Octave guides" });
   expect(toggle).toHaveAttribute("aria-pressed", "false");
   await userEvent.click(toggle);
   const guides = viewport.querySelector(".pitch-octave-guides")!;
@@ -202,6 +205,126 @@ function chooseBackground(name: RegExp | string) {
   fireEvent.canPlay(candidate);
   return candidate;
 }
+
+it("never lets a vocal source keep playing while instruments load for singing practice", async () => {
+  const source = job();
+  source.manifest!.push({ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  player.time(10);
+  fireEvent.click(screen.getByRole("button", { name: "Lyrics learning mode" }));
+  const dialog = screen.getByRole("dialog", { name: "Lyrics learning mode" });
+  expect(player.audio.paused).toBe(true);
+  expect(within(dialog).getByRole("button", { name: "Play" })).toBeDisabled();
+  expect(within(dialog).getByRole("slider", { name: "Karaoke playback position" })).toBeDisabled();
+  const instruments = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(instruments, "readyState", { configurable: true, value: 4 });
+  let paused = true;
+  Object.defineProperty(instruments, "paused", { configurable: true, get: () => paused });
+  const started = Promise.withResolvers<void>();
+  const play = vi.spyOn(instruments, "play").mockImplementation(() => {
+    paused = false;
+    fireEvent.play(instruments);
+    return started.promise;
+  });
+  fireEvent.loadedMetadata(instruments);
+  expect(instruments.currentTime).toBe(10);
+  expect(player.audio.paused).toBe(true);
+  fireEvent.seeked(instruments);
+  expect(play).toHaveBeenCalledOnce();
+  started.resolve();
+  await started.promise;
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Pause" })).toBeEnabled());
+  expect(player.audio.paused).toBe(true);
+  expect(within(dialog).queryByRole("group", { name: "Pitch background audio" })).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: "Pitches" })).not.toBeInTheDocument();
+  const less = within(dialog).getByRole("button", { name: "Less hints" });
+  const more = within(dialog).getByRole("button", { name: "More hints" });
+  expect(more).toBeDisabled();
+  fireEvent.click(less);
+  fireEvent.click(less);
+  fireEvent.click(less);
+  expect(less).toBeDisabled();
+  expect(within(dialog).getByRole("group", { name: "Current lyrics" }).textContent).toMatch(/^[•\s]+$/u);
+  expect(instruments.currentTime).toBe(10);
+  fireEvent.click(more);
+  expect(within(dialog).getByRole("group", { name: "Current lyrics" })).not.toHaveTextContent("world");
+});
+
+it("opens singing practice paused at the same output time and retains instruments on exit", () => {
+  const source = job();
+  source.manifest!.push({ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  player.time(10);
+  fireEvent.click(screen.getByRole("button", { name: "Lyrics learning mode" }));
+  const dialog = screen.getByRole("dialog", { name: "Lyrics learning mode" });
+  const instruments = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  Object.defineProperty(instruments, "readyState", { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(instruments);
+  fireEvent.seeked(instruments);
+  expect(instruments.currentTime).toBe(10);
+  expect(instruments.paused).toBe(true);
+  expect(within(dialog).getByRole("button", { name: "Play" })).toBeEnabled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(screen.getByRole("button", { name: /^Instruments/ })).toHaveAttribute("aria-pressed", "true");
+  expect(instruments.currentTime).toBe(10);
+});
+
+it("keeps the old source paused if singing preparation fails or is cancelled", () => {
+  const source = job();
+  source.manifest!.push({ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  fireEvent.click(screen.getByRole("button", { name: "Play", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Lyrics learning mode" }));
+  const dialog = screen.getByRole("dialog", { name: "Lyrics learning mode" });
+  fireEvent.error(document.querySelector<HTMLAudioElement>("audio[hidden]")!);
+  expect(within(dialog).getByRole("alert")).toBeVisible();
+  expect(within(dialog).getByRole("button", { name: "Play" })).toBeDisabled();
+  fireEvent.keyDown(dialog, { key: " " });
+  expect(player.audio.paused).toBe(true);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(player.audio.paused).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Lyrics learning mode" }));
+  const pending = screen.getByRole("dialog", { name: "Lyrics learning mode" });
+  fireEvent.click(within(pending).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(player.audio.paused).toBe(true);
+});
+
+it("does not switch back to vocals if an earlier recovery finishes during singing preparation", async () => {
+  const source = job();
+  source.has_pitch_vocals = false;
+  source.manifest = [{ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 }];
+  const recovery = Promise.withResolvers<Response>();
+  vi.stubGlobal("fetch", vi.fn(() => recovery.promise));
+  render(() => <PitchView job={source} />);
+  const original = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
+  fireEvent.click(screen.getByRole("button", { name: "Recover cached vocals" }));
+  fireEvent.click(screen.getByRole("button", { name: "Lyrics learning mode" }));
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  expect(candidate.getAttribute("src")).toContain("/results/instruments");
+  recovery.resolve(new Response(null, { status: 204 }));
+  await recovery.promise;
+  await Promise.resolve();
+  await waitFor(() => expect(screen.getByRole("dialog", { name: "Lyrics learning mode" })).toBeVisible());
+  expect(candidate.getAttribute("src")).toContain("/results/instruments");
+  expect(original.paused).toBe(true);
+});
+
+it("does not offer singing practice without an instruments output and removes pitches in normal fullscreen", () => {
+  const player = keyboardPlayer();
+  expect(screen.getByRole("button", { name: "Lyrics learning mode" })).toBeDisabled();
+  expect(screen.getByText(/Instruments are unavailable/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
+  player.time(1.5);
+  fireEvent.click(screen.getByRole("button", { name: "Open karaoke fullscreen" }));
+  const dialog = screen.getByRole("dialog", { name: "Karaoke fullscreen" });
+  expect(within(dialog).queryByRole("button", { name: "Pitches" })).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole("group", { name: "Reference pitch controls" })).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: /reference pitch/i })).not.toBeInTheDocument();
+  expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(screen.getByRole("button", { name: "Pitches" })).toHaveAttribute("aria-pressed", "true");
+});
 
 it("shares the existing playback and output-time seek with the fullscreen reader", async () => {
   const player = keyboardPlayer();
@@ -1083,6 +1206,57 @@ it("does not confuse automatic scrolling with browsing, and resumes only after a
   player.time(28);
   expect(player.viewport.scrollLeft).toBeGreaterThan(2300);
 });
+it("keeps follow through pointer use and visible pans, pausing only offscreen and resuming on a visible return", () => {
+  const player = scrollPlayer();
+  player.time(1);
+  const ruler = screen.getByRole("slider", { name: "Pitch timeline position" });
+  fireEvent.pointerMove(ruler, { pointerId: 1, pointerType: "mouse", clientX: 154, clientY: 0 });
+  fireEvent.pointerDown(ruler, { pointerId: 1, button: 0, clientX: 154, clientY: 0 });
+  fireEvent.click(ruler, { clientX: 154, clientY: 0 });
+  fireEvent.pointerUp(window, { pointerId: 1 });
+  expect(player.browsing()).toBe(false);
+
+  fireEvent.pointerDown(player.viewport, { pointerId: 2, button: 0 });
+  player.scroll(20);
+  fireEvent.pointerUp(window, { pointerId: 2 });
+  player.end();
+  expect(player.browsing()).toBe(false);
+  const playheadX = 54 + Number(ruler.getAttribute("aria-valuenow")) * 100;
+  expect(playheadX).toBeGreaterThanOrEqual(player.viewport.scrollLeft + 54);
+  expect(playheadX).toBeLessThan(player.viewport.scrollLeft + player.viewport.clientWidth);
+
+  player.time(2.6);
+  fireEvent.scroll(player.viewport); // The browser's scroll event for the automatic move is programmatic.
+  expect(player.viewport.scrollLeft).toBeGreaterThan(20);
+  expect(player.audio.currentTime).toBe(2.6);
+
+  player.wheel(2000);
+  player.end();
+  expect(player.browsing()).toBe(true);
+  player.time(20.5); // Playback re-enters the browsed window without a manual return.
+  expect(player.viewport.scrollLeft).toBe(2000);
+  expect(player.browsing()).toBe(true);
+  player.wheel(2050); // A real horizontal pan with the playhead visible before and after.
+  player.end();
+  expect(player.browsing()).toBe(false);
+  player.time(23.1);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(2050);
+});
+
+it("keeps horizontal auto-follow active during vertical-only scrolling", () => {
+  const player = scrollPlayer();
+  player.time(5);
+  const left = player.viewport.scrollLeft;
+  const top = player.viewport.scrollTop;
+  player.wheel(left, top + 40);
+  player.end();
+  expect(player.viewport.scrollTop).toBe(top + 40);
+  expect(player.browsing()).toBe(false);
+  player.time(6.9);
+  expect(player.viewport.scrollTop).toBe(top + 40);
+  expect(player.viewport.scrollLeft).toBeGreaterThan(left);
+  expect(player.audio.currentTime).toBe(6.9);
+});
 
 it.each([true, false])("resumes following at the native original clock without seeking (paused=%s)", paused => {
   const player = scrollPlayer({ ...job(), has_pitch_vocals: false, manifest: [] });
@@ -1175,11 +1349,11 @@ it("revokes a pending return if the user pans away again before releasing the po
   expect(player.viewport.scrollLeft).toBe(2100);
 });
 
-it("suspends on vertical browsing and preserves suspension through pause, seek, source, zoom and preference changes", () => {
+it("suspends on horizontal browsing and preserves suspension through pause, seek, source, zoom and preference changes", () => {
   const player = scrollPlayer();
   player.state.paused = true;
   player.time(5);
-  player.wheel(player.viewport.scrollLeft, player.viewport.scrollTop + 40);
+  player.wheel(3000, player.viewport.scrollTop + 40);
   player.end();
   expect(player.browsing()).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Forward 5 seconds" }));

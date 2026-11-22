@@ -1001,7 +1001,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         const current = reader.getByRole('group', { name: 'Current lyrics' });
         const next = reader.getByRole('group', { name: 'Next lyrics' });
         await expect(current).toContainText('Quiet river sings');
-        await expect(current.locator('.timeline-karaoke-word[aria-current="true"]')).toHaveCount(0);
+        await expect(current.locator('.timeline-karaoke-word[aria-current="true"]')).toHaveText('river');
+        await expect(current.locator('.timeline-karaoke-word[aria-current="true"]')).toHaveAttribute('data-timing', 'estimated');
         await expect(next).toContainText(`go go don't stop again`);
         const pitches = view.getByRole('button', { name: 'Pitches', exact: true });
         await expect(pitches).toHaveAttribute('aria-pressed', 'false');
@@ -1066,9 +1067,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         const pausedReader = pausedFullscreen.getByLabel('Current karaoke line');
         const pausedCurrent = pausedReader.getByRole('group', { name: 'Current lyrics' });
         const pausedNext = pausedReader.getByRole('group', { name: 'Next lyrics' });
-        await expect(pausedCurrent.getByRole('group', { name: 'Estimated pitches for this line: C4 D4 E4', exact: true })).toBeVisible();
-        await expect(pausedNext.getByRole('group', { name: 'Estimated pitches for go: F4', exact: true })).toBeVisible();
-        await expect(pausedNext.getByRole('group', { name: 'Pitches for go: G4', exact: true })).toBeVisible();
+        await expect(pausedCurrent).toContainText('Quiet river sings');
+        await expect(pausedNext).toContainText("go go don't stop again");
+        await expect(pausedReader.locator('.timeline-karaoke-line-pitches, .timeline-karaoke-pitches')).toHaveCount(0);
+        await expect(pausedFullscreen.getByRole('button', { name: 'Pitches', exact: true })).toHaveCount(0);
         expect(await pausedFullscreen.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         await activate(pausedFullscreen.getByRole('button', { name: 'Exit karaoke fullscreen', exact: true }));
         await expect(pausedFullscreen).toHaveCount(0);
@@ -1082,12 +1084,16 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         const partialCurrent = reader.getByRole('group', { name: 'Current lyrics' });
         const partialWords = partialCurrent.locator('.timeline-karaoke-word');
         await expect(partialWords).toHaveCount(5);
-        await expect(partialWords.nth(0)).toHaveAttribute('data-state', 'untimed');
+        await expect(partialWords.nth(0)).toHaveAttribute('data-state', 'complete');
+        await expect(partialWords.nth(0)).toHaveAttribute('data-timing', 'estimated');
         await expect(partialWords.nth(1)).toHaveAttribute('data-state', 'active');
+        await expect(partialWords.nth(1)).toHaveAttribute('data-timing', 'measured');
         await expect(partialWords.nth(1)).toHaveAttribute('aria-current', 'true');
-        await expect(partialWords.nth(2)).toHaveAttribute('data-state', 'untimed');
+        await expect(partialWords.nth(2)).toHaveAttribute('data-state', 'pending');
+        await expect(partialWords.nth(2)).toHaveAttribute('data-timing', 'estimated');
         await expect(partialWords.nth(3)).toHaveAttribute('data-state', 'pending');
-        await expect(partialWords.nth(4)).toHaveAttribute('data-state', 'untimed');
+        await expect(partialWords.nth(4)).toHaveAttribute('data-state', 'pending');
+        await expect(partialWords.nth(4)).toHaveAttribute('data-timing', 'estimated');
         await seekOutput(6.8);
         await expect(partialWords.nth(1)).toHaveAttribute('data-state', 'complete');
         await expect(partialWords.nth(3)).toHaveAttribute('data-state', 'active');
@@ -1123,7 +1129,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 
         const vocalLyrics = completed.pitched_lyrics!.find(track => track.label === 'vocals')!;
         const text = vocalLyrics.text;
-        expect(text).toMatch(/C4 +D4 +E4\n\[00:02\] Quiet +river +sings/);
+        expect(text).toMatch(/\[line\] C4 +D4 +E4\n[ \t]*\n\[00:02\] Quiet +river +sings/);
         const exportedLines = text.split('\n');
         const partialLyricRow = exportedLines.findIndex(row => row.includes('[00:04]') && row.includes('go') && row.includes('again'));
         expect(partialLyricRow).toBeGreaterThan(0);
@@ -1154,7 +1160,6 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
           cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8',
         }));
         expect(odtText).toBe(text);
-        expect(odtText).toMatch(/C4 +D4 +E4\n\[00:02\] Quiet +river +sings/);
         expect(odtText).toContain('~F4');
         expect(externalRequests).toEqual([]);
         await info.attach('line-pitch-fallback-native', {

@@ -1,6 +1,6 @@
 import { Show, createEffect, onCleanup, onMount, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { JobDTO, PitchNoteDTO } from "~/api";
+import type { JobDTO, LearningHint } from "~/api";
 import { Button } from "~/components/button";
 import TimelineKaraoke from "./TimelineKaraoke";
 
@@ -9,15 +9,13 @@ interface KaraokeFullscreenProps {
   position: number;
   mediaPosition: number;
   mediaDuration: number;
-  notes: PitchNoteDTO[];
-  trackIndex: number;
   playing: boolean;
   seeking: boolean;
   seekRevision: number;
   fontSize: number;
   onFontSize: (size: number) => void;
-  showPitches: boolean;
-  onShowPitches: (show: boolean) => void;
+  learningHint?: LearningHint;
+  loading?: boolean;
   background: JSX.Element;
   activeSource: string;
   transport: JSX.Element;
@@ -83,9 +81,9 @@ export default function KaraokeFullscreen(props: KaraokeFullscreenProps) {
     props.onKeyDown(event);
   };
   return <Portal>
-    <section ref={dialog} class="karaoke-fullscreen" role="dialog" aria-modal="true" aria-label="Karaoke fullscreen" onKeyDown={keyDown}>
+    <section ref={dialog} class="karaoke-fullscreen" role="dialog" aria-modal="true" aria-label={props.learningHint ? "Lyrics learning mode" : "Karaoke fullscreen"} onKeyDown={keyDown}>
       <header class="karaoke-fullscreen-header">
-        <h2>Karaoke</h2>
+        <h2>{props.learningHint ? "Lyrics learning mode" : "Karaoke"}</h2>
         <Button ref={close} type="button" variant="outline" aria-label="Exit karaoke fullscreen" onClick={props.onClose}>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </Button>
@@ -93,14 +91,14 @@ export default function KaraokeFullscreen(props: KaraokeFullscreenProps) {
       <div ref={background} class="karaoke-fullscreen-background">{props.background}</div>
       <Show when={props.error}><p role="alert" class="text-sm text-destructive">{props.error}</p></Show>
       <div class="karaoke-fullscreen-reader">
-        <TimelineKaraoke job={props.job} position={props.position} notes={props.notes} trackIndex={props.trackIndex} playing={props.playing}
+        <TimelineKaraoke job={props.job} position={props.position} playing={props.playing}
           seeking={props.seeking} seekRevision={props.seekRevision} fontSize={props.fontSize} onFontSize={props.onFontSize}
-          showPitches={props.showPitches} onShowPitches={props.onShowPitches} fit />
+          learningHint={props.learningHint} fit />
       </div>
       <div class="karaoke-fullscreen-player">
         <label class="karaoke-fullscreen-seek">
           <span>{clock(props.mediaPosition)}</span>
-          <input type="range" aria-label="Karaoke playback position" min="0" max={props.mediaDuration} step="0.01"
+          <input type="range" aria-label="Karaoke playback position" min="0" max={props.mediaDuration} step="0.01" disabled={props.loading}
             value={Math.min(props.mediaPosition, props.mediaDuration)} style={{ "--karaoke-seek-progress": `${props.mediaDuration > 0 ? Math.max(0, Math.min(100, props.mediaPosition / props.mediaDuration * 100)) : 0}%` }}
             onInput={event => props.onSeek(event.currentTarget.valueAsNumber)} />
           <span>{clock(props.mediaDuration)}</span>

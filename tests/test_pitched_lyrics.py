@@ -130,9 +130,9 @@ def test_residual_line_pitch_sequence_collapses_only_consecutive_names() -> None
     text = pitched_lyrics_text(
         transcript, analysis, analysis.tracks[0], associations=associations
     )
-    pitch_row = next(row for row in text.splitlines() if row.strip().startswith("C4"))
+    pitch_row = next(row for row in text.splitlines() if row.startswith("[line] "))
     expected_names = ["C4", "D4", "C4", "C5"]
-    assert pitch_row.split() == expected_names
+    assert pitch_row.removeprefix("[line] ").split() == expected_names
     with zipfile.ZipFile(io.BytesIO(pitched_lyrics_odt(blocks))) as archive:
         root = ElementTree.fromstring(archive.read("content.xml"))
     paragraphs = root.findall(".//{urn:oasis:names:tc:opendocument:xmlns:text:1.0}p")

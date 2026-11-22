@@ -8,6 +8,8 @@ export interface KaraokeTiming {
 export interface KaraokeWord {
   text: string;
   timing: KaraokeTiming | null;
+  /** Highlight timing provenance, independent of pitch-note associations. */
+  timingOrigin?: "measured" | "estimated";
   /** Index in the separately published pitch word list, only when unambiguous. */
   pitchIndex?: number;
   /** Lexical token index within its presentation line. */
@@ -33,8 +35,7 @@ export interface KaraokeWordState {
   progress: number;
 }
 
-// Same lexical boundaries as lyrics_reference.tokens: punctuation is preserved
-// separately, and only published word timings can animate a lexical token.
+// Same lexical boundaries as lyrics_reference.tokens; punctuation stays separate.
 function lexicalMatches(text: string): RegExpMatchArray[] {
   return [...text.matchAll(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu)];
 }
@@ -56,11 +57,44 @@ function makeLine(text: string, timings: Map<number, KaraokeTiming>): KaraokeLin
   lexicalMatches(text).forEach((match, index) => {
     const start = match.index!;
     if (start > end) parts.push(text.slice(end, start));
-    parts.push({ text: match[0], timing: timings.get(index) ?? null, tokenIndex: index });
+    const timing = timings.get(index) ?? null;
+    parts.push({ text: match[0], timing, ...(timing ? { timingOrigin: "measured" as const } : {}), tokenIndex: index });
     end = start + match[0].length;
   });
   if (end < text.length) parts.push(text.slice(end));
   return { text, parts, timing: null };
+}
+
+/** Display-only estimates; never alter measured words or pitch associations. */
+function estimateHighlights(line: KaraokeLine, safeEnd: number | undefined): void {
+  const start = line.timing?.start_s;
+  if (start === undefined || !Number.isFinite(start) || start < 0) return;
+  const words = line.parts.filter((part): part is KaraokeWord => typeof part !== "string");
+  const anchors = words.flatMap((word, index) => word.timing ? [index] : []);
+  for (let i = 1; i < anchors.length; i++) {
+    if (words[anchors[i - 1]].timing!.end_s > words[anchors[i]].timing!.start_s) return;
+  }
+  const limits = [-1, ...anchors, words.length];
+  for (let i = 0; i + 1 < limits.length; i++) {
+    const left = limits[i], right = limits[i + 1];
+    if (right - left <= 1) continue;
+    const lower = left < 0 ? start : words[left].timing!.end_s;
+    const upper = right === words.length ? safeEnd : words[right].timing!.start_s;
+    if (upper === undefined || !Number.isFinite(lower) || !Number.isFinite(upper)
+      || lower < start || upper <= lower || (safeEnd !== undefined && upper > safeEnd)) continue;
+    const missing = words.slice(left + 1, right);
+    const weights = missing.map(word => Math.max(1, [...word.text.normalize("NFC")]
+      .filter(character => /[\p{L}\p{N}]/u.test(character)).length));
+    const total = weights.reduce((sum, weight) => sum + weight, 0);
+    let offset = 0, previous = lower;
+    missing.forEach((word, index) => {
+      offset += weights[index];
+      const end = index === missing.length - 1 ? upper : lower + (upper - lower) * offset / total;
+      word.timing = { start_s: previous, end_s: end };
+      word.timingOrigin = "estimated";
+      previous = end;
+    });
+  }
 }
 
 /** Builds once per job, never once per animation frame. Does not infer syllables. */
@@ -93,14 +127,34 @@ export function karaokeLines(job: Pick<JobDTO, "transcript" | "pitch" | "options
       result.projected = true;
       return result;
     });
-    for (let i = 0; i < lines.length; i++) {
+    let nextCanonical: KaraokeLine | undefined;
+    let nextTimedCanonical: KaraokeLine | undefined;
+    for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i];
-      if (line.sourceKind !== "canonical" || !line.timing) continue;
-      // Canonical ends are display-only windows; extras are temporary overlays.
-      const next = lines.slice(i + 1).find(item => item.sourceKind === "canonical" && item.timing)?.timing?.start_s;
-      const duration = job.pitch?.duration_s;
-      const end = next ?? (duration !== undefined && Number.isFinite(duration) ? duration : line.timing.start_s);
-      line.timing.end_s = Math.max(line.timing.start_s, end);
+      if (line.timing) {
+        let end: number | undefined;
+        let validOrder = true;
+        if (line.sourceKind === "canonical") {
+          // Display windows may skip untimed lines; estimates must not.
+          const duration = job.pitch?.duration_s;
+          const displayEnd = nextTimedCanonical?.timing?.start_s
+            ?? (duration !== undefined && Number.isFinite(duration) ? duration : line.timing.start_s);
+          line.timing.end_s = Math.max(line.timing.start_s, displayEnd);
+          if (nextCanonical?.timing) {
+            validOrder = nextCanonical.timing.start_s > line.timing.start_s;
+            end = nextCanonical.timing.start_s;
+          } else if (!nextCanonical && duration !== undefined && Number.isFinite(duration) && duration > line.timing.start_s) {
+            end = duration;
+          }
+        } else if (line.timing.end_s > line.timing.start_s) {
+          end = line.timing.end_s;
+        }
+        if (validOrder) estimateHighlights(line, end);
+      }
+      if (line.sourceKind === "canonical") {
+        nextCanonical = line;
+        if (line.timing) nextTimedCanonical = line;
+      }
     }
     return lines;
   }
@@ -109,7 +163,7 @@ export function karaokeLines(job: Pick<JobDTO, "transcript" | "pitch" | "options
   return (job.pitch?.words ?? []).flatMap((word, pitchIndex) => {
     const timing = wordTiming(word, 1);
     return timing ? [{
-      text: word.text, parts: [{ text: word.text, timing, pitchIndex }], timing,
+      text: word.text, parts: [{ text: word.text, timing, timingOrigin: "measured" as const, pitchIndex }], timing,
     }] : [];
   });
 }

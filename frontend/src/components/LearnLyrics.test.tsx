@@ -13,8 +13,8 @@ function fixture(): LearningDocument {
   return {
     document_version: "doc", saving_available: true,
     lines: [
-      { id: "one", text: "e\u0301lan 東京", onset_s: 1, end_s: 3, onset_source: "provider-synced" },
-      { id: "two", text: "Unknown line", onset_s: null, end_s: null, onset_source: "unknown" },
+      { id: "one", text: "e\u0301lan 東京", onset_s: 1, end_s: 3, playback_end_s: null, onset_source: "provider-synced" },
+      { id: "two", text: "Unknown line", onset_s: null, end_s: null, playback_end_s: null, onset_source: "unknown" },
     ],
     sections: [{ id: "verse", label: "verse", start_s: 1, end_s: 3 }],
     progress: { hint_level: "full", section_id: null, line_id: "one", difficulties: {} },
@@ -232,9 +232,9 @@ it("keeps the old line bound while selection is awaiting a save", async () => {
 
 it("uses chronological cues when an earlier ASR extra follows canonical lines in display order", async () => {
   state.lines = [
-    { id: "one", text: "Canonical", onset_s: 4, end_s: null, onset_source: "provider-synced" },
-    { id: "extra", text: "Earlier extra", onset_s: 1, end_s: 2, onset_source: "acoustic" },
-    { id: "later", text: "Later cue", onset_s: 6, end_s: null, onset_source: "provider-synced" },
+    { id: "one", text: "Canonical", onset_s: 4, end_s: null, playback_end_s: null, onset_source: "provider-synced" },
+    { id: "extra", text: "Earlier extra", onset_s: 1, end_s: 2, playback_end_s: null, onset_source: "acoustic" },
+    { id: "later", text: "Later cue", onset_s: 6, end_s: null, playback_end_s: null, onset_source: "provider-synced" },
   ];
   const rendered = render(() => <LearnLyrics job={job} />);
   await screen.findByRole("button", { name: "Practice" });
@@ -267,7 +267,7 @@ it("uses recording duration for the chronologically last line even if an earlier
 
 it("does not skip an intervening untimed line to claim a later cutoff", async () => {
   state.lines[0].end_s = null;
-  state.lines.push({ id: "later", text: "Later", onset_s: 6, end_s: null, onset_source: "provider-synced" });
+  state.lines.push({ id: "later", text: "Later", onset_s: 6, end_s: null, playback_end_s: null, onset_source: "provider-synced" });
   const rendered = render(() => <LearnLyrics job={job} />);
   await screen.findByRole("button", { name: "Practice" });
   const audio = rendered.container.querySelector("audio")!;
@@ -301,4 +301,59 @@ it("rearms the fallback boundary timer after changing lines during playback", as
   } finally {
     vi.useRealTimers();
   }
+});
+
+it.each([80, 125])("plays the measured last word past the next provider cue on the original clock at tempo %i", async tempo => {
+  state.lines[0] = { ...state.lines[0], onset_s: 1, end_s: null, playback_end_s: 3.7 };
+  state.lines[1] = { ...state.lines[1], onset_s: 3, end_s: null, onset_source: "provider-synced" };
+  const rendered = render(() => <LearnLyrics job={{ ...job, options: { tempo_percent: tempo } } as JobDTO} />);
+  await screen.findByRole("button", { name: "Practice" });
+  const audio = rendered.container.querySelector("audio")!;
+  let paused = false;
+  Object.defineProperties(audio, { duration: { configurable: true, value: 8 }, paused: { configurable: true, get: () => paused } });
+  vi.mocked(audio.pause).mockImplementation(() => { paused = true; });
+  fireEvent.loadedMetadata(audio);
+  expect(audio.currentTime).toBe(1);
+  audio.currentTime = 3.2;
+  fireEvent.timeUpdate(audio);
+  expect(paused).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Repeat line" }));
+  audio.currentTime = 3.7;
+  fireEvent.timeUpdate(audio);
+  expect(audio.currentTime).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: "Repeat line" }));
+  audio.currentTime = 3.7;
+  fireEvent.timeUpdate(audio);
+  expect(paused).toBe(true);
+  expect(audio.currentTime).toBe(3.7);
+  fireEvent.click(screen.getByRole("button", { name: "Unknown line" }));
+  await waitFor(() => expect(audio.currentTime).toBe(3));
+  expect(paused).toBe(true);
+});
+
+it.each([null, NaN, Infinity, -1, 1])("falls back to the next cue for invalid measured end %s", async end => {
+  state.lines[0] = { ...state.lines[0], end_s: null, playback_end_s: end };
+  state.lines[1] = { ...state.lines[1], onset_s: 4, end_s: null, onset_source: "provider-synced" };
+  const rendered = render(() => <LearnLyrics job={job} />);
+  await screen.findByRole("button", { name: "Practice" });
+  const audio = rendered.container.querySelector("audio")!;
+  Object.defineProperties(audio, { duration: { configurable: true, value: 8 }, paused: { configurable: true, value: false } });
+  fireEvent.loadedMetadata(audio);
+  audio.currentTime = 4;
+  fireEvent.timeUpdate(audio);
+  expect(audio.pause).toHaveBeenCalled();
+  expect(audio.currentTime).toBe(4);
+});
+
+it("clamps a measured acoustic end to the loaded original media duration", async () => {
+  state.lines[0] = { ...state.lines[0], end_s: null, playback_end_s: 10, onset_source: "acoustic" };
+  const rendered = render(() => <LearnLyrics job={job} />);
+  await screen.findByRole("button", { name: "Practice" });
+  const audio = rendered.container.querySelector("audio")!;
+  Object.defineProperties(audio, { duration: { configurable: true, value: 8 }, paused: { configurable: true, value: false } });
+  fireEvent.loadedMetadata(audio);
+  audio.currentTime = 8;
+  fireEvent.timeUpdate(audio);
+  expect(audio.pause).toHaveBeenCalled();
+  expect(audio.currentTime).toBe(8);
 });

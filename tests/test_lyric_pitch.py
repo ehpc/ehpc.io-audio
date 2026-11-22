@@ -16,7 +16,7 @@ from separator.lyrics import (
 )
 from separator.lyrics_reference import ReferenceLine, ReferenceReview
 from separator.pitch import PitchAnalysis, PitchNote, PitchTrack, pitch_to_json
-from separator.pitched_lyrics import pitched_lyrics_text
+from separator.pitched_lyrics import pitched_lyrics_document, pitched_lyrics_text
 from tests.pitched_lyrics_odt_fixture import odf_text
 
 
@@ -234,9 +234,17 @@ def test_repeated_extra_occurrences_keep_distinct_pitch_tracks_in_export() -> No
         for p in projections
         if p.source_kind == "asr-extra"
     ] == [(0, [0]), (1, [1])]
-    text = pitched_lyrics_text(transcript, analysis, analysis.tracks[0])
-    assert "C4\n[00:01] echo" in text
-    assert "D4\n[00:04] echo" in text
+    blocks = pitched_lyrics_document(transcript, analysis, analysis.tracks[0])
+    for timestamp, note_name in (("[00:01]", "C4"), ("[00:04]", "D4")):
+        lyric = next(
+            i
+            for i, block in enumerate(blocks)
+            if block.text.startswith(f"{timestamp} echo")
+        )
+        pitch = blocks[lyric].pitch
+        assert pitch is not None and not pitch.strip()
+        assert blocks[lyric - 1].pitch_only
+        assert blocks[lyric - 1].text.split() == ["[line]", note_name]
 
 
 def test_known_word_receives_overlapping_pitch_without_stored_word_links() -> None:
