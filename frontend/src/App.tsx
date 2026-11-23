@@ -11,6 +11,7 @@ import { useAuth } from "./AuthProvider";
 import ProfileView from "./ProfileView";
 import AdminView from "./AdminView";
 import { Button } from "~/components/button";
+import { pauseOtherMedia } from "~/lib/mediaSession";
 
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
@@ -45,15 +46,26 @@ const App: Component = () => {
   });
 
   onMount(() => {
+    // Only announced starts may be preempted: a newer play() can precede its queued event.
+    const playing = new Set<HTMLAudioElement>();
     const pauseOtherAudio = (event: Event) => {
       const current = event.target;
-      if (!(current instanceof HTMLAudioElement)) return;
-      document.querySelectorAll("audio").forEach((audio) => {
-        if (audio !== current && !audio.paused) audio.pause();
-      });
+      if (!(current instanceof HTMLAudioElement) || current.paused) return;
+      for (const audio of playing) if (audio.paused) playing.delete(audio);
+      pauseOtherMedia(current, playing);
+      playing.add(current);
+    };
+    const forgetPausedAudio = (event: Event) => {
+      const current = event.target;
+      if (current instanceof HTMLAudioElement && current.paused) playing.delete(current);
     };
     document.addEventListener("play", pauseOtherAudio, true);
-    onCleanup(() => document.removeEventListener("play", pauseOtherAudio, true));
+    document.addEventListener("pause", forgetPausedAudio, true);
+    onCleanup(() => {
+      document.removeEventListener("play", pauseOtherAudio, true);
+      document.removeEventListener("pause", forgetPausedAudio, true);
+      playing.clear();
+    });
   });
 
   const refreshHistory = async () => {

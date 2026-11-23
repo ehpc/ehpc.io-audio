@@ -165,7 +165,18 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
   });
 }
 
-test('starting another real player pauses learning audio and closing stops it', async ({ page }) => {
+test('starting another real player pauses learning audio and closing stops it', async ({ page }, info) => {
+  await page.addInitScript(() => {
+    const events: unknown[] = [];
+    Reflect.set(window, '__learningMediaEvents', events);
+    for (const type of ['play', 'playing', 'pause', 'waiting']) {
+      document.addEventListener(type, event => {
+        if (!(event.target instanceof HTMLAudioElement)) return;
+        events.push({ type, time: performance.now(), target: event.target.className || event.target.id,
+          paused: event.target.paused, currentTime: event.target.currentTime, readyState: event.target.readyState });
+      }, true);
+    }
+  });
   const { dialog, trigger } = await seedLearning(page);
   const audio = dialog.locator('audio');
   const other = page.locator('audio:not(.learn-audio)').first();
@@ -174,15 +185,56 @@ test('starting another real player pauses learning audio and closing stops it', 
   await audio.click({ position: { x: 20, y: 20 } });
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
   // The modal makes the results player inert; real playback still exercises the global media guard.
-  await other.evaluate((element: HTMLAudioElement) => element.play());
+  try {
+    await other.evaluate((element: HTMLAudioElement) => element.play());
+  } finally {
+    const events: unknown = await page.evaluate(() => Reflect.get(window, '__learningMediaEvents'));
+    await info.attach('learning-media-events', { body: JSON.stringify(events), contentType: 'application/json' });
+  }
   await expect.poll(() => audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
   await expect.poll(() => other.evaluate((element: HTMLAudioElement) => element.paused)).toBe(false);
+  // A real play event may be queued before a same-turn pause. It must not
+  // stop the newer player when the old, already-paused target dispatches.
+  const cancelled = await page.evaluate(async () => {
+    const old = document.querySelector<HTMLAudioElement>('audio.learn-audio');
+    const outside = document.querySelector<HTMLAudioElement>('audio:not(.learn-audio)');
+    if (!old || !outside || !old.paused || outside.paused) throw new Error('Unexpected media state');
+    const notification = new Promise<boolean>(resolve => old.addEventListener('play', () => resolve(old.paused), { once: true }));
+    const result = old.play().catch(error => { if (error.name !== 'AbortError') throw error; });
+    old.pause();
+    await outside.play();
+    await result;
+    return notification;
+  });
+  expect(cancelled).toBe(true);
+  const outsideTime = await other.evaluate((element: HTMLAudioElement) => element.currentTime);
+  await expect.poll(() => other.evaluate((element: HTMLAudioElement, time) => !element.paused && element.currentTime > time, outsideTime)).toBe(true);
+  expect(await audio.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
   await audio.click({ position: { x: 20, y: 20 } });
   await expect.poll(() => other.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
   const handle = await audio.elementHandle();
   await dialog.getByRole('button', { name: 'Close learning' }).click();
   expect(await handle!.evaluate((element: HTMLAudioElement) => element.paused)).toBe(true);
   await expect(trigger).toBeFocused();
+});
+
+test('the newest native player wins simultaneous playback requests', async ({ page }) => {
+  const { dialog } = await seedLearning(page);
+  const old = dialog.locator('audio');
+  const outside = page.locator('audio:not(.learn-audio)').first();
+  await expect.poll(() => old.evaluate((audio: HTMLAudioElement) => audio.readyState >= 2)).toBe(true);
+  await outside.evaluate((audio: HTMLAudioElement) => { audio.preload = 'auto'; audio.load(); });
+  await expect.poll(() => outside.evaluate((audio: HTMLAudioElement) => audio.readyState >= 2)).toBe(true);
+  await page.evaluate(async () => {
+    const old = document.querySelector<HTMLAudioElement>('audio.learn-audio');
+    const outside = document.querySelector<HTMLAudioElement>('audio:not(.learn-audio)');
+    if (!old || !outside) throw new Error('Missing native players');
+    const superseded = old.play().catch(error => { if (error.name !== 'AbortError') throw error; });
+    await Promise.all([superseded, outside.play()]);
+  });
+  const started = await outside.evaluate((audio: HTMLAudioElement) => audio.currentTime);
+  await expect.poll(() => outside.evaluate((audio: HTMLAudioElement, time) => !audio.paused && audio.currentTime > time, started)).toBe(true);
+  await expect.poll(() => old.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
 });
 
 test('unplaced lyrics remain manually revealable when saving is unavailable', async ({ page }) => {

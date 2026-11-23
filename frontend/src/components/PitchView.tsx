@@ -6,6 +6,9 @@ import { displayOutputLabel } from "~/lib/expectedStems";
 import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
 import { LivePitchTrace } from "~/lib/livePitchTrace";
 import type { MicrophonePitch } from "~/lib/microphonePitch";
+import { sameMediaSession } from "~/lib/mediaSession";
+import { TimingAudio } from "~/lib/timingAudio";
+import { TIMING_HINT_LABELS, timingCenters, timingPracticeLines, type TimingHintLevel } from "~/lib/timingPractice";
 import { Button } from "~/components/button";
 import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
 import PianoKeyboard from "./PianoKeyboard";
@@ -59,6 +62,7 @@ interface HoverAnchor {
 
 const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const analysis = () => props.job.pitch!;
+  const timingLines = createMemo(() => timingPracticeLines(props.job));
   const [trackLabel, setTrackLabel] = createSignal(analysis().tracks[0]?.label ?? "");
   const [zoom, setZoom] = createSignal(100);
   const [position, setPosition] = createSignal(0);
@@ -71,9 +75,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [nativePaused, setNativePaused] = createSignal(true);
   const [seeking, setSeeking] = createSignal(false);
   const [seekRevision, setSeekRevision] = createSignal(0);
-  const [karaokeFullscreen, setKaraokeFullscreen] = createSignal<"karaoke" | "learning" | null>(null);
+  const [karaokeFullscreen, setKaraokeFullscreen] = createSignal<"karaoke" | "learning" | "timing" | null>(null);
   const [learningHint, setLearningHint] = createSignal<LearningHint>("full");
   const [learningLoading, setLearningLoading] = createSignal(false);
+  const [timingLevel, setTimingLevel] = createSignal<TimingHintLevel>(4);
+  const [timingReady, setTimingReady] = createSignal(false);
+  let timingAudio: TimingAudio | undefined;
+  let timingWantsPlay = false;
   const [karaokeFontSize, setKaraokeFontSize] = createSignal<number>(LYRIC_FONT.default);
   const [karaokePitches, setKaraokePitches] = createSignal(false);
   const [referenceShift, setReferenceShift] = createSignal(0);
@@ -224,6 +232,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       playbackFrame = undefined;
       if (audio.paused || audio.ended || audio.error) return;
       updatePosition();
+      timingAudio?.tick();
       playbackFrame = requestAnimationFrame(frame);
     };
     playbackFrame = requestAnimationFrame(frame);
@@ -302,8 +311,15 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       finishUserScroll();
     };
     const otherAudioStarted = (event: Event) => {
-      if (event.target instanceof HTMLAudioElement && event.target !== audio
-        && (!pending || event.target !== slots[pending.slot])) cancelReference(false);
+      if (event.target instanceof HTMLAudioElement && !event.target.paused && event.target !== audio
+        && !sameMediaSession(event.target, audio)
+        && (!pending || event.target !== slots[pending.slot])) {
+        cancelReference(false);
+        if (karaokeFullscreen() === "timing") {
+          stopTiming();
+          setReferenceError("Timing practice stopped because another player started.");
+        }
+      }
     };
     document.addEventListener("play", otherAudioStarted, true);
     window.addEventListener("pointerup", pointerEnded);
@@ -315,6 +331,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     onCleanup(() => {
       resize?.disconnect();
       playAttempt++;
+      stopTiming();
       cancelReference(false);
       audio.pause();
       audio.removeAttribute("src");
@@ -415,7 +432,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [activeSlot, setActiveSlot] = createSignal(0);
   const sources = [createSignal({ url: referenceUrl() }), createSignal<{ url: string | undefined }>({ url: undefined })] as const;
   const slots: HTMLAudioElement[] = [];
-  let pending: { slot: number; label: string; phase: "loading" | "seeking" | "playing"; wasPlaying: boolean; learningEntry: boolean } | undefined;
+  let pending: { slot: number; label: string; phase: "loading" | "seeking" | "playing"; wasPlaying: boolean; learningEntry: boolean; timingEntry: boolean } | undefined;
   let nativeSeekPending = false;
   let internalSeekTime: number | null = null;
   const setAudioTime = (seconds: number) => {
@@ -444,6 +461,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     if (pending !== candidate) return;
     cancelReference(!candidate.learningEntry);
     if (candidate.learningEntry) setLearningLoading(false);
+    if (candidate.timingEntry) stopTiming();
     setReferenceError(error instanceof Error || error instanceof DOMException
       ? error.message : "This reference audio could not be played.");
   };
@@ -477,6 +495,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       startPlaybackClock();
       mediaAdvancing = audio.readyState >= 3 && !audio.seeking;
     }
+    if (candidate.timingEntry) startTimingCompanion();
   };
   const prepareReference = (index: number) => {
     const candidate = pending;
@@ -513,18 +532,75 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     candidate.wasPlaying = true;
     void target.play().then(() => promoteReference(candidate), error => referenceFailed(candidate, error));
   };
-  const changeReference = (label: string, learningIntent?: boolean) => {
-    if (karaokeFullscreen() === "learning" && label !== "instruments") return;
+  const changeReference = (label: string, learningIntent?: boolean, timingEntry = false) => {
+    if ((karaokeFullscreen() === "learning" || karaokeFullscreen() === "timing") && label !== "instruments") return;
     cancelReference();
     if (label === reference()) return;
     const url = referenceUrl(label);
     if (!url) return;
     const slot = 1 - activeSlot();
-    pending = { slot, label, phase: "loading", wasPlaying: learningIntent ?? false, learningEntry: learningIntent !== undefined };
+    pending = { slot, label, phase: "loading", wasPlaying: learningIntent ?? false, learningEntry: learningIntent !== undefined, timingEntry };
     setPlaybackError("");
     setReferenceError("");
     sources[slot][1]({ url });
     slots[slot].load();
+  };
+  function stopTiming() {
+    timingAudio?.dispose();
+    timingAudio = undefined;
+    setTimingReady(false);
+    setLearningLoading(false);
+  }
+  function startTimingCompanion() {
+    const session = timingAudio;
+    if (!session || karaokeFullscreen() !== "timing") return;
+    const vocal = hasOutput("vocals")
+      ? resultUrl(props.job.id, "vocals", props.job.result_revision)
+      : pitchVocalsUrl(props.job.id, props.job.result_revision);
+    const preparation = session.prepare(audio, playbackUrl(vocal));
+    if (audio.readyState < 1) { audio.preload = "auto"; audio.load(); }
+    void preparation.then(() => {
+      if (session !== timingAudio || karaokeFullscreen() !== "timing") return;
+      setLearningLoading(false);
+      setTimingReady(true);
+      if (timingWantsPlay) void session.play().catch(error => {
+        if (session === timingAudio) setReferenceError(error instanceof Error ? error.message : "Timing practice audio could not be played.");
+      });
+    }, error => {
+      if (session === timingAudio) {
+        setLearningLoading(false);
+        setTimingReady(false);
+        setReferenceError(error instanceof Error ? error.message : "Timing practice audio could not be loaded.");
+      }
+    });
+  }
+  const openTiming = (trigger: HTMLButtonElement) => {
+    if (!hasOutput("instruments") || (!hasOutput("vocals") && !hasVocals()) || timingLines().length === 0 || !audio) return;
+    fullscreenReturnFocus = trigger;
+    timingWantsPlay = !audio.paused || Boolean(pending?.wasPlaying);
+    playAttempt++;
+    cancelReference(false);
+    setPosition(fromAudioTime(audio.currentTime));
+    audio.pause();
+    setTimingLevel(4);
+    setTimingReady(false);
+    setReferenceError("");
+    setPlaybackError("");
+    setKaraokeFullscreen("timing");
+    try {
+      const lines = timingLines();
+      timingAudio = new TimingAudio(lines, timingCenters(lines), error => {
+        if (karaokeFullscreen() === "timing") {
+          setReferenceError(error instanceof Error ? error.message : "Timing practice audio could not be played.");
+        }
+      });
+      setLearningLoading(true);
+      if (reference() === "instruments") startTimingCompanion();
+      else changeReference("instruments", false, true);
+    } catch (error) {
+      stopTiming();
+      setReferenceError(error instanceof Error ? error.message : "Timing practice audio is unavailable.");
+    }
   };
   const openLearning = (trigger: HTMLButtonElement) => {
     if (!hasOutput("instruments") || !audio) return;
@@ -546,13 +622,15 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     setKaraokeFullscreen("learning");
   };
   const closeKaraokeFullscreen = () => {
+    if (karaokeFullscreen() === "timing") { cancelReference(false); stopTiming(); }
     if (learningLoading()) {
       cancelReference(false);
       setLearningLoading(false);
     }
     setKaraokeFullscreen(null);
   };
-  const learningBlocked = () => karaokeFullscreen() === "learning" && (learningLoading() || reference() !== "instruments");
+  const learningBlocked = () => (karaokeFullscreen() === "learning" && (learningLoading() || reference() !== "instruments"))
+    || (karaokeFullscreen() === "timing" && !timingReady());
   const seek = (seconds: number, maximum = analysis().duration_s) => {
     trace.break();
     const next = Math.max(0, Math.min(maximum, seconds));
@@ -598,6 +676,14 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   };
   const togglePlayback = () => {
     if (!referenceUrl() || learningBlocked()) return;
+    if (karaokeFullscreen() === "timing") {
+      if (!audio.paused) audio.pause();
+      else {
+        setReferenceError("");
+        void timingAudio?.play().catch(error => setReferenceError(error instanceof Error ? error.message : "Timing practice audio could not be played."));
+      }
+      return;
+    }
     if (pending?.phase === "playing") {
       cancelReference(false);
       syncNativePlayback();
@@ -705,6 +791,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     setSelectedNote(null);
     dismissTooltip();
   };
+  const changeTimingLevel = (level: TimingHintLevel) => {
+    setTimingLevel(level);
+    timingAudio?.setLevel(level);
+  };
   const TransportControls = (control: { fullscreen?: boolean }) => (
         <div class="pitch-transport" role="group" aria-label="Timeline playback">
           <div class="pitch-skip-controls">
@@ -713,6 +803,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           </Show>
           <Show when={control.fullscreen && karaokeFullscreen() === "learning"}>
             <Button type="button" variant="outline" class="min-h-11" disabled={learningHint() === "full"} onClick={() => setLearningHint(HINT_LEVELS[HINT_LEVELS.indexOf(learningHint()) - 1])}>More hints</Button>
+          </Show>
+          <Show when={control.fullscreen && karaokeFullscreen() === "timing"}>
+            <Button type="button" variant="outline" class="min-h-11" disabled={timingLevel() === 4} onClick={() => changeTimingLevel((timingLevel() + 1) as TimingHintLevel)}>More hints</Button>
           </Show>
           <Button type="button" variant="outline" aria-label="Back 5 seconds" title="Back 5 seconds" disabled={learningBlocked()} onClick={() => skipMedia(-5)}>−5 s</Button>
           <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl() || learningBlocked()} onClick={togglePlayback}>
@@ -729,7 +822,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           <Show when={control.fullscreen && karaokeFullscreen() === "learning"}>
             <Button type="button" variant="outline" class="min-h-11" disabled={learningHint() === "hidden"} onClick={() => setLearningHint(HINT_LEVELS[HINT_LEVELS.indexOf(learningHint()) + 1])}>Less hints</Button>
           </Show>
+          <Show when={control.fullscreen && karaokeFullscreen() === "timing"}>
+            <Button type="button" variant="outline" class="min-h-11" disabled={timingLevel() === 0} onClick={() => changeTimingLevel((timingLevel() - 1) as TimingHintLevel)}>Less hints</Button>
+          </Show>
           </div>
+          <Show when={control.fullscreen && karaokeFullscreen() === "timing"}>
+            <output aria-live="polite">{TIMING_HINT_LABELS[timingLevel()]}</output>
+          </Show>
           <Show when={!control.fullscreen}>
             <div class="pitch-transpose-controls" role="group" aria-label="Reference pitch controls">
               <Button type="button" variant="outline" aria-label="Lower reference pitch one octave" title="Lower displayed reference pitch one octave; backing audio is unchanged" disabled={referenceShift() - 12 < shiftBounds().min} onClick={() => changeReferencePitch(-12)}>−12 ♫</Button>
@@ -932,13 +1031,16 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <Show when={referenceError()}><p role="alert" class="text-sm text-destructive">{referenceError()}</p></Show>
         <TimelineKaraoke job={props.job} position={position()} notes={notes()} trackIndex={trackIndex()} playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} onKeyDown={togglePlaybackKey}
           fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize} showPitches={karaokePitches()} onShowPitches={setKaraokePitches}
-          onFullscreen={openKaraokeFullscreen} onLearning={openLearning}
-          learningUnavailableReason={hasOutput("instruments") ? undefined : "Instruments are unavailable for this job. Run Karaoke with pitches again to include them."} />
+          onFullscreen={openKaraokeFullscreen} onLearning={openLearning} onTiming={openTiming}
+          learningUnavailableReason={hasOutput("instruments") ? undefined : "Instruments are unavailable for this job. Run Karaoke with pitches again to include them."}
+          timingUnavailableReason={!hasOutput("instruments") || (!hasOutput("vocals") && !hasVocals())
+            ? "Timing practice needs both instruments and vocals. Run Karaoke with pitches again to include them."
+            : timingLines().length === 0 ? "Timed lyric lines are required for timing practice." : undefined} />
         <Show when={karaokeFullscreen()}>
           <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()}
             playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize}
-            learningHint={karaokeFullscreen() === "learning" ? learningHint() : undefined} loading={learningBlocked()}
-            background={karaokeFullscreen() === "karaoke" ? <BackgroundControls /> : <span>Instruments only</span>} activeSource={reference()} transport={<TransportControls fullscreen />}
+            learningHint={karaokeFullscreen() === "learning" ? learningHint() : undefined} timingMode={karaokeFullscreen() === "timing"} loading={learningBlocked()}
+            background={karaokeFullscreen() === "karaoke" ? <BackgroundControls /> : <span>{karaokeFullscreen() === "timing" ? "Instruments + vocals" : "Instruments only"}</span>} activeSource={reference()} transport={<TransportControls fullscreen />}
             error={referenceError() || playbackError()} onSeek={seekMedia} onKeyDown={togglePlaybackKey} onClose={closeKaraokeFullscreen} returnFocus={fullscreenReturnFocus} />
         </Show>
         <For each={[0, 1]}>{index => <Show when={sources[index][0]()} keyed>{source =>

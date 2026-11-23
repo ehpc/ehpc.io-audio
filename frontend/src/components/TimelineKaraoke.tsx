@@ -24,6 +24,8 @@ interface TimelineKaraokeProps {
   onFullscreen?: (trigger: HTMLButtonElement) => void;
   onLearning?: (trigger: HTMLButtonElement) => void;
   learningUnavailableReason?: string;
+  onTiming?: (trigger: HTMLButtonElement) => void;
+  timingUnavailableReason?: string;
   learningHint?: LearningHint;
   fit?: boolean;
 }
@@ -197,6 +199,11 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
         <Button type="button" variant="outline" class="min-h-11" disabled={Boolean(props.learningUnavailableReason)}
           title={props.learningUnavailableReason} onClick={event => props.onLearning?.(event.currentTarget)}>Lyrics learning mode</Button>
         <Show when={props.learningUnavailableReason}><span class="text-xs text-muted-foreground">{props.learningUnavailableReason}</span></Show>
+      </Show>
+      <Show when={props.onTiming}>
+        <Button type="button" variant="outline" class="min-h-11" disabled={Boolean(props.timingUnavailableReason)}
+          title={props.timingUnavailableReason} onClick={event => props.onTiming?.(event.currentTarget)}>Learn timings</Button>
+        <Show when={props.timingUnavailableReason}><span class="text-xs text-muted-foreground">{props.timingUnavailableReason}</span></Show>
       </Show>
       <Show when={!props.fit && lines().some(line => line.onsetSource === "provider-synced")}>
         <span title="Line cues are provider-synced; word timings are independently estimated.">Synced line cues</span>

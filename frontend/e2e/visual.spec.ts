@@ -899,6 +899,52 @@ for (const viewport of [mobile, desktop]) {
     await expect.soft(singing).toHaveScreenshot(`singing-fullscreen-${viewport.width}.png`);
   });
 }
+for (const viewport of [mobile, desktop]) {
+  test(`learn timings ${viewport.width}`, async ({ page }, info) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
+    const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8'));
+    const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
+      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+      detect_pitch: 'true', extract_lyrics: 'true', extract_vocals: 'true', extract_instruments: 'true',
+    } });
+    expect(response.ok()).toBe(true);
+    const id = (await response.json()).id as number;
+    try {
+      execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
+        cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify({ ...fixture, playback_labels: ['song', 'instruments', 'vocals'] }),
+        env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+      await page.reload();
+      const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
+      const player = view.locator('audio[controls]');
+      await player.evaluate((audio: HTMLAudioElement) => { audio.preload = 'auto'; audio.load(); });
+      await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.readyState >= 2 && audio.seekable.length > 0)).toBe(true);
+      await player.evaluate((audio: HTMLAudioElement) => { audio.pause(); audio.currentTime = 15; });
+      await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => !audio.seeking && Math.abs(audio.currentTime - 15) < 0.05)).toBe(true);
+      await view.getByRole('button', { name: 'Learn timings', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Learn timings', exact: true });
+      await expect(dialog.getByRole('button', { name: 'Play', exact: true })).toBeEnabled();
+      await expect(dialog.getByText('Full vocals', { exact: true })).toBeVisible();
+      const less = dialog.getByRole('button', { name: 'Less hints', exact: true });
+      await less.click();
+      await less.click();
+      await less.click();
+      await expect(dialog.getByText('0.5s snippets', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
+      await expect(dialog.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
+      await page.evaluate(() => document.fonts.ready);
+      await dialog.screenshot({ path: info.outputPath(`learn-timings-${viewport.width}-actual.png`), animations: 'disabled', caret: 'hide', scale: 'css' });
+      await expect.soft(dialog).toHaveScreenshot(`learn-timings-${viewport.width}.png`);
+    } finally {
+      await page.goto('about:blank');
+      const deleted = await page.request.delete(`/api/jobs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      expect(deleted.status()).toBe(204);
+    }
+  });
+}
 
 // Synthetic canonical text exercises reference support/provenance presentation;
 // no hosted copyrighted lyrics or fabricated audio-recognition claim is stored.

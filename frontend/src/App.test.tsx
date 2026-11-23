@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import App from "./App";
 import type { JobDTO, SubmitResult } from "./api";
+import { registerMediaSession } from "./lib/mediaSession";
 
 const api = vi.hoisted(() => ({
   getCurrentJob: vi.fn(),
@@ -65,6 +66,44 @@ afterEach(() => {
   vi.restoreAllMocks();
   if (scrollIntoViewDescriptor) Object.defineProperty(Element.prototype, "scrollIntoView", scrollIntoViewDescriptor);
   else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+});
+
+it("allows one paired song session while excluding unrelated players", () => {
+  render(() => <App />);
+  const master = document.createElement("audio");
+  const vocal = document.createElement("audio");
+  const other = document.createElement("audio");
+  document.body.append(master, vocal, other);
+  try {
+    const playing = new Map([master, vocal, other].map(audio => [audio, false]));
+    for (const audio of [master, vocal, other]) {
+      Object.defineProperty(audio, "paused", { configurable: true, get: () => !playing.get(audio) });
+      vi.spyOn(audio, "pause").mockImplementation(() => { playing.set(audio, false); });
+    }
+    const unregister = registerMediaSession(master, vocal);
+    playing.set(master, true);
+    fireEvent.play(master);
+    playing.set(vocal, true);
+    fireEvent.play(vocal);
+    expect(master.paused).toBe(false);
+    expect(vocal.paused).toBe(false);
+    playing.set(other, true);
+    fireEvent.play(other);
+    expect(master.paused).toBe(true);
+    expect(vocal.paused).toBe(true);
+    expect(other.paused).toBe(false);
+    unregister();
+    playing.set(master, true);
+    fireEvent.play(master);
+    expect(other.paused).toBe(true);
+    playing.set(vocal, true);
+    fireEvent.play(vocal);
+    expect(master.paused).toBe(true);
+  } finally {
+    master.remove();
+    vocal.remove();
+    other.remove();
+  }
 });
 
 it("refreshes the selected same-ID entry without restoring stale results", async () => {

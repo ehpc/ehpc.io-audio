@@ -15,6 +15,7 @@ interface KaraokeFullscreenProps {
   fontSize: number;
   onFontSize: (size: number) => void;
   learningHint?: LearningHint;
+  timingMode?: boolean;
   loading?: boolean;
   background: JSX.Element;
   activeSource: string;
@@ -81,9 +82,9 @@ export default function KaraokeFullscreen(props: KaraokeFullscreenProps) {
     props.onKeyDown(event);
   };
   return <Portal>
-    <section ref={dialog} class="karaoke-fullscreen" role="dialog" aria-modal="true" aria-label={props.learningHint ? "Lyrics learning mode" : "Karaoke fullscreen"} onKeyDown={keyDown}>
+    <section ref={dialog} class="karaoke-fullscreen" role="dialog" aria-modal="true" aria-label={props.timingMode ? "Learn timings" : props.learningHint ? "Lyrics learning mode" : "Karaoke fullscreen"} onKeyDown={keyDown}>
       <header class="karaoke-fullscreen-header">
-        <h2>{props.learningHint ? "Lyrics learning mode" : "Karaoke"}</h2>
+        <h2>{props.timingMode ? "Learn timings" : props.learningHint ? "Lyrics learning mode" : "Karaoke"}</h2>
         <Button ref={close} type="button" variant="outline" aria-label="Exit karaoke fullscreen" onClick={props.onClose}>
           <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </Button>

@@ -133,3 +133,55 @@ for (const viewport of [
     });
   });
 }
+
+test.describe('mobile native adjustment gestures', () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  test('rapid taps preserve pitch and tempo steps while pinch and pan remain available', async ({ page }, info) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Upload audio', exact: true }).tap();
+    await page.getByLabel('Audio file', { exact: true }).setInputFiles(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
+    await page.getByRole('tab', { name: 'Adjust', exact: true }).tap();
+    await expect(page.getByText('Original key: C major', { exact: true })).toBeVisible({ timeout: 60_000 });
+    const pitch = page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' });
+    const tempo = page.getByRole('spinbutton', { name: 'Tempo (% of original)' });
+    await pitch.fill('0');
+    await tempo.fill('100');
+    await tempo.blur();
+    const scale = () => page.evaluate(() => window.visualViewport!.scale);
+    const cdp = await page.context().newCDPSession(page);
+    const twice = async (name: string) => {
+      const button = page.getByRole('button', { name, exact: true });
+      await button.scrollIntoViewIfNeeded();
+      await button.tap();
+      await button.tap();
+    };
+    try {
+      const initial = await scale();
+      await twice('Increase pitch');
+      await expect(pitch).toHaveValue('2');
+      await twice('Increase tempo');
+      await expect(tempo).toHaveValue('102');
+      expect(await scale()).toBe(initial);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 150, y: 690, id: 1 }, { x: 230, y: 690, id: 2 }] });
+      for (let step = 1; step <= 6; step++) {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 150 - step * 6, y: 690, id: 1 }, { x: 230 + step * 6, y: 690, id: 2 }] });
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect.poll(scale).toBeGreaterThan(initial);
+      const pinched = await scale();
+      const beforePan = await page.evaluate(() => ({ page: scrollY, viewport: visualViewport!.offsetTop }));
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 190, y: 600, id: 1 }] });
+      for (let step = 1; step <= 8; step++) {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 190, y: 600 - step * 25, id: 1 }] });
+      }
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await expect.poll(() => page.evaluate(() => scrollY + visualViewport!.offsetTop)).toBeGreaterThan(beforePan.page + beforePan.viewport);
+      expect(await scale()).toBe(pinched);
+      await expect(pitch).toHaveValue('2');
+      await expect(tempo).toHaveValue('102');
+      await info.attach('native-touch-scale', { body: JSON.stringify({ initial, pinched, beforePan, afterPan: await page.evaluate(() => ({ page: scrollY, viewport: visualViewport!.offsetTop })) }), contentType: 'application/json' });
+    } finally {
+      await cdp.detach();
+    }
+  });
+});

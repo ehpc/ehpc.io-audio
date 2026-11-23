@@ -109,7 +109,7 @@ interface InstrumentGate {
   requested: () => void;
 }
 
-async function mountFixture(page: Page, job = karaokeJob(), instruments?: InstrumentGate) {
+async function mountFixture(page: Page, job = karaokeJob(), instruments?: InstrumentGate, tones?: { instruments: Buffer; vocals: Buffer }, vocals?: InstrumentGate) {
   // Use the same read-time projection as real API jobs, including modified fixtures.
   job.lyric_pitch_lines = JSON.parse(execFileSync('uv', ['run', 'python', '-c', String.raw`
 import json,sys
@@ -133,9 +133,15 @@ print(json.dumps([asdict(line) for line in lyric_pitch_lines(
       instruments.requested();
       await instruments.gate;
     }
+    if (vocals && (path === `/api/jobs/${job.id}/results/vocals` || path === `/api/jobs/${job.id}/pitch-reference/vocals`)) {
+      vocals.requested();
+      await vocals.gate;
+    }
     if (isOriginal || path.startsWith(`/api/jobs/${job.id}/results/`) || path === `/api/jobs/${job.id}/pitch-reference/vocals`) {
       const listening = !isOriginal && url.searchParams.get('playback') === '1';
-      const bytes = isOriginal ? original : listening ? transformedPlayback : transformed;
+      const tone = path.endsWith('/results/instruments') ? tones?.instruments
+        : path.endsWith('/results/vocals') || path.endsWith('/pitch-reference/vocals') ? tones?.vocals : undefined;
+      const bytes = isOriginal ? original : listening ? tone ?? transformedPlayback : transformed;
       const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '');
       const start = range ? Number(range[1]) : 0;
       const end = range?.[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
@@ -577,7 +583,211 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke fullscreen ${viewport.width}px`, () => {
+    test('learn timings keeps native voices synchronized and gates sparse hints', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      // Fixed centers give this audio fixture reproducible snippet boundaries.
+      await page.addInitScript(() => { Math.random = () => 0.5; });
+      const tone = (frequency: number) => {
+        const mp3 = execFileSync('ffmpeg', [
+          '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=48000`,
+          '-t', '36', '-c:a', 'libmp3lame', '-f', 'mp3', 'pipe:1',
+        ], { maxBuffer: 16 * 1024 * 1024 });
+        return execFileSync('uv', ['run', 'python', '-c', String.raw`
+import sys
+from pathlib import Path
+from backend.playback import listening_path
+root=Path(sys.argv[1])
+source=root / ('timing-tone-' + sys.argv[2] + '.mp3')
+source.write_bytes(sys.stdin.buffer.read())
+result=listening_path(source,root / 'timing-tone-cache')
+assert result is not None
+sys.stdout.buffer.write(result.read_bytes())
+`, process.env.E2E_FIXTURE_DIR!, String(frequency)], {
+          cwd: process.env.E2E_REPO_ROOT!, input: mp3, maxBuffer: 16 * 1024 * 1024,
+        });
+      };
+      const job = karaokeJob();
+      if (viewport.width === 390) job.manifest = job.manifest!.filter(item => item.label !== 'vocals');
+      const { view, player } = await mountFixture(page, job, undefined, {
+        instruments: tone(220), vocals: tone(880),
+      });
+      await seekNative(player, 4);
+      await view.getByRole('button', { name: 'Learn timings', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Learn timings', exact: true });
+      await expect(dialog).toBeVisible();
+      await expect.poll(() => player.evaluate(audio => new URL(audio.currentSrc).pathname)).toContain('/results/instruments');
+      const play = dialog.getByRole('button', { name: 'Play', exact: true });
+      await expect(play).toBeEnabled();
+      await play.click();
+      const vocal = page.locator('body > audio[hidden]:not(#timing-test-external-player)');
+      await expect(vocal).toHaveCount(1);
+      // Model only the visibility input: both players and their clocks remain native.
+      const setHidden = (hidden: boolean) => page.evaluate(value => {
+        if (value) Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+        else Reflect.deleteProperty(document, 'hidden');
+        document.dispatchEvent(new Event('visibilitychange'));
+      }, hidden);
+      const masterAdvances = async () => {
+        const before = await player.evaluate(audio => audio.currentTime);
+        await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(before);
+      };
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      await setHidden(true);
+      await masterAdvances();
+      expect(await vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      await setHidden(false);
+      const less = dialog.getByRole('button', { name: 'Less hints', exact: true });
+      await less.click();
+      await expect(dialog.getByText('2s snippets', { exact: true })).toBeVisible();
+      await less.click();
+      await less.click();
+      await less.click();
+      await expect(dialog.getByText('Vocals off', { exact: true })).toBeVisible();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.muted)).toBe(true);
+      await setHidden(true);
+      await masterAdvances();
+      expect(await vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && audio.muted)).toBe(true);
+      await setHidden(false);
+      expect(await player.evaluate(audio => !audio.paused && audio.currentSrc.includes('/results/instruments'))).toBe(true);
+      const position = await player.evaluate(audio => audio.currentTime);
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(position);
+      const more = dialog.getByRole('button', { name: 'More hints', exact: true });
+      await more.click();
+      await expect(dialog.getByText('0.5s snippets', { exact: true })).toBeVisible();
+      await seekNative(player, 4.245);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(4.3);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.muted)).toBe(true);
+      await more.click();
+      await expect(dialog.getByText('1s snippets', { exact: true })).toBeVisible();
+      await seekNative(player, 4);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      await setHidden(true);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.paused && audio.muted)).toBe(true);
+      await masterAdvances();
+      await setHidden(false);
+      await expect(dialog.getByText('1s snippets', { exact: true })).toBeVisible();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
+      // Model the WebKit waiting/readyState=2 event; media playback and clocks stay native.
+      const waiting = await player.evaluate((audio: HTMLAudioElement) => {
+        Object.defineProperty(audio, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA });
+        audio.dispatchEvent(new Event('waiting'));
+        const companion = document.querySelector<HTMLAudioElement>('body > audio[hidden]');
+        if (!companion) throw new Error('Missing timing audio');
+        return { masterPaused: audio.paused, companionPaused: companion.paused, muted: companion.muted };
+      });
+      try {
+        expect(waiting).toEqual({ masterPaused: false, companionPaused: true, muted: true });
+        await masterAdvances();
+        await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
+      } finally {
+        await player.evaluate((audio: HTMLAudioElement) => { Reflect.deleteProperty(audio, 'readyState'); });
+      }
+      await expect.poll(async () => Math.abs(await player.evaluate(audio => audio.currentTime) - await vocal.evaluate((audio: HTMLAudioElement) => audio.currentTime))).toBeLessThan(0.08);
+      const samples = await page.evaluate(async () => {
+        const master = document.querySelector<HTMLAudioElement>('audio[controls]');
+        const companion = document.querySelector<HTMLAudioElement>('body > audio[hidden]');
+        if (!master || !companion) throw new Error('Missing timing audio');
+        const rows: { master: number; vocal: number; paused: boolean; seeking: boolean }[] = [];
+        for (let i = 0; i < 60; i++) {
+          rows.push({ master: master.currentTime, vocal: companion.currentTime, paused: companion.paused, seeking: companion.seeking });
+          await new Promise(resolve => setTimeout(resolve, 35));
+        }
+        return rows;
+      });
+      await info.attach('timing-native-clock', { body: JSON.stringify(samples), contentType: 'application/json' });
+      expect(samples.at(-1)!.master - samples[0].master).toBeGreaterThan(1.5);
+      expect(Math.max(...samples.map(row => Math.abs(row.master - row.vocal)))).toBeLessThan(0.08);
+      expect(samples.every(row => !row.paused && !row.seeking)).toBe(true);
+      await seekNative(player, 4);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      await seekNative(player, 4.75);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && audio.muted)).toBe(true);
+      await dialog.getByRole('button', { name: 'Pause', exact: true }).click();
+      await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+      await more.click();
+      await more.click();
+      await expect(dialog.getByText('Full vocals', { exact: true })).toBeVisible();
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => player.evaluate(audio => !audio.paused)).toBe(true);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
+      // A queued play from an outsider already paused in the same turn must
+      // not cancel the active two-element timing session.
+      const cancelled = await page.evaluate(async () => {
+        const external = document.createElement('audio');
+        const master = document.querySelector<HTMLAudioElement>('audio[controls]');
+        if (!master) throw new Error('Missing instrument player');
+        external.src = master.currentSrc;
+        document.body.append(external);
+        const notification = new Promise<boolean>(resolve => external.addEventListener('play', () => resolve(external.paused), { once: true }));
+        const result = external.play().catch(error => { if (error.name !== 'AbortError') throw error; });
+        external.pause();
+        await result;
+        const pausedAtNotification = await notification;
+        external.remove();
+        return pausedAtNotification;
+      });
+      expect(cancelled).toBe(true);
+      expect(await player.evaluate(audio => !audio.paused)).toBe(true);
+      expect(await vocal.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
+      await expect(dialog.getByText('Full vocals', { exact: true })).toBeVisible();
+      await page.evaluate(async () => {
+        const external = document.createElement('audio');
+        const master = document.querySelector<HTMLAudioElement>('audio[controls]');
+        if (!master) throw new Error('Missing instrument player');
+        external.src = master.currentSrc;
+        external.hidden = true;
+        external.id = 'timing-test-external-player';
+        document.body.append(external);
+        await external.play();
+      });
+      await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+      await expect(vocal).toHaveCount(0);
+      await page.locator('#timing-test-external-player').evaluate((audio: HTMLAudioElement) => { audio.pause(); audio.remove(); });
+      await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      await expect(dialog).toBeHidden();
+    });
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('outside playback cancels timing preparation before vocals load', async ({ page }) => {
+      const gate = Promise.withResolvers<void>();
+      const requested = Promise.withResolvers<void>();
+      const { view, player } = await mountFixture(page, karaokeJob(), undefined, undefined, {
+        gate: gate.promise, requested: requested.resolve,
+      });
+      try {
+        await player.evaluate((audio: HTMLAudioElement) => audio.play());
+        await expect.poll(() => player.evaluate(audio => !audio.paused)).toBe(true);
+        await view.getByRole('button', { name: 'Learn timings', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Learn timings', exact: true });
+        await requested.promise;
+        await expect(dialog.getByRole('button', { name: 'Play', exact: true })).toBeDisabled();
+        await page.evaluate(async () => {
+          const master = document.querySelector<HTMLAudioElement>('audio[controls]');
+          if (!master) throw new Error('Missing instrument player');
+          const external = document.createElement('audio');
+          external.id = 'timing-test-external-player';
+          external.src = master.currentSrc;
+          document.body.append(external);
+          await external.play();
+        });
+        const external = page.locator('#timing-test-external-player');
+        await expect.poll(() => external.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
+        await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
+        await expect(page.locator('body > audio[hidden]')).toHaveCount(0);
+        gate.resolve();
+        const position = await external.evaluate((audio: HTMLAudioElement) => audio.currentTime);
+        await expect.poll(() => external.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(position);
+        expect(await player.evaluate(audio => audio.paused)).toBe(true);
+        await expect(page.locator('body > audio[hidden]')).toHaveCount(0);
+        await external.evaluate((audio: HTMLAudioElement) => { audio.pause(); audio.remove(); });
+      } finally {
+        gate.resolve();
+      }
+    });
     test('singing practice switches safely to instruments and masks both lyric lines', async ({ page }, info) => {
       const gate = Promise.withResolvers<void>();
       const requested = Promise.withResolvers<void>();

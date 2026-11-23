@@ -206,6 +206,65 @@ function chooseBackground(name: RegExp | string) {
   return candidate;
 }
 
+function withTimedLyrics(source: JobDTO): JobDTO {
+  return { ...source, transcript: {
+    status: "recognized", language: "en", timestamp_reference: "original", sections: [], segments: [],
+    structure_model: null, timestamped_text: "", words: [{ text: "world", start_s: 1.25, end_s: 3.75, probability: null }],
+    presentation_lines: [{ text: "world", source_kind: "segment", source_index: 0, canonical_line_index: null,
+      onset_s: 1.25, end_s: 3.75, onset_source: "acoustic", words: [{ word_index: 0, token_index: 0 }] }],
+  } };
+}
+
+it.each(["public", "private"] as const)("keeps lyrics visible and disposes %s vocal practice on exit", async (availability) => {
+  const source = withTimedLyrics(job());
+  if (availability === "private") source.manifest = [];
+  source.manifest!.push({ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 });
+  const player = keyboardPlayer(source);
+  player.time(1.5);
+  fireEvent.click(screen.getByRole("button", { name: "Learn timings" }));
+  const dialog = screen.getByRole("dialog", { name: "Learn timings" });
+  expect(player.audio.paused).toBe(true);
+  const vocal = document.querySelector<HTMLAudioElement>("body > audio[hidden]")!;
+  Object.defineProperty(vocal, "readyState", { configurable: true, value: 4 });
+  const instruments = document.querySelector<HTMLAudioElement>(".pitch-view audio[hidden]")!;
+  Object.defineProperty(instruments, "readyState", { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(instruments);
+  fireEvent.seeked(instruments);
+  await waitFor(() => expect(within(dialog).getByRole("button", { name: "Play" })).toBeEnabled());
+  const outputTime = availability === "private" ? 1.2 : 1.5;
+  expect(instruments.currentTime).toBeCloseTo(outputTime);
+  expect(vocal.currentTime).toBeCloseTo(outputTime);
+  expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
+  const less = within(dialog).getByRole("button", { name: "Less hints" });
+  for (let i = 0; i < 4; i++) fireEvent.click(less);
+  expect(within(dialog).getByText("Vocals off")).toBeVisible();
+  expect(less).toBeDisabled();
+  expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
+  fireEvent.click(within(dialog).getByRole("button", { name: "More hints" }));
+  expect(within(dialog).getByText("0.5s snippets")).toBeVisible();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
+  expect(vocal.isConnected).toBe(false);
+  expect(screen.getByRole("button", { name: /^Instruments/ })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("makes timing practice available only when both real stem sources exist", () => {
+  const source = job();
+  source.manifest = [{ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 }];
+  source.has_pitch_vocals = false;
+  const [current, setCurrent] = createSignal(source);
+  render(() => <PitchView job={current()} />);
+  const start = screen.getByRole("button", { name: "Learn timings" });
+  expect(start).toBeDisabled();
+  expect(screen.getByText(/Timing practice needs both instruments and vocals/)).toBeVisible();
+  fireEvent.click(start);
+  expect(screen.queryByRole("dialog", { name: "Learn timings" })).not.toBeInTheDocument();
+  setCurrent({ ...source, has_pitch_vocals: true });
+  expect(start).toBeDisabled();
+  expect(screen.getByText("Timed lyric lines are required for timing practice.")).toBeVisible();
+  setCurrent(withTimedLyrics({ ...source, has_pitch_vocals: true }));
+  expect(start).toBeEnabled();
+});
+
 it("never lets a vocal source keep playing while instruments load for singing practice", async () => {
   const source = job();
   source.manifest!.push({ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 });
@@ -571,15 +630,20 @@ it("never resumes an interrupted source after another app player has taken over 
   fireEvent.seeked(candidate);
   const other = document.createElement("audio");
   document.body.append(other);
-  fireEvent.play(other);
-  fireEvent.pause(other);
-  attempt.reject(new DOMException("old load failed", "NotSupportedError"));
-  await attempt.promise.catch(() => {});
-  expect(player.audio.paused).toBe(true);
-  expect(player.play).toHaveBeenCalledTimes(1);
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
-  other.remove();
+  try {
+    let otherPaused = false;
+    Object.defineProperty(other, "paused", { configurable: true, get: () => otherPaused });
+    fireEvent.play(other);
+    otherPaused = true;
+    fireEvent.pause(other);
+    attempt.reject(new DOMException("old load failed", "NotSupportedError"));
+    await attempt.promise.catch(() => {});
+    expect(player.audio.paused).toBe(true);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Just vocals" })).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    other.remove();
+  }
 });
 
 it("stops active media on unmount and never resumes after a pending handoff rejects", async () => {

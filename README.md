@@ -587,6 +587,8 @@ pitch are known and valid. Tempo decrement is disabled when the next step would
 reach zero or below, without restricting positive fractional manual entry.
 Incomplete numeric entries remain editable; their step buttons are disabled
 until a number is entered. Key and output previews update immediately.
+Rapid taps on controls avoid browser double-tap page zoom, while normal scrolling
+and two-finger pinch zoom remain available.
 
 The mobile summary and primary action stay within the form's sticky boundary,
 then scroll away before Results and History, leaving players and downloads
@@ -893,6 +895,23 @@ the current player pauses while the reference loads, and playback remains blocke
 with an error if it cannot load. More/Less hints cycle full text, partial words,
 first letters and dots for both current and next lines. This singing mode does
 not change the separate saved guided-recall progress.
+
+**Learn timings** is a separate pitch-free fullscreen practice mode with the
+current and next lyrics still visible. It requires bounded timed lyric lines,
+an instruments output, and processed vocals (either a public vocal output or
+the stored private pitch-vocal reference). Instruments play continuously while
+the vocal hint cycles through off, 0.5-, 1-, and 2-second snippets, and full
+vocals. Snippet positions are chosen within the existing line windows and stay
+stable during the practice session; those windows are timing guidance, not
+verified word boundaries. Browser scheduling makes snippet edges approximate.
+Playback, pause and seeking keep the vocal companion aligned with the instruments.
+When the page is hidden, sparse hints mute and pause the vocal companion while
+instruments continue; it realigns when visible if playback is still running.
+Off and full vocals do not acquire this sparse-only pause. Leaving the mode
+stops the companion.
+The mode uses two native audio players; browser playback restrictions can vary.
+Physical iPhone/Safari dual-stream playback has not been verified.
+
 The fullscreen progress bar follows the selected audio's own clock, which can
 differ from the output clock when the untransformed original plays at a changed
 tempo. Exit or Escape returns to the previous view; keyboard Space controls
