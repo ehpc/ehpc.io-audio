@@ -8,7 +8,7 @@ import { LivePitchTrace } from "~/lib/livePitchTrace";
 import type { MicrophonePitch } from "~/lib/microphonePitch";
 import { sameMediaSession } from "~/lib/mediaSession";
 import { TimingAudio } from "~/lib/timingAudio";
-import { TIMING_HINT_LABELS, timingCenters, timingPracticeLines, type TimingHintLevel } from "~/lib/timingPractice";
+import { FULL_TIMING_LEVEL, TIMING_HINT_LABELS, timingSelection, timingPracticeLines, type TimingHintLevel } from "~/lib/timingPractice";
 import { Button } from "~/components/button";
 import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
 import PianoKeyboard from "./PianoKeyboard";
@@ -78,7 +78,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [karaokeFullscreen, setKaraokeFullscreen] = createSignal<"karaoke" | "learning" | "timing" | null>(null);
   const [learningHint, setLearningHint] = createSignal<LearningHint>("full");
   const [learningLoading, setLearningLoading] = createSignal(false);
-  const [timingLevel, setTimingLevel] = createSignal<TimingHintLevel>(4);
+  const [timingLevel, setTimingLevel] = createSignal<TimingHintLevel>(FULL_TIMING_LEVEL);
   const [timingReady, setTimingReady] = createSignal(false);
   let timingAudio: TimingAudio | undefined;
   let timingWantsPlay = false;
@@ -582,14 +582,14 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     cancelReference(false);
     setPosition(fromAudioTime(audio.currentTime));
     audio.pause();
-    setTimingLevel(4);
+    setTimingLevel(FULL_TIMING_LEVEL);
     setTimingReady(false);
     setReferenceError("");
     setPlaybackError("");
     setKaraokeFullscreen("timing");
     try {
       const lines = timingLines();
-      timingAudio = new TimingAudio(lines, timingCenters(lines), error => {
+      timingAudio = new TimingAudio(lines, timingSelection(lines), error => {
         if (karaokeFullscreen() === "timing") {
           setReferenceError(error instanceof Error ? error.message : "Timing practice audio could not be played.");
         }
@@ -805,7 +805,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
             <Button type="button" variant="outline" class="min-h-11" disabled={learningHint() === "full"} onClick={() => setLearningHint(HINT_LEVELS[HINT_LEVELS.indexOf(learningHint()) - 1])}>More hints</Button>
           </Show>
           <Show when={control.fullscreen && karaokeFullscreen() === "timing"}>
-            <Button type="button" variant="outline" class="min-h-11" disabled={timingLevel() === 4} onClick={() => changeTimingLevel((timingLevel() + 1) as TimingHintLevel)}>More hints</Button>
+            <Button type="button" variant="outline" class="min-h-11" disabled={timingLevel() === FULL_TIMING_LEVEL} onClick={() => changeTimingLevel((timingLevel() + 1) as TimingHintLevel)}>More hints</Button>
           </Show>
           <Button type="button" variant="outline" aria-label="Back 5 seconds" title="Back 5 seconds" disabled={learningBlocked()} onClick={() => skipMedia(-5)}>−5 s</Button>
           <Button type="button" variant="outline" aria-label={nativePaused() ? "Play" : "Pause"} disabled={!referenceUrl() || learningBlocked()} onClick={togglePlayback}>

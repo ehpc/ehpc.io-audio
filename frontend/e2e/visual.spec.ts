@@ -932,7 +932,7 @@ for (const viewport of [mobile, desktop]) {
       await less.click();
       await less.click();
       await less.click();
-      await expect(dialog.getByText('0.5s snippets', { exact: true })).toBeVisible();
+      await expect(dialog.getByText('40% vocals', { exact: true })).toBeVisible();
       await expect(dialog.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
       await expect(dialog.getByRole('group', { name: 'Next lyrics' })).toBeVisible();
       await page.evaluate(() => document.fonts.ready);

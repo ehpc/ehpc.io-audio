@@ -585,7 +585,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
   test.describe(`karaoke fullscreen ${viewport.width}px`, () => {
     test('learn timings keeps native voices synchronized and gates sparse hints', async ({ page }, info) => {
       test.setTimeout(120_000);
-      // Fixed centers give this audio fixture reproducible snippet boundaries.
+      // A deterministic shuffle makes this audio fixture reproducible.
       await page.addInitScript(() => { Math.random = () => 0.5; });
       const tone = (frequency: number) => {
         const mp3 = execFileSync('ffmpeg', [
@@ -638,10 +638,24 @@ sys.stdout.buffer.write(result.read_bytes())
       await setHidden(false);
       const less = dialog.getByRole('button', { name: 'Less hints', exact: true });
       await less.click();
-      await expect(dialog.getByText('2s snippets', { exact: true })).toBeVisible();
-      await less.click();
-      await less.click();
-      await less.click();
+      await expect(dialog.getByText('80% vocals', { exact: true })).toBeVisible();
+      await dialog.screenshot({ path: info.outputPath(`timing-80-${viewport.width}.png`), animations: 'disabled' });
+      await seekNative(player, 6.25);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && audio.muted)).toBe(true);
+      await setHidden(true);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.paused && audio.muted)).toBe(true);
+      await masterAdvances();
+      await setHidden(false);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
+      await seekNative(player, 3.25);
+      await dialog.getByRole('button', { name: 'Play', exact: true }).click();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      for (const label of ['60% vocals', '40% vocals', '20% vocals', 'Vocals off']) {
+        await less.click();
+        await expect(dialog.getByText(label, { exact: true })).toBeVisible();
+        await expect(dialog.getByRole('group', { name: 'Current lyrics' })).toBeVisible();
+      }
       await expect(dialog.getByText('Vocals off', { exact: true })).toBeVisible();
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.muted)).toBe(true);
       await setHidden(true);
@@ -653,21 +667,21 @@ sys.stdout.buffer.write(result.read_bytes())
       await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(position);
       const more = dialog.getByRole('button', { name: 'More hints', exact: true });
       await more.click();
-      await expect(dialog.getByText('0.5s snippets', { exact: true })).toBeVisible();
-      await seekNative(player, 4.245);
+      await expect(dialog.getByText('20% vocals', { exact: true })).toBeVisible();
+      await seekNative(player, 4.25);
       await dialog.getByRole('button', { name: 'Play', exact: true }).click();
       await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(4.3);
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.muted)).toBe(true);
       await more.click();
-      await expect(dialog.getByText('1s snippets', { exact: true })).toBeVisible();
-      await seekNative(player, 4);
+      await expect(dialog.getByText('40% vocals', { exact: true })).toBeVisible();
+      await seekNative(player, 3.25);
       await dialog.getByRole('button', { name: 'Play', exact: true }).click();
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
       await setHidden(true);
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.paused && audio.muted)).toBe(true);
       await masterAdvances();
       await setHidden(false);
-      await expect(dialog.getByText('1s snippets', { exact: true })).toBeVisible();
+      await expect(dialog.getByText('40% vocals', { exact: true })).toBeVisible();
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused)).toBe(true);
       // Model the WebKit waiting/readyState=2 event; media playback and clocks stay native.
       const waiting = await player.evaluate((audio: HTMLAudioElement) => {
@@ -700,15 +714,16 @@ sys.stdout.buffer.write(result.read_bytes())
       expect(samples.at(-1)!.master - samples[0].master).toBeGreaterThan(1.5);
       expect(Math.max(...samples.map(row => Math.abs(row.master - row.vocal)))).toBeLessThan(0.08);
       expect(samples.every(row => !row.paused && !row.seeking)).toBe(true);
-      await seekNative(player, 4);
+      await seekNative(player, 3.25);
       await dialog.getByRole('button', { name: 'Play', exact: true }).click();
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
-      await seekNative(player, 4.75);
+      await seekNative(player, 4.25);
       await dialog.getByRole('button', { name: 'Play', exact: true }).click();
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && audio.muted)).toBe(true);
       await dialog.getByRole('button', { name: 'Pause', exact: true }).click();
       await expect.poll(() => player.evaluate(audio => audio.paused)).toBe(true);
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+      await more.click();
       await more.click();
       await more.click();
       await expect(dialog.getByText('Full vocals', { exact: true })).toBeVisible();

@@ -900,10 +900,14 @@ not change the separate saved guided-recall progress.
 current and next lyrics still visible. It requires bounded timed lyric lines,
 an instruments output, and processed vocals (either a public vocal output or
 the stored private pitch-vocal reference). Instruments play continuously while
-the vocal hint cycles through off, 0.5-, 1-, and 2-second snippets, and full
-vocals. Snippet positions are chosen within the existing line windows and stay
-stable during the practice session; those windows are timing guidance, not
-verified word boundaries. Browser scheduling makes snippet edges approximate.
+the vocal hint cycles through full vocals, 80%, 60%, 40%, 20%, and off.
+Partial levels target the nearest whole number of non-overlapping one-second
+snippets per line, clamped to at least one and at most the number that fit.
+Lines shorter than a second use the whole bounded line at each partial level;
+no snippet extends beyond its line. A random nested selection is chosen once
+per practice session and remains stable as hints change. These windows provide
+timing guidance, not verified word boundaries; browser scheduling makes edges
+approximate.
 Playback, pause and seeking keep the vocal companion aligned with the instruments.
 When the page is hidden, sparse hints mute and pause the vocal companion while
 instruments continue; it realigns when visible if playback is still running.

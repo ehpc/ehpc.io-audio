@@ -1,5 +1,5 @@
 import { registerMediaSession } from "./mediaSession";
-import { timingWindows, type TimingCenters, type TimingHintLevel } from "./timingPractice";
+import { FULL_TIMING_LEVEL, timingWindows, type TimingSelection, type TimingHintLevel } from "./timingPractice";
 import type { KaraokeTiming } from "./karaoke";
 
 const MAX_DRIFT = 0.08;
@@ -19,11 +19,11 @@ export class TimingAudio {
   private timer: number | undefined;
   private nextBoundary: number | undefined;
   private windows: KaraokeTiming[] = [];
-  private level: TimingHintLevel = 4;
+  private level: TimingHintLevel = FULL_TIMING_LEVEL;
 
   constructor(
     private readonly lines: readonly KaraokeTiming[],
-    private readonly centers: TimingCenters,
+    private readonly selection: TimingSelection,
     private readonly onError: (error: unknown) => void,
   ) {
     this.vocal.hidden = true;
@@ -33,7 +33,7 @@ export class TimingAudio {
   }
 
   private sparseHidden() {
-    return (document.hidden || this.pageHidden) && this.level > 0 && this.level < 4;
+    return (document.hidden || this.pageHidden) && this.level > 0 && this.level < FULL_TIMING_LEVEL;
   }
 
   private silence() {
@@ -141,7 +141,7 @@ export class TimingAudio {
 
   setLevel(level: TimingHintLevel) {
     this.level = level;
-    this.windows = timingWindows(this.lines, this.centers, level);
+    this.windows = timingWindows(this.lines, this.selection, level);
     this.silence();
     if (this.sparseHidden()) this.onPageHide();
     else if (this.owner && !this.owner.paused && this.vocal.paused) void this.resumeAligned();
@@ -167,9 +167,9 @@ export class TimingAudio {
       return;
     }
     const position = owner.currentTime;
-    let audible = this.level === 4;
+    let audible = this.level === FULL_TIMING_LEVEL;
     let next: number | undefined;
-    if (this.level > 0 && this.level < 4) {
+    if (this.level > 0 && this.level < FULL_TIMING_LEVEL) {
       for (const window of this.windows) {
         if (window.end_s <= position) continue;
         if (position >= window.start_s) { audible = true; next = window.end_s; }
@@ -204,7 +204,7 @@ export class TimingAudio {
   private onVocalSeeked = () => this.tick();
   private onPageHide = () => {
     this.pageHidden = true;
-    if (this.level > 0 && this.level < 4) {
+    if (this.level > 0 && this.level < FULL_TIMING_LEVEL) {
       this.operation++;
       this.starting = false;
       this.silence();

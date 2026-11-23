@@ -236,12 +236,15 @@ it.each(["public", "private"] as const)("keeps lyrics visible and disposes %s vo
   expect(vocal.currentTime).toBeCloseTo(outputTime);
   expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
   const less = within(dialog).getByRole("button", { name: "Less hints" });
-  for (let i = 0; i < 4; i++) fireEvent.click(less);
-  expect(within(dialog).getByText("Vocals off")).toBeVisible();
+  for (const label of ["80% vocals", "60% vocals", "40% vocals", "20% vocals", "Vocals off"]) {
+    fireEvent.click(less);
+    expect(within(dialog).getByText(label)).toBeVisible();
+    expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
+  }
   expect(less).toBeDisabled();
   expect(within(dialog).getByRole("group", { name: "Current lyrics" })).toHaveTextContent("world");
   fireEvent.click(within(dialog).getByRole("button", { name: "More hints" }));
-  expect(within(dialog).getByText("0.5s snippets")).toBeVisible();
+  expect(within(dialog).getByText("20% vocals")).toBeVisible();
   fireEvent.click(within(dialog).getByRole("button", { name: "Exit karaoke fullscreen" }));
   expect(vocal.isConnected).toBe(false);
   expect(screen.getByRole("button", { name: /^Instruments/ })).toHaveAttribute("aria-pressed", "true");

@@ -1,10 +1,10 @@
 import type { JobDTO } from "~/api";
 import { karaokeLines, type KaraokeTiming } from "./karaoke";
 
-export type TimingHintLevel = 0 | 1 | 2 | 3 | 4;
-export type TimingCenters = readonly (readonly number[])[];
-export const TIMING_HINT_LABELS = ["Vocals off", "0.5s snippets", "1s snippets", "2s snippets", "Full vocals"] as const;
-const DURATIONS = [0, 0.5, 1, 2] as const;
+export type TimingHintLevel = 0 | 1 | 2 | 3 | 4 | 5;
+export type TimingSelection = readonly (readonly KaraokeTiming[])[];
+export const TIMING_HINT_LABELS = ["Vocals off", "20% vocals", "40% vocals", "60% vocals", "80% vocals", "Full vocals"] as const;
+export const FULL_TIMING_LEVEL: TimingHintLevel = 5;
 
 /** Existing output-clock cues are context windows, not measured vocal boundaries. */
 export function timingPracticeLines(job: Pick<JobDTO, "transcript" | "pitch" | "options" | "lyric_pitch_lines">): KaraokeTiming[] {
@@ -35,28 +35,34 @@ export function timingPracticeLines(job: Pick<JobDTO, "transcript" | "pitch" | "
   return result;
 }
 
-/** Three independent stratified centers per line; created once per practice session. */
-export function timingCenters(lines: readonly KaraokeTiming[], random: () => number = Math.random): TimingCenters {
-  return lines.map(line => Array.from({ length: 3 }, (_, index) => {
-    const sample = Math.max(0, Math.min(1, random()));
-    return line.start_s + (line.end_s - line.start_s) * (index + 0.2 + sample * 0.6) / 3;
-  }));
+/** Shuffle disjoint one-second cells once per practice entry. */
+export function timingSelection(lines: readonly KaraokeTiming[], random: () => number = Math.random): TimingSelection {
+  return lines.map(line => {
+    const duration = line.end_s - line.start_s;
+    if (!Number.isFinite(line.start_s) || !Number.isFinite(line.end_s) || duration <= 0) return [];
+    const count = Math.floor(duration);
+    if (count === 0) return [{ start_s: line.start_s, end_s: line.end_s }];
+    const offset = (duration - count) * Math.max(0, Math.min(1, random()));
+    const cells = Array.from({ length: count }, (_, index) => {
+      const start_s = line.start_s + offset + index;
+      return { start_s, end_s: start_s + 1 };
+    });
+    for (let i = cells.length - 1; i > 0; i--) {
+      const j = Math.min(i, Math.floor(Math.max(0, random()) * (i + 1)));
+      [cells[i], cells[j]] = [cells[j], cells[i]];
+    }
+    return cells;
+  });
 }
 
-export function timingWindows(lines: readonly KaraokeTiming[], centers: TimingCenters, level: TimingHintLevel): KaraokeTiming[] {
-  if (level === 0 || level === 4) return [];
-  const duration = DURATIONS[level];
+export function timingWindows(lines: readonly KaraokeTiming[], selection: TimingSelection, level: TimingHintLevel): KaraokeTiming[] {
+  if (level === 0 || level === FULL_TIMING_LEVEL) return [];
   const windows: KaraokeTiming[] = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (!Number.isFinite(line.start_s) || !Number.isFinite(line.end_s) || line.end_s <= line.start_s) continue;
-    for (const center of centers[i] ?? []) {
-      if (!Number.isFinite(center)) continue;
-      const length = Math.min(duration, line.end_s - line.start_s);
-      const start_s = Math.max(line.start_s, Math.min(center - length / 2, line.end_s - length));
-      const end_s = start_s + length;
-      if (end_s > start_s) windows.push({ start_s, end_s });
-    }
+    const cells = selection[i] ?? [];
+    const count = Math.min(cells.length, Math.max(1, Math.round((line.end_s - line.start_s) * level / FULL_TIMING_LEVEL)));
+    windows.push(...cells.slice(0, count));
   }
   windows.sort((a, b) => a.start_s - b.start_s);
   const merged: KaraokeTiming[] = [];
