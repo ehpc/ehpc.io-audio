@@ -269,6 +269,61 @@ async function largerThanFitOverflows(reader: Locator) {
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke native-media reader ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('keeps the lyric reader frame fixed through changing cues and pitch labels', async ({ page }, info) => {
+      const { view, player, reader } = await mountFixture(page);
+      const frames = [];
+      for (const seconds of [0, 5.625, 28.125, 42.5]) {
+        await seekNative(player, seconds);
+        frames.push(await reader.evaluate(element => { const box = element.getBoundingClientRect(); return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height }; }));
+      }
+      await view.getByRole('button', { name: 'Pitches', exact: true }).click();
+      frames.push(await reader.evaluate(element => { const box = element.getBoundingClientRect(); return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height }; }));
+      await seekNative(player, 11.875);
+      const following = reader.getByRole('group', { name: 'Next lyrics' });
+      await expect.poll(() => lyricText(following)).toBe(longLine);
+      await following.focus();
+      await following.press('End');
+      await expect.poll(() => following.evaluate(row => row.scrollTop)).toBeGreaterThan(0);
+      await seekNative(player, 28.125);
+      await expect.poll(() => lyricText(reader.getByRole('group', { name: 'Current lyrics' }))).toBe(longLine);
+      await expect.poll(() => reader.getByRole('group', { name: 'Current lyrics' }).evaluate(row => row.scrollTop)).toBe(0);
+      for (const seconds of [5.625, 28.125, 42.5]) {
+        await seekNative(player, seconds);
+        frames.push(await reader.evaluate(element => { const box = element.getBoundingClientRect(); return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height }; }));
+      }
+      await seekNative(player, 28.125);
+      await expect.poll(() => lyricText(reader.getByRole('group', { name: 'Current lyrics' }))).toBe(longLine);
+      const currentLine = reader.getByRole('group', { name: 'Current lyrics' });
+      await currentLine.focus();
+      await currentLine.press('End');
+      await expect.poll(() => reader.getByText('homeward', { exact: true }).evaluate(element => {
+        const box = element.getBoundingClientRect(), parent = element.closest('.timeline-karaoke-line')!.getBoundingClientRect();
+        return box.bottom <= parent.bottom && box.top >= parent.top;
+      })).toBe(true);
+      await reader.screenshot({ path: info.outputPath(`stable-reader-${viewport.width}.png`), animations: 'disabled' });
+      await info.attach('reader-frame-transitions', { body: JSON.stringify(frames), contentType: 'application/json' });
+      for (const group of [frames.slice(0, 4), frames.slice(4)]) for (const frame of group.slice(1)) {
+        expect(frame.y).toBeCloseTo(group[0].y, 0);
+        expect(frame.x).toBeCloseTo(group[0].x, 0);
+        expect(frame.width).toBeCloseTo(group[0].width, 0);
+        expect(frame.height).toBeCloseTo(group[0].height, 0);
+      }
+      for (const [trigger, name] of [['Open karaoke fullscreen', 'Karaoke fullscreen'], ['Lyrics learning mode', 'Lyrics learning mode'], ['Learn timings', 'Learn timings']] as const) {
+        await view.getByRole('button', { name: trigger, exact: true }).click();
+        const dialog = page.getByRole('dialog', { name, exact: true });
+        await expect(dialog.getByRole('button', { name: 'Play', exact: true })).toBeEnabled();
+        const fullscreenReader = dialog.getByRole('region', { name: 'Current karaoke line' });
+        const before = await fullscreenReader.boundingBox();
+        for (const seconds of [0, 5.625, 28.125]) {
+          await seekNative(player, seconds);
+          const after = await fullscreenReader.boundingBox();
+          expect(after!.y).toBeCloseTo(before!.y, 0);
+          expect(after!.height).toBeCloseTo(before!.height, 0);
+          expect(after!.width).toBeCloseTo(before!.width, 0);
+        }
+        await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      }
+    });
     test('shows an estimated leading highlight before the independently timed word', async ({ page }, info) => {
       const { view, player, reader } = await mountFixture(page);
       await seekNative(player, 4.3);
@@ -282,56 +337,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(5.05);
       await expect(current.locator('[aria-current="true"]')).toHaveText('silver');
       await player.evaluate((audio: HTMLAudioElement) => audio.pause());
-    });
-    test('fits current and next lyrics as pitch labels are shown and hidden', async ({ page }) => {
-      const { view, player, reader } = await mountFixture(page);
-      const current = reader.getByRole('group', { name: 'Current lyrics' });
-      const next = reader.getByRole('group', { name: 'Next lyrics' });
-      const toggle = view.getByRole('button', { name: 'Pitches', exact: true });
-      const assertTightReader = async () => {
-        const bounds = await reader.evaluate(region => {
-          const frame = region.getBoundingClientRect();
-          const rows = [...region.querySelectorAll<HTMLElement>('.timeline-karaoke-line')].map(row => {
-            const content = document.createRange();
-            content.selectNodeContents(row);
-            return { box: row.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON() };
-          });
-          return { frame: frame.toJSON(), rows, parent: region.parentElement!.getBoundingClientRect().toJSON(),
-            width: document.documentElement.scrollWidth, viewport: innerWidth };
-        });
-        expect(bounds.rows).toHaveLength(2);
-        expect(bounds.rows[0].box.bottom).toBeLessThanOrEqual(bounds.rows[1].box.top + 1);
-        expect(bounds.rows[0].box.top - bounds.frame.top).toBeGreaterThanOrEqual(8);
-        expect(bounds.frame.bottom - bounds.rows[1].box.bottom).toBeGreaterThanOrEqual(8);
-        expect(bounds.frame.height - (bounds.rows[1].box.bottom - bounds.rows[0].box.top)).toBeLessThanOrEqual(22);
-        expect(bounds.frame.width).toBeLessThanOrEqual(bounds.parent.width + 1);
-        expect(Math.abs(bounds.frame.left + bounds.frame.right - bounds.parent.left - bounds.parent.right)).toBeLessThanOrEqual(2);
-        const widest = Math.max(...bounds.rows.map(row => row.content.width));
-        expect(bounds.frame.width >= bounds.parent.width - 1 || bounds.frame.width - widest <= 26).toBe(true);
-        expect(bounds.width).toBeLessThanOrEqual(bounds.viewport);
-        return bounds.frame;
-      };
-      await seekNative(player, 5.625);
-      await expect.poll(() => lyricText(current)).toBe('Before silver, after');
-      await expect.poll(() => lyricText(next)).toBe('Next chorus');
-      await expect(reader.getByText('silver', { exact: true })).toHaveAttribute('aria-current', 'true');
-      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
-      const compact = await assertTightReader();
-      await toggle.click();
-      await expect(reader.getByRole('group', { name: /^Pitches for silver:/ })).toHaveText(leadPitches.join(' '));
-      const withPitches = await assertTightReader();
-      expect(withPitches.height).toBeGreaterThan(compact.height);
-      await toggle.click();
-      await expect(reader.locator('.timeline-karaoke-pitches')).toHaveCount(0);
-      const restored = await assertTightReader();
-      expect(restored.height).toBeCloseTo(compact.height, 0);
-      expect(restored.width).toBeCloseTo(compact.width, 0);
-      await seekNative(player, 28.125);
-      await expect.poll(() => lyricText(current)).toBe(longLine);
-      await assertTightReader();
-      await toggle.click();
-      await assertTightReader();
     });
 
     test('maps native clocks, paints timed words, and keeps wrapped/rapid cues readable', async ({ page }, info) => {
@@ -466,7 +471,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       // Clicking lyrics focuses their stable reader; selecting its text must
       // not prevent Space from controlling the same native player.
       if (viewport.width === 390) await silver.tap(); else await silver.click();
-      await expect(reader).toBeFocused();
+      await expect(current).toBeFocused();
       await page.evaluate(() => {
         const text = document.querySelector('[aria-label="Current karaoke line"]')!;
         const range = document.createRange();
@@ -546,9 +551,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       expect(geometry.rows).toBeGreaterThan(1);
       expect(geometry.font).toBeGreaterThanOrEqual(16);
       await reader.screenshot({ path: info.outputPath('long-wrapped-karaoke.png'), animations: 'disabled' });
-      await reader.focus();
-      if (geometry.scrollHeight > geometry.clientHeight) await reader.press('End');
-      await expect(reader).toBeFocused();
+      await current.focus();
+      await current.press('End');
+      await expect(current).toBeFocused();
       await expect.poll(async () => {
         const [word, region] = await Promise.all([
           reader.getByText('homeward', { exact: true }).boundingBox(), reader.boundingBox(),
@@ -560,7 +565,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect(reader.getByText('homeward', { exact: true })).toBeInViewport();
 
       await seekNative(player, 32);
-      await expect(reader).toBeFocused();
       await expect(reader.getByText('Bright', { exact: true })).toBeInViewport();
       const rapid = await samplePlayback(player, 850);
       const sungRapid = rapid.filter(sample => rapidWords.includes(sample.text));

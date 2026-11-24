@@ -169,7 +169,11 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     if (line !== previous || seek !== previousSeek) {
       setSliding(Boolean(props.playing && !props.seeking && line && line === previousNext && seek === previousSeek
         && position >= previousPosition && position - previousPosition < 1));
-      if (reader) reader.scrollTop = 0;
+      requestAnimationFrame(() => {
+        if (!reader?.isConnected) return;
+        reader.scrollTop = 0;
+        for (const row of reader.querySelectorAll<HTMLElement>(".timeline-karaoke-line")) row.scrollTo({ top: 0, behavior: "instant" });
+      });
     }
     previous = line;
     previousNext = following;
@@ -215,19 +219,21 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
         </details>
       </Show>
     </div>
-    <section ref={reader} class="timeline-karaoke" tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}
+    <section ref={reader} class="timeline-karaoke" classList={{ "timeline-karaoke-with-pitches": showPitches() }} tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}
       onClick={event => {
-        if (!(event.target instanceof Element) || !event.target.closest(".timeline-karaoke-pitches, .timeline-karaoke-line-pitches")) reader?.focus({ preventScroll: true });
+        if (event.target instanceof Element && !event.target.closest(".timeline-karaoke-pitches, .timeline-karaoke-line-pitches")) {
+          (event.target.closest<HTMLElement>(".timeline-karaoke-line") ?? reader)?.focus({ preventScroll: true });
+        }
       }} onKeyDown={event => props.onKeyDown?.(event)}>
       <Show when={current()} fallback={
-        <p class="timeline-karaoke-line timeline-karaoke-hint">
+        <p class="timeline-karaoke-line timeline-karaoke-hint" tabIndex={0}>
           {hasTiming() ? "Lyrics begin shortly" : "No reliably timed lyrics available"}
         </p>
       }>
         <For each={visibleLines()}>{line => {
           const lineLabels = createMemo(() => line.pitchAssociation ? associatedLabels(line.pitchAssociation.tracks) : []);
           return <p class="timeline-karaoke-line" classList={{ "timeline-karaoke-next": line !== current(), "timeline-karaoke-slide": line === current() && sliding() }}
-            role="group" aria-label={line === current() ? "Current lyrics" : "Next lyrics"} tabIndex={line === current() ? undefined : 0}>
+            role="group" aria-label={line === current() ? "Current lyrics" : "Next lyrics"} tabIndex={0}>
             <Show when={showPitches() && lineLabels().length > 0}>
               <span class="timeline-karaoke-line-pitches" role="group" tabIndex={0}
                 aria-label={`Estimated pitches for this line: ${lineLabels().join(" ")}`}>~{lineLabels().join(" ")}</span>

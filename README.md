@@ -866,10 +866,8 @@ measured timings or new pitch evidence. Unbounded or
 ambiguous words remain neutral. Pitch labels are hidden initially; **Pitches**
 toggles the selected vocal track's word-associated notes in the inline reader.
 A `~` marks an estimated word-to-pitch association; notes supported only by
-line bounds appear above the whole line instead of individual words. The inline
-reader fits its content within the
-available width and grows for wrapped groups and long note sequences. No
-syllable timings are invented. Pitch-only or ASR-gap words can appear as short
+line bounds appear above the whole line instead of individual words. Lyrics and
+pitch labels wrap within the reader; no syllable timings are invented. Pitch-only or ASR-gap words can appear as short
 individual cues.
 
 For an exact-metadata LRCLIB match with validated, ordered line cues, the reader
@@ -882,7 +880,8 @@ canonical line onset.
 
 The inline lyric size starts at twice the previous base size; **A−** and **A+**
 adjust it from 75% to 400% in 25% steps. The choice is shared within the view
-and is not stored between sessions. Fullscreen centers the current and next
+and is not stored between sessions. The inline reader reserves a stable two-line
+area; focus and scroll either line to reach longer lyrics or pitch labels. Fullscreen centers the current and next
 lyrics and fits them without wrapping or showing pitch labels. Its **A−** can
 reduce the text; **A+** stops at the largest size that fits. Very long lines may
 therefore appear small. Fullscreen recomputes the fit when the content, settings,

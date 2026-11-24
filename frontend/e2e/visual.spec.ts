@@ -774,6 +774,17 @@ for (const viewport of [mobile, desktop]) {
         .getByRole('group', { name: 'Estimated pitches for go: F4', exact: true })).toBeVisible();
       await expect(reader.getByRole('group', { name: 'Next lyrics' })
         .getByRole('group', { name: 'Pitches for go: G4', exact: true })).toBeVisible();
+      for (const name of ['Current lyrics', 'Next lyrics']) {
+        const visible = await reader.getByRole('group', { name }).evaluate(row => {
+          const readerBox = row.closest('.timeline-karaoke')!.getBoundingClientRect();
+          const rowBox = row.getBoundingClientRect();
+          const lyric = row.querySelector<HTMLElement>('.timeline-karaoke-lyric')!;
+          const box = lyric.getBoundingClientRect();
+          return rowBox.top >= readerBox.top && rowBox.bottom <= readerBox.bottom
+            && box.top >= rowBox.top && box.bottom <= rowBox.bottom;
+        });
+        expect(visible).toBe(true);
+      }
       const mediaBefore = await player.evaluate(audio => ({
         time: audio.currentTime, source: audio.currentSrc, rate: audio.playbackRate, paused: audio.paused,
       }));
