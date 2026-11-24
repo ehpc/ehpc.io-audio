@@ -79,7 +79,12 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     return all.slice(index + 1).find(line => !isExtra(line) && line.timing !== null) ?? null;
   });
   const unscheduled = createMemo(() => lines().filter(line => line.projected && !line.timing));
-  const visibleLines = createMemo(() => [current(), next()].filter((line): line is KaraokeLine => line !== null));
+  // A new cue, role, or seek needs a fresh scrollport to discard native scroll animation.
+  const visibleRows = createMemo(() => {
+    const active = current(), following = next();
+    props.seekRevision;
+    return [active, following].filter((line): line is KaraokeLine => line !== null).map(line => ({ line }));
+  });
   const pitches = createMemo(() => {
     const result = new Map<number, string[]>();
     for (const note of props.notes ?? []) {
@@ -169,11 +174,7 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
     if (line !== previous || seek !== previousSeek) {
       setSliding(Boolean(props.playing && !props.seeking && line && line === previousNext && seek === previousSeek
         && position >= previousPosition && position - previousPosition < 1));
-      requestAnimationFrame(() => {
-        if (!reader?.isConnected) return;
-        reader.scrollTop = 0;
-        for (const row of reader.querySelectorAll<HTMLElement>(".timeline-karaoke-line")) row.scrollTo({ top: 0, behavior: "instant" });
-      });
+      if (reader) reader.scrollTop = 0;
     }
     previous = line;
     previousNext = following;
@@ -230,9 +231,19 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
           {hasTiming() ? "Lyrics begin shortly" : "No reliably timed lyrics available"}
         </p>
       }>
-        <For each={visibleLines()}>{line => {
+        <For each={visibleRows()}>{item => {
+          const line = item.line;
+          let row!: HTMLParagraphElement;
+          onCleanup(() => {
+            if (!row?.contains(document.activeElement)) return;
+            queueMicrotask(() => {
+              if (reader?.isConnected && (document.activeElement === document.body || row.contains(document.activeElement))) {
+                reader.querySelector<HTMLElement>('[aria-label="Current lyrics"]')?.focus({ preventScroll: true });
+              }
+            });
+          });
           const lineLabels = createMemo(() => line.pitchAssociation ? associatedLabels(line.pitchAssociation.tracks) : []);
-          return <p class="timeline-karaoke-line" classList={{ "timeline-karaoke-next": line !== current(), "timeline-karaoke-slide": line === current() && sliding() }}
+          return <p ref={row} class="timeline-karaoke-line" classList={{ "timeline-karaoke-next": line !== current(), "timeline-karaoke-slide": line === current() && sliding() }}
             role="group" aria-label={line === current() ? "Current lyrics" : "Next lyrics"} tabIndex={0}>
             <Show when={showPitches() && lineLabels().length > 0}>
               <span class="timeline-karaoke-line-pitches" role="group" tabIndex={0}

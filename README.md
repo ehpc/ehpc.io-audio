@@ -881,7 +881,9 @@ canonical line onset.
 The inline lyric size starts at twice the previous base size; **A−** and **A+**
 adjust it from 75% to 400% in 25% steps. The choice is shared within the view
 and is not stored between sessions. The inline reader reserves a stable two-line
-area; focus and scroll either line to reach longer lyrics or pitch labels. Fullscreen centers the current and next
+area; focus and scroll either line to reach longer lyrics or pitch labels.
+Manual scrolling stays in place within a cue; a new cue or seek starts at its top.
+Fullscreen centers the current and next
 lyrics and fits them without wrapping or showing pitch labels. Its **A−** can
 reduce the text; **A+** stops at the largest size that fits. Very long lines may
 therefore appear small. Fullscreen recomputes the fit when the content, settings,

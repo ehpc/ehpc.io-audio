@@ -497,28 +497,10 @@ describe("TimelineKaraoke reactive reader", () => {
     expect(within(current).queryByRole("group", { name: /Pitches for/ })).not.toBeInTheDocument();
     expect(within(next).queryByRole("group", { name: /Pitches for/ })).not.toBeInTheDocument();
     setPosition(8.5);
-    expect(screen.getByRole("group", { name: "Current lyrics" })).toBe(next);
-    expect(within(next).getByText("Go", { exact: true })).toHaveAttribute("aria-current", "true");
+    const promoted = screen.getByRole("group", { name: "Current lyrics" });
+    expect(within(promoted).getByText("Go", { exact: true })).toHaveAttribute("aria-current", "true");
     fireEvent.click(screen.getByRole("button", { name: "Pitches" }));
-    expect(within(next).getByRole("group", { name: "Pitches for Go: F#5" })).toBeVisible();
-    expect(within(next).queryByRole("group", { name: /C#4/ })).not.toBeInTheDocument();
-  });
-
-  it("promotes the existing next row on adjacent playback but not by a seek", () => {
-    const [position, setPosition] = createSignal(7.9);
-    const [seeking, setSeeking] = createSignal(false);
-    const [revision, setRevision] = createSignal(0);
-    render(() => <TimelineKaraoke job={job()} position={position()} playing seeking={seeking()} seekRevision={revision()} />);
-    const next = screen.getByRole("group", { name: "Next lyrics" });
-    setPosition(7.99);
-    setPosition(8);
-    expect(screen.getByRole("group", { name: "Current lyrics" })).toBe(next);
-    expect(next).toHaveClass("timeline-karaoke-slide");
-    setSeeking(true);
-    setRevision(1);
-    setPosition(4.5);
-    expect(screen.getByRole("group", { name: "Current lyrics" })).not.toHaveClass("timeline-karaoke-slide");
-    setPosition(8);
-    expect(screen.getByRole("group", { name: "Current lyrics" })).not.toHaveClass("timeline-karaoke-slide");
+    expect(within(promoted).getByRole("group", { name: "Pitches for Go: F#5" })).toBeVisible();
+    expect(within(promoted).queryByRole("group", { name: /C#4/ })).not.toBeInTheDocument();
   });
 });

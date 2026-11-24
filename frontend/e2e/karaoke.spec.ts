@@ -287,6 +287,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await seekNative(player, 28.125);
       await expect.poll(() => lyricText(reader.getByRole('group', { name: 'Current lyrics' }))).toBe(longLine);
       await expect.poll(() => reader.getByRole('group', { name: 'Current lyrics' }).evaluate(row => row.scrollTop)).toBe(0);
+      await expect(reader.getByRole('group', { name: 'Current lyrics' })).toBeFocused();
       for (const seconds of [5.625, 28.125, 42.5]) {
         await seekNative(player, seconds);
         frames.push(await reader.evaluate(element => { const box = element.getBoundingClientRect(); return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height }; }));
@@ -300,6 +301,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         const box = element.getBoundingClientRect(), parent = element.closest('.timeline-karaoke-line')!.getBoundingClientRect();
         return box.bottom <= parent.bottom && box.top >= parent.top;
       })).toBe(true);
+      await player.evaluate(audio => audio.play());
+      await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(28.35);
+      await player.evaluate(audio => audio.pause());
+      expect(await currentLine.evaluate(row => row.scrollTop)).toBeGreaterThan(0);
       await reader.screenshot({ path: info.outputPath(`stable-reader-${viewport.width}.png`), animations: 'disabled' });
       await info.attach('reader-frame-transitions', { body: JSON.stringify(frames), contentType: 'application/json' });
       for (const group of [frames.slice(0, 4), frames.slice(4)]) for (const frame of group.slice(1)) {
@@ -516,9 +521,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await expect.poll(() => lyricText(current)).toBe('Before silver, after');
       await expect(reader.locator('[aria-current]')).toHaveText('after');
       await expect(reader.locator('[aria-current]')).toHaveAttribute('data-timing', 'estimated');
-      const promoted = await next.elementHandle();
       const transition = await samplePlayback(player, 550);
-      expect(await current.evaluate((element, prior) => element === prior, promoted)).toBe(true);
       expect(transition.some(sample => sample.time >= 9 && sample.transform !== 'none')).toBe(true);
       await info.attach('karaoke-slide-proof', { body: JSON.stringify(transition), contentType: 'application/json' });
       await seekNative(player, 9);

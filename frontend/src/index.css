@@ -422,7 +422,7 @@ html:has(.job-dock) { scroll-padding-bottom: calc(var(--job-dock-height, 0px) + 
 .timeline-karaoke { display: grid; grid-template-rows: calc(50% - 3.5px) calc(50% + 3.5px); width: 100%; height: calc(3em + 27px); max-width: 100%; min-width: 0; box-sizing: border-box; margin-inline: auto; padding: 10px; overflow: hidden; font-size: calc(var(--karaoke-base-size, clamp(1rem, 2.5vw, 1.25rem)) * var(--karaoke-scale, 1)); border-radius: 6px; background: hsl(var(--muted)); }
 .timeline-karaoke-with-pitches { height: calc(4.89em + 27px); }
 .timeline-karaoke:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
-.timeline-karaoke-line { margin: 0; min-height: 0; overflow: auto; overflow-anchor: none; scroll-padding-block: 2px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; text-align: center; }
+.timeline-karaoke-line { margin: 0; min-height: 0; overflow: auto; scroll-padding-block: 2px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; text-align: center; }
 .timeline-karaoke-next { padding-top: 6px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); border-top: 1px solid hsl(var(--border)); }
 .timeline-karaoke-cell { display: inline-grid; grid-template-columns: minmax(0, 1fr); width: max-content; max-width: 100%; vertical-align: bottom; white-space: normal; overflow-wrap: anywhere; }
 .timeline-karaoke-pitches { white-space: normal; overflow-wrap: normal; color: hsl(var(--primary)); font-size: .7em; line-height: 1.35; font-weight: 600; }
