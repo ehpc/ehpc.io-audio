@@ -220,14 +220,14 @@ export default function TimelineKaraoke(props: TimelineKaraokeProps) {
         </details>
       </Show>
     </div>
-    <section ref={reader} class="timeline-karaoke" classList={{ "timeline-karaoke-with-pitches": showPitches() }} tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}
+    <section ref={reader} class="timeline-karaoke" classList={{ "timeline-karaoke-with-pitches": showPitches(), "timeline-karaoke-empty": !current() }} tabIndex={0} aria-label="Current karaoke line" aria-live="off" style={{ "--karaoke-scale": (props.fontSize ?? LYRIC_FONT.default) / 100 }}
       onClick={event => {
         if (event.target instanceof Element && !event.target.closest(".timeline-karaoke-pitches, .timeline-karaoke-line-pitches")) {
-          (event.target.closest<HTMLElement>(".timeline-karaoke-line") ?? reader)?.focus({ preventScroll: true });
+          (event.target.closest<HTMLElement>('[aria-label="Current lyrics"], [aria-label="Next lyrics"]') ?? reader)?.focus({ preventScroll: true });
         }
       }} onKeyDown={event => props.onKeyDown?.(event)}>
       <Show when={current()} fallback={
-        <p class="timeline-karaoke-line timeline-karaoke-hint" tabIndex={0}>
+        <p class="timeline-karaoke-line timeline-karaoke-hint">
           {hasTiming() ? "Lyrics begin shortly" : "No reliably timed lyrics available"}
         </p>
       }>

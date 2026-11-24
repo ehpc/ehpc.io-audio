@@ -269,6 +269,41 @@ async function largerThanFitOverflows(reader: Locator) {
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke native-media reader ${viewport.width}px`, () => {
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
+    test('keeps keyboard playback available when the intro becomes the first cue', async ({ page }) => {
+      const { view, player, reader } = await mountFixture(page);
+      const hint = reader.getByText('Lyrics begin shortly');
+      await hint.click();
+      await expect(reader).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+      await player.evaluate(async (audio: HTMLAudioElement) => {
+        const sought = Promise.withResolvers<void>();
+        audio.addEventListener('seeked', () => sought.resolve(), { once: true });
+        audio.currentTime = 4;
+        await sought.promise;
+      });
+      await expect(reader.getByLabel('Current lyrics')).toBeVisible();
+      await expect(reader).toBeFocused();
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+
+      await seekNative(player, 1);
+      const larger = view.getByRole('button', { name: 'Larger lyrics' });
+      for (let i = 0; i < 8; i++) await larger.click();
+      await reader.focus();
+      await page.keyboard.press('Shift+Tab');
+      await page.keyboard.press('Tab');
+      await expect(reader).toBeFocused();
+      const bounds = await reader.boundingBox();
+      if (viewport.width === 390) {
+        await page.keyboard.press('End');
+        await expect.poll(() => reader.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+      }
+      await expect(reader.getByText('Lyrics begin shortly')).toBeVisible();
+      expect(await reader.boundingBox()).toEqual(bounds);
+      await page.keyboard.press('Space');
+      await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+    });
     test('keeps the lyric reader frame fixed through changing cues and pitch labels', async ({ page }, info) => {
       const { view, player, reader } = await mountFixture(page);
       const frames = [];
