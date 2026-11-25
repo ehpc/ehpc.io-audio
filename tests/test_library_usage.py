@@ -92,7 +92,7 @@ def test_migration_preserves_existing_job_and_defaults_usage(tmp_path, monkeypat
     db.init_db()
     job = db.list_jobs_for_session("legacy-owner")[0]
     assert (job.source_value, job.created_at, job.open_count) == (
-        "https://example.test/track", 123, 0
+        "https://example.test/track",
+        123,
+        0,
     )
-
-
