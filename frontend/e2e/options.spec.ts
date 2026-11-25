@@ -343,9 +343,9 @@ for (const item of cases) {
     await prove(page, info, item, job, originalKey);
     if (item.name === 'identity-original-only') {
       await page.reload();
-      const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+      const history = page.getByRole('region', { name: 'History', exact: true });
       const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
-      const historyCard = history.locator('.rounded-lg')
+      const historyCard = history.getByRole('listitem')
         .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
         .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
       await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
@@ -433,9 +433,9 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   expect(hash(await original.body())).toBe(hash(await readFile(resolve(directory, 'silent-fixture.wav'))));
   expect(original.headers()['content-disposition']).toContain('silent-fixture%20-%20original.wav');
   await page.reload();
-  const history = page.getByRole('heading', { name: 'History', exact: true }).locator('..');
+  const history = page.getByRole('region', { name: 'History', exact: true });
   const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
-  const historyCard = history.locator('.rounded-lg')
+  const historyCard = history.getByRole('listitem')
     .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
     .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
   await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
