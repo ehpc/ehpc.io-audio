@@ -277,16 +277,23 @@ Expanded results show **Karaoke with pitches**, **Lyrics with pitches**, then
 **Lyrics**, with the track title as the Results heading. The Library rail keeps
 History beside the workspace on desktop; on smaller screens, the sticky
 **Library** button opens a drawer and remains available while viewing results.
-The current entry is highlighted and listed once. Choosing a History title
-closes the drawer and scrolls to **Karaoke with pitches** when present,
-otherwise to the results panel. History entries show the full song title,
-wrapping long titles within the rail or drawer, and the date; the Delete action
+The current entry is highlighted and stays in its priority-sorted position.
+Rows default to **Most used** (explicitly opening a library entry); the header's
+**Sort library** popup switches to **Date added (newest first)**. Only activating a
+library entry counts as an open—not restoring the current job or background
+refreshes. History entries show the full song title, wrapping long titles within
+the rail or drawer, and the date; the Delete action
 appears for completed entries. Select a failed entry to open
 its error and retry the original source and options. Open a completed entry for
 lyrics, individual audio and pitch JSON downloads when present. Timestamped
 lyrics remain visible while online-alignment and raw-recognition diagnostics are
 initially collapsed in the **Online alignment and raw recognition details**
 disclosure.
+
+Open counts belong to the authenticated account and persist across sessions and
+devices. The API exposes them as `open_count` on jobs; `POST /api/jobs/{id}/open`
+records an explicit open, while `GET /api/jobs?sort=usage|added` sorts before the
+50-entry history limit.
 
 A fixed status dock follows the latest accepted job independently of which
 History entry is open. It distinguishes waiting in the queue from actual
@@ -902,6 +909,9 @@ current and next lyrics still visible. It requires bounded timed lyric lines,
 an instruments output, and processed vocals (either a public vocal output or
 the stored private pitch-vocal reference). Instruments play continuously while
 the vocal hint cycles through full vocals, 80%, 60%, 40%, 20%, and off.
+In Learn timings, use **Vocals volume** (25%, 50%, 75%, or 100%; default 75%)
+to adjust the guide vocals independently of the instrumental backing. Hint
+controls still determine when vocals are heard.
 Partial levels target the nearest whole number of non-overlapping one-second
 snippets per line, clamped to at least one and at most the number that fit.
 Lines shorter than a second use the whole bounded line at each partial level;

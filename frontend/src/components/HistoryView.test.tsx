@@ -49,6 +49,7 @@ function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
     transcript: null,
     lyric_pitch_lines: null,
     error_message: null,
+    open_count: 0,
     created_at: 1700000000,
     has_original: true,
     has_pitch_vocals: false,
@@ -73,7 +74,7 @@ describe("HistoryView compact sidebar", () => {
     const onSelect = vi.fn((item: JobDTO) => setSelectedId(item.id));
     const onDeleted = vi.fn((id: number) => setJobs(current => current.filter(item => item.id !== id)));
     vi.mocked(deleteJob).mockReset().mockResolvedValue(undefined);
-    render(() => <HistoryView jobs={jobs()} selectedId={selectedId()} onSelect={onSelect} onDeleted={onDeleted} />);
+    render(() => <HistoryView jobs={jobs()} selectedId={selectedId()} sort="usage" onSortChange={vi.fn()} onSelect={onSelect} onDeleted={onDeleted} />);
 
     const history = screen.getByRole("region", { name: "History" });
     const item = within(history).getByRole("listitem");
@@ -107,20 +108,55 @@ describe("HistoryView compact sidebar", () => {
   });
 });
 describe("HistoryView results", () => {
-  it("marks the selected song once and moves it ahead of the other history entries", async () => {
-    const first = urlJob({ id: 11, title: "First Song" });
-    const second = urlJob({ id: 12, title: "Second Song" });
-    const [selected, setSelected] = createSignal<number | null>(second.id);
-    render(() => <HistoryView jobs={[first, second]} selectedId={selected()} onSelect={item => setSelected(item.id)}
+  it("keeps selected styling at the usage-sorted position instead of pinning selection first", () => {
+    const mostUsed = urlJob({ id: 11, title: "Most Used", open_count: 8 });
+    const selected = urlJob({ id: 12, title: "Selected", open_count: 1 });
+    const [selectedId] = createSignal<number | null>(selected.id);
+    render(() => <HistoryView jobs={[mostUsed, selected]} selectedId={selectedId()} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()}
       onDeleted={vi.fn()} />);
     const history = screen.getByRole("region", { name: "History" });
-    const titles = () => within(history).getAllByRole("button").filter(button => /^(First Song|Second Song)$/.test(button.textContent ?? ""));
-    expect(titles().map(button => button.textContent)).toEqual(["Second Song", "First Song"]);
-    expect(titles()[0]).toHaveAttribute("aria-current", "true");
-    await userEvent.click(titles()[1]);
-    expect(titles().map(button => button.textContent)).toEqual(["First Song", "Second Song"]);
-    expect(titles()[0]).toHaveAttribute("aria-current", "true");
-    expect(titles()[1]).not.toHaveAttribute("aria-current");
+    const titles = () => within(history).getAllByRole("button").filter(button => /^(Most Used|Selected)$/.test(button.textContent ?? ""));
+    expect(titles().map(button => button.textContent)).toEqual(["Most Used", "Selected"]);
+    expect(titles()[0]).not.toHaveAttribute("aria-current");
+    expect(titles()[1]).toHaveAttribute("aria-current", "true");
+  });
+
+  it("keeps delete keyboard focus through refreshed reordered jobs", async () => {
+    const first = urlJob({ id: 11, title: "First" });
+    const second = urlJob({ id: 12, title: "Second" });
+    const [jobs, setJobs] = createSignal([first, second]);
+    render(() => <HistoryView jobs={jobs()} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
+    const deletion = screen.getByRole("button", { name: "Delete Second" });
+    deletion.focus();
+    setJobs([{ ...second, open_count: 1 }, { ...first }]);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Delete Second" })).toHaveFocus());
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("Delete Second?");
+  });
+
+  it("does not restore row focus over a newer focus choice", async () => {
+    const first = urlJob({ id: 11, title: "First" });
+    const second = urlJob({ id: 12, title: "Second" });
+    const [jobs, setJobs] = createSignal([first, second]);
+    render(() => <HistoryView jobs={jobs()} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
+    screen.getByRole("button", { name: "Delete Second" }).focus();
+    setJobs([{ ...second }, { ...first }]);
+    const sort = screen.getByRole("button", { name: "Sort library" });
+    sort.focus();
+    await Promise.resolve();
+    expect(sort).toHaveFocus();
+  });
+
+  it("switches the server sort choice through the accessible popup radios", async () => {
+    const [sort, setSort] = createSignal<"usage" | "added">("usage");
+    render(() => <HistoryView jobs={[urlJob()]} sort={sort()} onSortChange={setSort} onSelect={vi.fn()} onDeleted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Sort library" }));
+    const popup = screen.getByRole("dialog", { name: "Sort library options" });
+    const usage = within(popup).getByRole("radio", { name: "Most used" });
+    const added = within(popup).getByRole("radio", { name: "Date added (newest first)" });
+    expect(usage).toBeChecked();
+    await userEvent.click(added);
+    expect(added).toBeChecked();
   });
 
   it("keeps the summary compact while preserving all downloads in opened results", async () => {
@@ -136,7 +172,7 @@ describe("HistoryView results", () => {
     const [selected, setSelected] = createSignal<JobDTO | null>(null);
     render(() => <>
       <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-      <HistoryView jobs={[job]} onSelect={setSelected} onDeleted={vi.fn()} />
+      <HistoryView jobs={[job]} sort="usage" onSortChange={vi.fn()} onSelect={setSelected} onDeleted={vi.fn()} />
     </>);
     const history = screen.getByRole("region", { name: "History" });
     expect(within(history).queryByRole("link")).not.toBeInTheDocument();
@@ -155,7 +191,7 @@ describe("HistoryView results", () => {
     const jobs = [urlJob({ id: 11, title: "First Song" }), urlJob({ id: 12, title: "Second Song" })];
     render(() => <>
       <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-      <HistoryView jobs={jobs} onSelect={onSelect} onDeleted={vi.fn()} />
+      <HistoryView jobs={jobs} sort="usage" onSortChange={vi.fn()} onSelect={onSelect} onDeleted={vi.fn()} />
     </>);
 
     const firstTitle = screen.getByRole("button", { name: "First Song", exact: true });
@@ -190,7 +226,7 @@ describe("HistoryView results", () => {
 
   it("keeps queued history to its title and date without delete", () => {
     const job = urlJob({ status: "queued", manifest: null });
-    render(() => <HistoryView jobs={[job]} onSelect={vi.fn()} onDeleted={vi.fn()} />);
+    render(() => <HistoryView jobs={[job]} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
     const item = screen.getByRole("listitem");
     expect(within(item).getByRole("button", { name: "Great Song", exact: true })).toBeVisible();
     const date = within(item).getByText((_, element) => element?.tagName === "TIME");
@@ -205,7 +241,7 @@ describe("HistoryView results", () => {
       segments: [], sections: [], presentation_lines: [], timestamped_text: "A long lyric that belongs in the expanded result",
     };
     render(() => <HistoryView jobs={[urlJob({ transcript, options: { ...urlJob().options, extract_lyrics: true } })]}
-      onSelect={vi.fn()} onDeleted={vi.fn()} />);
+      sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
     expect(screen.queryByText(transcript.timestamped_text)).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Lyrics transcript" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Great Song", exact: true })).toBeVisible();
@@ -220,7 +256,7 @@ describe("HistoryView results", () => {
     const [selected, setSelected] = createSignal<JobDTO | null>(null);
     render(() => <>
       <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-      <HistoryView jobs={[job]} onSelect={setSelected} onDeleted={vi.fn()} />
+      <HistoryView jobs={[job]} sort="usage" onSortChange={vi.fn()} onSelect={setSelected} onDeleted={vi.fn()} />
     </>);
     await userEvent.click(screen.getByRole("button", { name: "Great Song", exact: true }));
     expect(screen.getByText("No speech was recognized.")).toBeInTheDocument();
@@ -232,7 +268,7 @@ describe("HistoryView results", () => {
 describe("HistoryView deletion", () => {
   it("cancel leaves the job untouched and does not select it", async () => {
     const onSelect = vi.fn();
-    render(() => <HistoryView jobs={[urlJob()]} onSelect={onSelect} onDeleted={vi.fn()} />);
+    render(() => <HistoryView jobs={[urlJob()]} sort="usage" onSortChange={vi.fn()} onSelect={onSelect} onDeleted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Delete Great Song" }));
     expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText(/permanently deletes this track's history/)).toBeVisible();
@@ -248,7 +284,7 @@ describe("HistoryView deletion", () => {
     const [jobs, setJobs] = createSignal([urlJob(), urlJob({ id: 2, title: "Other Song" })]);
     deletion.mockRejectedValueOnce(new Error("Track is temporarily unavailable."));
     deletion.mockResolvedValueOnce(undefined);
-    render(() => <HistoryView jobs={jobs()} onSelect={vi.fn()}
+    render(() => <HistoryView jobs={jobs()} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()}
       onDeleted={(id) => { onDeleted(id); setJobs((current) => current.filter((item) => item.id !== id)); }} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Delete Great Song" }));
@@ -266,7 +302,7 @@ describe("HistoryView deletion", () => {
     const deletion = vi.mocked(deleteJob);
     deletion.mockRejectedValueOnce(new AuthHttpError(409, "A job file is currently in use"));
     deletion.mockRejectedValueOnce(new AuthHttpError(409, "Inference ownership is unresolved"));
-    render(() => <HistoryView jobs={[urlJob()]} onSelect={vi.fn()} onDeleted={vi.fn()} />);
+    render(() => <HistoryView jobs={[urlJob()]} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Delete Great Song" }));
     await userEvent.click(screen.getByRole("button", { name: "Delete track" }));

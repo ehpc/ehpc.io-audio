@@ -4,6 +4,17 @@ import { expect, type Locator, type Page } from '@playwright/test';
 import { test } from './auth-fixture';
 import type { AlignedWordDTO, JobDTO, ReferenceLineDTO } from '../src/api';
 
+interface NativePlaybackState {
+  time: number;
+  paused: boolean;
+  seeking: boolean;
+  muted: boolean;
+}
+interface PresetTransition {
+  before: NativePlaybackState[];
+  after: NativePlaybackState[];
+}
+
 // UI-only HTTP fixtures, not backend alignment or Modal proof. The browser still
 // decodes/plays real public-domain audio and drives the production media clock.
 const longLine = 'A lighthouse watches over quiet boats while silver clouds drift above the harbor and patient travelers follow the winding shoreline past sleeping gardens and distant windows until the morning carries every tired sailor safely homeward';
@@ -625,10 +636,6 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke fullscreen ${viewport.width}px`, () => {
-    test('learn timings keeps native voices synchronized and gates sparse hints', async ({ page }, info) => {
-      test.setTimeout(120_000);
-      // A deterministic shuffle makes this audio fixture reproducible.
-      await page.addInitScript(() => { Math.random = () => 0.5; });
       const tone = (frequency: number) => {
         const mp3 = execFileSync('ffmpeg', [
           '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `sine=frequency=${frequency}:sample_rate=48000`,
@@ -648,6 +655,10 @@ sys.stdout.buffer.write(result.read_bytes())
           cwd: process.env.E2E_REPO_ROOT!, input: mp3, maxBuffer: 16 * 1024 * 1024,
         });
       };
+    test('learn timings keeps native voices synchronized and gates sparse hints', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      // A deterministic shuffle makes this audio fixture reproducible.
+      await page.addInitScript(() => { Math.random = () => 0.5; });
       const job = karaokeJob();
       if (viewport.width === 390) job.manifest = job.manifest!.filter(item => item.label !== 'vocals');
       const { view, player } = await mountFixture(page, job, undefined, {
@@ -807,6 +818,137 @@ sys.stdout.buffer.write(result.read_bytes())
       await page.locator('#timing-test-external-player').evaluate((audio: HTMLAudioElement) => { audio.pause(); audio.remove(); });
       await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
       await expect(dialog).toBeHidden();
+    });
+    test('timing vocals volume presets change native companion output without changing transport', async ({ page }, info) => {
+      test.setTimeout(120_000);
+      await page.addInitScript(() => { Math.random = () => 0.5; });
+      // Real decoded companion output is sampled after its gain, never replacing native transport.
+      await page.addInitScript(() => {
+        const original = AudioContext.prototype.createGain;
+        AudioContext.prototype.createGain = function () {
+          const gain = original.call(this);
+          const analyser = this.createAnalyser();
+          analyser.fftSize = 2048;
+          const silent = original.call(this);
+          silent.gain.value = 0;
+          gain.connect(analyser).connect(silent).connect(this.destination);
+          (window as unknown as { timingAnalyser: AnalyserNode }).timingAnalyser = analyser;
+          return gain;
+        };
+      });
+      const job = karaokeJob();
+      if (viewport.width === 390) job.manifest = job.manifest!.filter(item => item.label !== 'vocals');
+      const { view, player } = await mountFixture(page, job, undefined, { instruments: tone(220), vocals: tone(880) });
+      await seekNative(player, 4);
+      await view.getByRole('button', { name: 'Learn timings', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Learn timings', exact: true });
+      const play = dialog.getByRole('button', { name: 'Play', exact: true });
+      await expect(play).toBeEnabled();
+      await play.click();
+      const vocal = page.locator('body > audio[hidden]');
+      await expect(vocal).toHaveCount(1);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      const volume = dialog.getByRole('group', { name: 'Vocals volume' });
+      await expect(volume.getByRole('button', { name: '75%' })).toHaveAttribute('aria-pressed', 'true');
+      const boxes = await Promise.all([25, 50, 75, 100].map(percent => volume.getByRole('button', { name: `${percent}%` }).boundingBox()));
+      for (const box of boxes) {
+        expect(box).not.toBeNull();
+        expect(box!.y).toBeCloseTo(boxes[0]!.y, 0);
+        expect(box!.width).toBeGreaterThanOrEqual(44);
+        expect(box!.height).toBeGreaterThanOrEqual(44);
+      }
+      await dialog.screenshot({ path: info.outputPath(`timing-volume-${viewport.width}.png`), animations: 'disabled' });
+      const rms = () => page.evaluate(async () => {
+        const analyser = (window as unknown as { timingAnalyser: AnalyserNode }).timingAnalyser;
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 150);
+        await promise;
+        const samples = new Float32Array(analyser.fftSize);
+        analyser.getFloatTimeDomainData(samples);
+        return Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
+      });
+      const defaultRms = await rms();
+      expect(defaultRms).toBeGreaterThan(0.001);
+      const levels: Record<string, number> = { default75: defaultRms };
+      await player.evaluate((audio: HTMLAudioElement) => {
+        audio.dataset.presetTransportEvents = '0';
+        for (const event of ['play', 'pause', 'seeking']) audio.addEventListener(event, () => {
+          audio.dataset.presetTransportEvents = String(Number(audio.dataset.presetTransportEvents) + 1);
+        });
+      });
+      // Sample both clocks in the activation task; later companion seeks can be drift correction.
+      await volume.evaluate(group => {
+        const state = () => [
+          document.querySelector<HTMLAudioElement>('.pitch-view audio:not([hidden])')!,
+          document.querySelector<HTMLAudioElement>('body > audio[hidden]')!,
+        ].map(audio => ({ time: audio.currentTime, paused: audio.paused, seeking: audio.seeking, muted: audio.muted }));
+        let before: NativePlaybackState[];
+        group.addEventListener('click', event => {
+          before = state();
+          group.dataset.trustedPresetClick = String(event.isTrusted);
+        }, true);
+        document.addEventListener('click', event => {
+          if (event.target instanceof Node && group.contains(event.target)) {
+            group.dataset.presetTransition = JSON.stringify({ before, after: state() });
+          }
+        });
+      });
+      const masterVolume = await player.evaluate(audio => audio.volume);
+      for (const percent of [25, 50, 100]) {
+        const before = await player.evaluate(audio => audio.currentTime);
+        await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.seeking)).toBe(true);
+        await volume.getByRole('button', { name: `${percent}%` }).click();
+        const transition = await volume.evaluate(group => {
+          if (group.dataset.trustedPresetClick !== 'true' || !group.dataset.presetTransition) throw new Error('Missing trusted preset activation');
+          return JSON.parse(group.dataset.presetTransition) as PresetTransition;
+        });
+        for (let index = 0; index < transition.before.length; index++) {
+          expect(transition.before[index].paused || transition.before[index].seeking).toBe(false);
+          expect(transition.after[index].paused || transition.after[index].seeking).toBe(false);
+          expect(transition.after[index].muted).toBe(transition.before[index].muted);
+          expect(transition.after[index].time).toBeGreaterThanOrEqual(transition.before[index].time);
+        }
+        await expect(volume.getByRole('button', { name: `${percent}%` })).toHaveAttribute('aria-pressed', 'true');
+        const level = await rms();
+        levels[String(percent)] = level;
+        expect(level / defaultRms).toBeCloseTo(percent / 75, 1);
+        expect(await player.evaluate(audio => audio.volume)).toBe(masterVolume);
+        const state = await player.evaluate(audio => ({ time: audio.currentTime, paused: audio.paused, seeking: audio.seeking }));
+        expect(state.time).toBeGreaterThan(before);
+        expect(state.paused || state.seeking).toBe(false);
+        await expect.poll(() => page.evaluate(() => {
+          const master = document.querySelector<HTMLAudioElement>('.pitch-view audio:not([hidden])')!;
+          const companion = document.querySelector<HTMLAudioElement>('body > audio[hidden]')!;
+          return Math.abs(master.currentTime - companion.currentTime);
+        })).toBeLessThan(0.08);
+      }
+      expect(await player.evaluate((audio: HTMLAudioElement) => audio.dataset.presetTransportEvents)).toBe('0');
+      await player.evaluate(audio => { audio.volume = 0.5; });
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.volume)).toBe(0.5);
+      levels.masterHalf = await rms();
+      expect(levels.masterHalf / defaultRms).toBeCloseTo(0.5 / 0.75, 1);
+      expect(await player.evaluate(audio => audio.volume)).toBe(0.5);
+      await player.evaluate(audio => { audio.volume = 1; });
+      const less = dialog.getByRole('button', { name: 'Less hints', exact: true });
+      for (let index = 0; index < 5; index++) await less.click();
+      await expect(dialog.getByText('Vocals off', { exact: true })).toBeVisible();
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.muted)).toBe(true);
+      for (const percent of [25, 100]) {
+        await volume.getByRole('button', { name: `${percent}%` }).click();
+        levels[`off${percent}`] = await rms();
+        expect(levels[`off${percent}`]).toBeLessThan(0.0001);
+      }
+      await info.attach('timing-volume-rms', { body: JSON.stringify(levels), contentType: 'application/json' });
+      await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      for (const [trigger, name] of [['Open karaoke fullscreen', 'Karaoke fullscreen'], ['Lyrics learning mode', 'Lyrics learning mode']] as const) {
+        await view.getByRole('button', { name: trigger, exact: true }).click();
+        const other = page.getByRole('dialog', { name, exact: true });
+        await expect(other.getByRole('group', { name: 'Vocals volume' })).toHaveCount(0);
+        await other.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
+      }
+      await view.getByRole('button', { name: 'Learn timings', exact: true }).click();
+      await expect(dialog.getByRole('group', { name: 'Vocals volume' }).getByRole('button', { name: '75%' })).toHaveAttribute('aria-pressed', 'true');
+      await dialog.getByRole('button', { name: 'Exit karaoke fullscreen' }).click();
     });
     test.use({ viewport, isMobile: viewport.width === 390, hasTouch: viewport.width === 390, deviceScaleFactor: 1 });
     test('outside playback cancels timing preparation before vocals load', async ({ page }) => {

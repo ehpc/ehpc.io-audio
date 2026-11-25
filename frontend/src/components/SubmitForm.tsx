@@ -269,6 +269,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         original_key: null,
         output_key: null,
         result_revision: null,
+        open_count: 0,
         options: submittedOptions,
         manifest: null,
         transcript: null,

@@ -113,6 +113,15 @@ for (const viewport of [
         await rail.screenshot({ path: info.outputPath('library-rail-1440-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
         await expect.soft(rail).toHaveScreenshot('library-rail-1440.png');
       }
+      const sortButton = page.getByRole('button', { name: 'Sort library' });
+      await sortButton.click();
+      const sortPopup = page.getByRole('dialog', { name: 'Sort library options' });
+      await expect(sortPopup).toBeVisible();
+      await expect(sortPopup.getByRole('radio', { name: 'Most used' })).toBeChecked();
+      await page.mouse.move(0, 0);
+      await waitForFiniteAnimations(sortPopup);
+      await sortPopup.screenshot({ path: info.outputPath(`library-sort-${viewport.width}-actual.png`), animations: 'disabled', caret: 'hide', scale: 'css' });
+      await expect.soft(sortPopup).toHaveScreenshot(`library-sort-${viewport.width}.png`);
     } finally {
       const responses = await Promise.all(ids.map(id => page.request.delete(`/api/jobs/${id}`, {
         headers: { Origin: process.env.E2E_BASE_URL! },
@@ -257,6 +266,7 @@ for (const viewport of [
     const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
     const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8')) as { pitch: unknown };
     const ids: number[] = [];
+    const openGate = Promise.withResolvers<void>();
     try {
       for (const title of wrappingTitles) {
         const output = execFileSync('uv', ['run', 'python', '-c', insertLibraryTrack, identity.id, title,
@@ -323,6 +333,15 @@ for (const viewport of [
         }
       }
       const firstTitle = wrappingTitles[0];
+      const openFetched = Promise.withResolvers<void>();
+      if (viewport.width === 2560) {
+        await page.route(`**/api/jobs/${ids[0]}/open`, async route => {
+          const response = await route.fetch();
+          openFetched.resolve();
+          await openGate.promise;
+          await route.fulfill({ response });
+        });
+      }
       const selected = page.waitForResponse(response =>
         response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${ids[0]}`);
       await history.getByRole('button', { name: firstTitle, exact: true }).press('Enter');
@@ -331,12 +350,22 @@ for (const viewport of [
       await expect(history.getByRole('button', { name: firstTitle, exact: true })).toHaveAttribute('aria-current', 'true');
       const deleteButton = history.getByRole('button', { name: `Delete ${firstTitle}`, exact: true });
       await deleteButton.focus();
+      if (viewport.width === 2560) {
+        await openFetched.promise;
+        const refresh = page.waitForResponse(response =>
+          response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/jobs');
+        openGate.resolve();
+        await refresh;
+        await expect(history.getByRole('listitem').first().getByRole('button', { name: firstTitle, exact: true })).toBeVisible();
+        await expect(deleteButton).toBeFocused();
+      }
       await page.keyboard.press('Enter');
       const confirmation = page.getByRole('alertdialog');
       await expect(confirmation).toContainText(`Delete ${firstTitle}?`);
       await confirmation.getByRole('button', { name: 'Cancel' }).click();
       await expect(deleteButton).toBeVisible();
     } finally {
+      openGate.resolve();
       for (const id of ids) {
         const response = await page.request.delete(`/api/jobs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
         expect([204, 404]).toContain(response.status());

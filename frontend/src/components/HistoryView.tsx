@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
+import * as Popover from "@kobalte/core/popover";
 import * as AlertDialog from "@kobalte/core/alert-dialog";
-import type { JobDTO } from "~/api";
+import type { JobDTO, LibrarySort } from "~/api";
 import { AuthHttpError, deleteJob, jobLabel } from "~/api";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
@@ -14,15 +15,36 @@ function formatDate(unixSeconds: number): string {
 const HistoryView: Component<{
   jobs: JobDTO[];
   selectedId?: number | null;
+  sort: LibrarySort;
+  onSortChange: (sort: LibrarySort) => void;
   onSelect: (job: JobDTO) => void;
   onDeleted: (id: number) => void;
 }> = (props) => {
   const [deleting, setDeleting] = createSignal(false);
   const [deleteTarget, setDeleteTarget] = createSignal<JobDTO | null>(null);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
-  const orderedJobs = createMemo(() => {
-    const selected = props.jobs.find(job => job.id === props.selectedId);
-    return selected ? [selected, ...props.jobs.filter(job => job.id !== selected.id)] : props.jobs;
+  const jobsById = createMemo(() => {
+    const jobs = new Map<number, JobDTO>();
+    for (const job of props.jobs) jobs.set(job.id, job);
+    return jobs;
+  });
+  let list: HTMLDivElement | undefined;
+  let previousIds: number[] = [];
+  const jobIds = createMemo(() => {
+    const ids = props.jobs.map(job => job.id);
+    if (ids.length !== previousIds.length || ids.some((id, index) => id !== previousIds[index])) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && list?.contains(focused)) {
+        // Moving a focused row can blur it; never override a later focus choice.
+        queueMicrotask(() => {
+          if (focused.isConnected && document.activeElement === document.body) {
+            focused.focus({ preventScroll: true });
+          }
+        });
+      }
+    }
+    previousIds = ids;
+    return ids;
   });
 
   const handleDelete = async () => {
@@ -47,40 +69,62 @@ const HistoryView: Component<{
   return (
     <>
     <section class="space-y-3" aria-label="History">
-      <h2 class="text-sm font-medium text-muted-foreground">History</h2>
+      <header class="flex items-center justify-between gap-2">
+        <h2 class="text-sm font-medium text-muted-foreground">History</h2>
+        <Popover.Root>
+          <Popover.Trigger as={Button} type="button" variant="outline" size="icon" class="size-11 shrink-0" aria-label="Sort library">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16M7 12h10M10 18h4" />
+            </svg>
+          </Popover.Trigger>
+            <Popover.Content aria-label="Sort library options" class="z-50 min-w-48 rounded-md border border-border bg-background p-2 shadow-lg">
+              <fieldset class="space-y-1">
+                <legend class="px-2 pb-1 text-xs font-medium text-muted-foreground">Sort library</legend>
+                <label class="flex min-h-11 cursor-pointer items-center gap-2 rounded-sm px-2 text-sm hover:bg-accent">
+                  <input type="radio" name="library-sort" value="usage" checked={props.sort === "usage"} onChange={() => props.onSortChange("usage")} />
+                  Most used
+                </label>
+                <label class="flex min-h-11 cursor-pointer items-center gap-2 rounded-sm px-2 text-sm hover:bg-accent">
+                  <input type="radio" name="library-sort" value="added" checked={props.sort === "added"} onChange={() => props.onSortChange("added")} />
+                  Date added (newest first)
+                </label>
+              </fieldset>
+            </Popover.Content>
+        </Popover.Root>
+      </header>
 
       <Show
         when={props.jobs.length > 0}
         fallback={<p class="text-sm text-muted-foreground">No jobs yet.</p>}
       >
-        <div role="list" class="space-y-2">
-          <For each={orderedJobs()}>
-            {(job) => (
+        <div ref={list} role="list" class="space-y-2">
+          <For each={jobIds()}>
+            {(id) => <Show when={jobsById().get(id)}>{job => (
               <Card
                 role="listitem"
-                class={`cursor-pointer transition-colors hover:bg-accent ${job.id === props.selectedId ? "library-selected" : ""}`}
-                onClick={() => props.onSelect(job)}
+                class={`cursor-pointer transition-colors hover:bg-accent ${id === props.selectedId ? "library-selected" : ""}`}
+                onClick={() => props.onSelect(job())}
               >
                 <CardContent class="flex min-w-0 items-center gap-3 p-3">
                   <div class="min-w-0 flex-1">
-                    <button type="button" class="flex min-h-11 min-w-0 w-full items-center py-0.5 text-left text-sm font-medium" aria-current={job.id === props.selectedId ? "true" : undefined}
-                      onClick={(event) => { event.stopPropagation(); props.onSelect(job); }}>
-                      <span class="block min-w-0 whitespace-normal [overflow-wrap:anywhere]">{jobLabel(job)}</span>
+                    <button type="button" class="flex min-h-11 min-w-0 w-full items-center py-0.5 text-left text-sm font-medium" aria-current={id === props.selectedId ? "true" : undefined}
+                      onClick={(event) => { event.stopPropagation(); props.onSelect(job()); }}>
+                      <span class="block min-w-0 whitespace-normal [overflow-wrap:anywhere]">{jobLabel(job())}</span>
                     </button>
-                    <time class="block truncate text-xs text-muted-foreground" dateTime={new Date(job.created_at * 1000).toISOString()}>
-                      {formatDate(job.created_at)}
+                    <time class="block truncate text-xs text-muted-foreground" dateTime={new Date(job().created_at * 1000).toISOString()}>
+                      {formatDate(job().created_at)}
                     </time>
                   </div>
-                  <Show when={job.status === "done"}>
+                  <Show when={job().status === "done"}>
                     <Button type="button" variant="outline" size="sm" class="min-h-11 shrink-0"
-                      aria-label={`Delete ${jobLabel(job)}`}
-                      onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(job); }}>
+                      aria-label={`Delete ${jobLabel(job())}`}
+                      onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(job()); }}>
                       Delete
                     </Button>
                   </Show>
                 </CardContent>
               </Card>
-            )}
+            )}</Show>}
           </For>
         </div>
       </Show>

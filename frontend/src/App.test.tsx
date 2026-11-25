@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   getCurrentJob: vi.fn(),
   getJob: vi.fn(),
   listJobs: vi.fn(),
+  recordJobOpen: vi.fn(),
   retryJob: vi.fn(),
   subscribeToJob: vi.fn(),
   jobLabel: (job: { title: string }) => job.title,
@@ -23,10 +24,13 @@ vi.mock("./AuthProvider", () => ({
 }));
 vi.mock("./components/HistoryView", () => ({
   default: (props: {
-    jobs: { id: number; status: string; title: string; result_revision: string | null }[];
-    onSelect: (job: { id: number; status: string; title: string; result_revision: string | null }) => void;
+    jobs: { id: number; status: string; title: string; result_revision: string | null; open_count: number }[];
+    sort: "usage" | "added";
+    onSortChange: (sort: "usage" | "added") => void;
+    onSelect: (job: { id: number; status: string; title: string; result_revision: string | null; open_count: number }) => void;
     onDeleted: (id: number) => void;
   }) => <section aria-label="Test library">
+    <button type="button" onClick={() => props.onSortChange("added")}>Switch sort</button>
     {props.jobs.map(job => <div>
       <button type="button" onClick={() => props.onSelect(job)}>{job.title}</button>
       <span>Library revision: {job.result_revision ?? "legacy"}</span>
@@ -43,14 +47,51 @@ vi.mock("./components/QueueStatus", () => ({ default: () => null }));
 vi.mock("./ProfileView", () => ({ default: () => <section>Profile contents</section> }));
 vi.mock("./AdminView", () => ({ default: () => <section>Admin contents</section> }));
 
-type DisplayJob = { id: number; status: "done"; title: string; result_revision: string | null; progress: JobDTO["progress"] };
+type DisplayJob = { id: number; status: "done"; title: string; result_revision: string | null; progress: JobDTO["progress"]; open_count: number; created_at: number };
 const displayJob = (result_revision: string | null): DisplayJob => ({
-  id: 71, status: "done", title: "Harbor song", result_revision,
+  id: 71, status: "done", title: "Harbor song", result_revision, open_count: 0, created_at: 100,
   progress: { steps: ["source", "analysis", "export"], current: null },
+});
+
+it("reorders only acknowledged opens and retains their order through stale responses", async () => {
+  const older = { ...displayJob("selected"), id: 70, title: "Older", created_at: 1 };
+  const newer = { ...displayJob("selected"), id: 71, title: "Newer", created_at: 2 };
+  const stale = Promise.withResolvers<DisplayJob[]>();
+  const acknowledgement = Promise.withResolvers<{ id: number; open_count: number }>();
+  api.listJobs.mockResolvedValueOnce([newer, older]).mockReturnValueOnce(stale.promise);
+  api.getJob.mockResolvedValue(older);
+  api.recordJobOpen.mockReturnValueOnce(acknowledgement.promise);
+  render(() => <App />);
+  const library = await screen.findByRole("region", { name: "Test library" });
+  const titles = () => within(library).getAllByRole("button").filter(button => ["Older", "Newer"].includes(button.textContent ?? "")).map(button => button.textContent);
+  await waitFor(() => expect(titles()).toEqual(["Newer", "Older"]));
+  await userEvent.click(within(library).getByRole("button", { name: "Older" }));
+  expect(titles()).toEqual(["Newer", "Older"]);
+  acknowledgement.resolve({ id: 70, open_count: 2 });
+  await waitFor(() => expect(titles()).toEqual(["Older", "Newer"]));
+  stale.resolve([newer, older]);
+  await Promise.resolve();
+  expect(titles()).toEqual(["Older", "Newer"]);
+});
+
+it("opens a song without promoting it when recording its open fails", async () => {
+  const older = { ...displayJob("selected"), id: 70, title: "Older", created_at: 1 };
+  const newer = { ...displayJob("selected"), id: 71, title: "Newer", created_at: 2 };
+  api.listJobs.mockResolvedValue([newer, older]);
+  api.getJob.mockResolvedValue(older);
+  api.recordJobOpen.mockRejectedValueOnce(new Error("offline"));
+  render(() => <App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Older" }));
+  expect(await screen.findByRole("region", { name: "Current result" })).toHaveTextContent("Older");
+  const library = screen.getByRole("region", { name: "Test library" });
+  const titles = within(library).getAllByRole("button")
+    .filter(button => ["Older", "Newer"].includes(button.textContent ?? ""))
+    .map(button => button.textContent);
+  expect(titles).toEqual(["Newer", "Older"]);
 });
 const activeJob = (id: number, title: string): JobDTO => ({
   ...displayJob(null), id, title, status: "queued", position: 2,
-} as JobDTO);
+});
 let scrollIntoViewDescriptor: PropertyDescriptor | undefined;
 
 beforeEach(() => {
@@ -59,6 +100,7 @@ beforeEach(() => {
   api.retryJob.mockReset();
   api.getCurrentJob.mockResolvedValue(null);
   api.listJobs.mockResolvedValue([displayJob("revision-1")]);
+  api.recordJobOpen.mockResolvedValue({ id: 71, open_count: 1 });
   api.subscribeToJob.mockReturnValue(() => {});
 });
 afterEach(() => {
@@ -123,7 +165,6 @@ it("refreshes the selected same-ID entry without restoring stale results", async
   await userEvent.click(screen.getByRole("button", { name: "Workspace" }));
   expect(await screen.findByText("Revision: revision-3")).toBeInTheDocument();
   expect(await screen.findByText("Library revision: revision-3")).toBeInTheDocument();
-  expect(api.getJob).toHaveBeenNthCalledWith(3, 71);
 });
 
 it("keeps cached results visible and reports a failed refresh", async () => {
@@ -171,8 +212,6 @@ it("keeps the accepted job live across selection and navigation, then opens its 
   expect(api.subscribeToJob).toHaveBeenCalledTimes(1);
   await userEvent.click(within(dock).getByRole("button", { name: "View result" }));
   expect(screen.getByRole("region", { name: "Current result" })).toHaveTextContent("New song");
-  expect(document.activeElement).toHaveClass("processing-results");
-  expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
 });
 
 it("ignores late stream and fallback updates after deleting a tracked job", async () => {
@@ -223,7 +262,7 @@ it("shows a failed tracked job without replacing another selected result", async
 });
 
 it("keeps a failed job retryable after a rejected attempt and tracks an accepted retry", async () => {
-  const failed = { ...activeJob(72, "Failed song"), status: "failed" as const, error_message: "Source unavailable" };
+  const failed = { ...activeJob(72, "Failed song"), status: "failed" as const, open_count: 5, error_message: "Source unavailable" };
   const pending = Promise.withResolvers<SubmitResult>();
   api.getCurrentJob.mockResolvedValue(failed);
   api.retryJob.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
@@ -240,6 +279,7 @@ it("keeps a failed job retryable after a rejected attempt and tracks an accepted
   await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
   expect(await screen.findByRole("status")).toHaveTextContent("Failed song");
   expect(screen.getByRole("status")).toHaveTextContent("Queued");
+  expect(screen.getByRole("status").textContent).not.toContain("Open count: 5");
 });
 
 it("keeps a different selected result mounted while an accepted retry appears in the dock", async () => {

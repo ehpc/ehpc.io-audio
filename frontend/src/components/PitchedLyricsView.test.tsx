@@ -22,7 +22,7 @@ beforeEach(() => {
 const job: JobDTO = {
   id: 9, status: "done", position: null, source_type: "upload", source_value: "song.ogg", title: "song.ogg",
   progress: { steps: ["source", "analysis", "separation", "lyrics", "pitch", "export"], current: null },
-  original_key: null, output_key: null, result_revision: "build-3", manifest: [], error_message: null, created_at: 1, has_original: true,
+  original_key: null, output_key: null, result_revision: "build-3", manifest: [], error_message: null, open_count: 0, created_at: 1, has_original: true,
   has_pitch_vocals: false,
   lyric_pitch_lines: null,
   options: { extract_vocals: false, extract_instruments: false, extract_lyrics: false, detect_pitch: false,

@@ -245,6 +245,8 @@ export interface JobDTO {
   options: SeparationOptions;
   manifest: StemManifestEntry[] | null;
   transcript: TranscriptDTO | null;
+  /** User-initiated opens of this job in the library. */
+  open_count: number;
   /** Absent in historical API payloads predating vocal pitch analysis. */
   pitch?: PitchAnalysisDTO | null;
   pitched_lyrics?: PitchedLyricsTrackDTO[] | null;
@@ -673,14 +675,32 @@ export async function deleteJob(id: number): Promise<void> {
   }
 }
 
-export async function listJobs(): Promise<JobDTO[]> {
-  const res = await fetch(`${API_BASE}/jobs`, {
+export type LibrarySort = "usage" | "added";
+
+export async function listJobs(sort: LibrarySort = "usage"): Promise<JobDTO[]> {
+  const res = await fetch(`${API_BASE}/jobs?sort=${sort}`, {
     credentials: "include",
   });
   if (!res.ok) {
     throw await responseError(res);
   }
   return (await res.json()) as JobDTO[];
+}
+
+export interface JobOpenDTO {
+  id: number;
+  open_count: number;
+}
+
+export async function recordJobOpen(id: number): Promise<JobOpenDTO> {
+  const res = await fetch(`${API_BASE}/jobs/${id}/open`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    throw await responseError(res);
+  }
+  return (await res.json()) as JobOpenDTO;
 }
 
 export async function getStatus(): Promise<StatusDTO> {

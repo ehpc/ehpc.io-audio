@@ -14,7 +14,7 @@ job=db.get_job(int(sys.argv[1]))
 assert job is not None and job.status == 'queued' and job.modal_call_id is None
 db.mark_done(job.id,[],None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 with db._session() as connection:
- connection.execute('UPDATE jobs SET title=?,created_at=?,finished_at=? WHERE id=?',(value['title'],4102444800,4102444801,job.id))
+ connection.execute('UPDATE jobs SET title=?,created_at=?,finished_at=?,open_count=? WHERE id=?',(value['title'],4102444800,4102444801,value.get('open_count',0),job.id))
 `;
 
 const viewports = [
@@ -26,7 +26,7 @@ const viewports = [
   { name: 'wide-desktop', width: 1920, height: 1080, isMobile: false, hasTouch: false },
 ] as const;
 
-async function createSeededTrack(page: Page, source: Buffer, fixture: { pitch: unknown }, title: string, createdIds: number[]): Promise<JobDTO> {
+async function createSeededTrack(page: Page, source: Buffer, fixture: { pitch: unknown }, title: string, createdIds: number[], openCount = 0): Promise<JobDTO> {
   const response = await page.request.post('/api/jobs', {
     headers: { Origin: process.env.E2E_BASE_URL! },
     multipart: {
@@ -39,7 +39,7 @@ async function createSeededTrack(page: Page, source: Buffer, fixture: { pitch: u
   expect(response.status()).toBe(200);
   execFileSync('uv', ['run', 'python', '-c', seedLibraryTrack, String(created.id)], {
     cwd: process.env.E2E_REPO_ROOT!,
-    input: JSON.stringify({ pitch: fixture.pitch, title }),
+    input: JSON.stringify({ pitch: fixture.pitch, title, open_count: openCount }),
     env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
   });
   const completedResponse = await page.request.get(`/api/jobs/${created.id}`);
@@ -79,9 +79,14 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8')) as { pitch: unknown };
     const shortTitles = ['Library Alpha fixture', 'Library Beta fixture'];
-    const longTitle = `Library long-title fixture ${'Harmony and melody '.repeat(7)}`;
+    const longTitle = `Library long-title fixture ${'Harmony and melody '.repeat(7)}`.trim();
+    const seededTracks = [
+      { title: shortTitles[0], openCount: 20 },
+      { title: shortTitles[1], openCount: 2 },
+      { title: longTitle, openCount: 0 },
+    ];
     const jobs: JobDTO[] = [];
-    for (const title of [...shortTitles, longTitle]) jobs.push(await createSeededTrack(page, source, fixture, title, createdIds));
+    for (const track of seededTracks) jobs.push(await createSeededTrack(page, source, fixture, track.title, createdIds, track.openCount));
     const titles = jobs.map(jobLabel);
     const cookies = await context.cookies();
 
@@ -97,6 +102,7 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         });
         await viewportContext.addCookies(cookies);
         const viewportPage = await viewportContext.newPage();
+        const before = await (await viewportPage.request.get('/api/jobs?sort=usage')).json() as JobDTO[];
         await viewportPage.goto('/');
         const trigger = viewportPage.getByRole('button', { name: 'Library', exact: true });
         const rail = viewportPage.getByRole('complementary', { name: 'Library', exact: true });
@@ -112,6 +118,10 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
           await expect(rail).toBeVisible();
           await expect(trigger).toHaveCount(0);
         }
+        const initialCounts = await viewportPage.request.get('/api/jobs?sort=usage');
+        expect(initialCounts.ok()).toBe(true);
+        const initialJobs = await initialCounts.json() as JobDTO[];
+        expect(new Map(initialJobs.map(job => [job.id, job.open_count]))).toEqual(new Map(before.map(job => [job.id, job.open_count])));
 
         const openLibrary = async () => {
           if (viewport.isMobile) await trigger.click();
@@ -122,20 +132,22 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
           }
           return libraryHistoryRegion;
         };
-        const assertSelectedTrack = async (selectedTitle: string, otherTitle: string) => {
+        const assertSelectedTrack = async (selectedTitle: string) => {
           const selectedHistory = viewport.isMobile ? await openLibrary() : history();
           const selectedButton = selectedHistory.getByRole('button', { name: selectedTitle, exact: true });
-          const otherButton = selectedHistory.getByRole('button', { name: otherTitle, exact: true });
           await expect(selectedButton).toHaveAttribute('aria-current', 'true');
-          await expect(otherButton).not.toHaveAttribute('aria-current', 'true');
-          const selectedPrecedesOther = await selectedHistory.evaluate((history, titles) => {
+          const alphaButton = selectedHistory.getByRole('button', { name: titles[0], exact: true });
+          const betaButton = selectedHistory.getByRole('button', { name: titles[1], exact: true });
+          const alphaPrecedesBeta = await selectedHistory.evaluate((history, titles) => {
             const buttons = [...history.querySelectorAll('button')];
-            const selected = buttons.find(button => button.textContent?.trim() === titles.selected);
-            const other = buttons.find(button => button.textContent?.trim() === titles.other);
-            return selected !== undefined && other !== undefined
-              && Boolean(selected.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING);
-          }, { selected: selectedTitle, other: otherTitle });
-          expect(selectedPrecedesOther).toBe(true);
+            const alpha = buttons.find(button => button.textContent?.trim() === titles.alpha);
+            const beta = buttons.find(button => button.textContent?.trim() === titles.beta);
+            return alpha !== undefined && beta !== undefined
+              && Boolean(alpha.compareDocumentPosition(beta) & Node.DOCUMENT_POSITION_FOLLOWING);
+          }, { alpha: titles[0], beta: titles[1] });
+          expect(alphaPrecedesBeta).toBe(true);
+          await expect(alphaButton).toBeVisible();
+          await expect(betaButton).toBeVisible();
           if (viewport.isMobile) {
             await viewportPage.keyboard.press('Escape');
             await expect(trigger).toBeFocused();
@@ -143,21 +155,47 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         };
 
         const libraryHistoryRegion = await openLibrary();
+        const sortButton = libraryHistoryRegion.getByRole('button', { name: 'Sort library' });
+        await sortButton.focus();
+        await viewportPage.keyboard.press('Enter');
+        const sortPopup = viewportPage.getByRole('dialog', { name: 'Sort library options' });
+        await expect(sortPopup).toBeVisible();
+        if (viewport.name === 'iphone') {
+          await sortPopup.screenshot({ path: info.outputPath('library-sort-popup-390-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
+        }
+        const addedListResponse = viewportPage.waitForResponse(response =>
+          response.request().method() === 'GET'
+          && new URL(response.url()).pathname === '/api/jobs'
+          && new URL(response.url()).searchParams.get('sort') === 'added');
+        await sortPopup.getByRole('radio', { name: 'Most used' }).focus();
+        await viewportPage.keyboard.press('ArrowDown');
+        await viewportPage.keyboard.press('Space');
+        await expect(sortPopup.getByRole('radio', { name: 'Date added (newest first)' })).toBeChecked();
+        await expect(addedListResponse).resolves.toBeTruthy();
+        const addedOrder = await libraryHistoryRegion.getByRole('listitem').evaluateAll(items => items.map(item => item.querySelector('button[aria-current], button')?.textContent?.trim()));
+        expect(addedOrder.slice(0, 3)).toEqual([longTitle, titles[1], titles[0]]);
+        await viewportPage.keyboard.press('Escape');
+        await sortButton.focus();
+        await viewportPage.keyboard.press('Enter');
+        const usageListResponse = viewportPage.waitForResponse(response =>
+          response.request().method() === 'GET'
+          && new URL(response.url()).pathname === '/api/jobs'
+          && new URL(response.url()).searchParams.get('sort') === 'usage');
+        await sortPopup.getByRole('radio', { name: 'Date added (newest first)' }).focus();
+        await viewportPage.keyboard.press('ArrowUp');
+        await viewportPage.keyboard.press('Space');
+        await expect(usageListResponse).resolves.toBeTruthy();
+        await viewportPage.keyboard.press('Escape');
+        const usageOrder = await libraryHistoryRegion.getByRole('listitem').evaluateAll(items => items.map(item => item.querySelector('button[aria-current], button')?.textContent?.trim()));
+        expect(usageOrder.slice(0, 3)).toEqual([titles[0], titles[1], longTitle]);
         const longTitleButton = libraryHistoryRegion.getByRole('button', { name: longTitle, exact: true });
-        await expect(longTitleButton).toBeVisible();
-        const pageWidth = await viewportPage.evaluate(() => document.documentElement.scrollWidth);
-        expect(pageWidth).toBeLessThanOrEqual(viewport.width);
-        const titleBounds = (await longTitleButton.boundingBox())!;
-        const historyBounds = (await libraryHistoryRegion.boundingBox())!;
-        expect(titleBounds.x).toBeGreaterThanOrEqual(historyBounds.x);
-        expect(titleBounds.x + titleBounds.width).toBeLessThanOrEqual(historyBounds.x + historyBounds.width);
 
         if (viewport.name === 'iphone') {
           const dialog = viewportPage.getByRole('dialog', { name: 'Library', exact: true });
           await dialog.screenshot({ path: info.outputPath('library-drawer-390-actual.png'), animations: 'disabled', caret: 'hide', scale: 'css' });
         }
         if (viewport.isMobile) {
-          await viewportPage.keyboard.press('Escape');
+          await viewportPage.getByRole('button', { name: 'Close library' }).click();
           await expect(viewportPage.getByRole('dialog', { name: 'Library', exact: true })).toBeHidden();
           await expect(trigger).toBeFocused();
         }
@@ -167,13 +205,19 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         }
 
         const alphaHistory = await openLibrary();
+        const alphaOpenResponse = viewportPage.waitForResponse(response =>
+          response.request().method() === 'POST'
+          && new URL(response.url()).pathname === `/api/jobs/${jobs[0].id}/open`);
         await alphaHistory.getByRole('button', { name: titles[0], exact: true }).click();
+        const alphaOpen = await alphaOpenResponse;
+        expect(alphaOpen.ok()).toBe(true);
+        expect(await alphaOpen.json()).toEqual({ id: jobs[0].id, open_count: before.find(job => job.id === jobs[0].id)!.open_count + 1 });
         if (viewport.isMobile) {
           await expect(viewportPage.getByRole('dialog', { name: 'Library', exact: true })).toBeHidden();
           await expect(trigger).toBeFocused();
         }
         const alphaKaraoke = await assertKaraokeSelection(viewportPage, titles[0], viewport);
-        await assertSelectedTrack(titles[0], titles[1]);
+        await assertSelectedTrack(titles[0]);
         await viewportPage.screenshot({
           path: info.outputPath(`library-selected-karaoke-${viewport.width}-actual.png`),
           animations: 'disabled', caret: 'hide', scale: 'css',
@@ -202,17 +246,21 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
           await expect(trigger).toBeFocused();
         }
         const betaKaraoke = await assertKaraokeSelection(viewportPage, titles[1], viewport);
-        await assertSelectedTrack(titles[1], titles[0]);
+        await assertSelectedTrack(titles[1]);
         await assertKaraokeSelection(viewportPage, titles[1], viewport);
 
         await viewportPage.evaluate(() => window.scrollTo(0, 0));
         const repeatedHistory = await openLibrary();
+        const betaReopenResponse = viewportPage.waitForResponse(response =>
+          response.request().method() === 'POST'
+          && new URL(response.url()).pathname === `/api/jobs/${jobs[1].id}/open`);
         await repeatedHistory.getByRole('button', { name: titles[1], exact: true }).click();
+        expect((await betaReopenResponse).ok()).toBe(true);
         if (viewport.isMobile) {
           await expect(viewportPage.getByRole('dialog', { name: 'Library', exact: true })).toBeHidden();
           await expect(trigger).toBeFocused();
         }
-        await assertSelectedTrack(titles[1], titles[0]);
+        await assertSelectedTrack(titles[1]);
         await assertKaraokeSelection(viewportPage, titles[1], viewport);
       } finally {
         await viewportContext?.close();

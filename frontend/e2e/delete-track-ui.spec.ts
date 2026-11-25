@@ -100,7 +100,7 @@ for (const viewport of [
     let historyRegion = await openHistory();
     await expect(historyRegion.getByRole('button', { name: cancelledTitle, exact: true })).toBeVisible();
     await expect(historyRegion.getByRole('button', { name: confirmedTitle, exact: true })).toBeVisible();
-    if (viewport.name === 'iphone') await mobilePage.getByRole('button', { name: 'Close library', exact: true }).click();
+    await historyRegion.getByRole('button', { name: confirmedTitle, exact: true }).click();
     await expect(mobilePage.locator('.processing-results a[href*="/results/"][download]')).toHaveCount(6);
     await expect(mobilePage.locator('.processing-results').getByRole('link', { name: 'Download original' })).toBeVisible();
     await expect(mobilePage.locator('.processing-results').getByRole('link', { name: 'Download timestamped TXT' })).toBeVisible();

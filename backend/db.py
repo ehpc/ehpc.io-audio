@@ -1,10 +1,10 @@
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import asdict, fields
-from typing import TYPE_CHECKING, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Literal, NamedTuple, TypedDict
 
 from backend import auth_store, config
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
@@ -21,6 +21,7 @@ _RENAMED_OPTIONS = {"chorus": "genders", "vocalists": "lead_backing"}
 
 type CompletedStage = tuple[str, str | None]
 type RetiringStage = tuple[int, str, str]
+type JobSort = Literal["usage", "added"]
 type StageOwner = tuple[int, str | None, str | None]
 
 
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_message TEXT,
     created_at INTEGER NOT NULL,
     started_at INTEGER,
+    open_count INTEGER NOT NULL DEFAULT 0,
     finished_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
@@ -131,6 +133,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN result_generation TEXT")
     if "internal" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN internal INTEGER NOT NULL DEFAULT 0")
+    if "open_count" not in columns:
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN open_count INTEGER NOT NULL DEFAULT 0"
+        )
     snapshot_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(job_source_snapshots)")
     }
@@ -226,7 +232,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def _session() -> Iterator[sqlite3.Connection]:
+def _session() -> Generator[sqlite3.Connection]:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -417,6 +423,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         ),
         pitch_json=row["pitch_json"],
         result_generation=row["result_generation"],
+        open_count=row["open_count"],
     )
 
 
@@ -999,19 +1006,42 @@ def delete_completed_job(
         return True
 
 
-def list_jobs_for_session(session_id: str, limit: int = 50) -> list[JobRecord]:
+def record_job_open(job_id: int, session_id: str) -> int | None:
+    with _session() as conn:
+        row = conn.execute(
+            "UPDATE jobs SET open_count = open_count + 1 "
+            "WHERE id = ? AND session_id = ? AND internal = 0 "
+            "RETURNING open_count",
+            (job_id, session_id),
+        ).fetchone()
+        return row["open_count"] if row is not None else None
+
+
+def list_jobs_for_session(
+    session_id: str, limit: int = 50, *, sort: JobSort = "usage"
+) -> list[JobRecord]:
+    order = (
+        "open_count DESC, created_at DESC, id DESC"
+        if sort == "usage"
+        else "created_at DESC, id DESC"
+    )
     with _session() as conn:
         rows = conn.execute(
             "SELECT * FROM jobs WHERE session_id = ? AND internal=0 "
-            "ORDER BY id DESC LIMIT ?",
+            f"ORDER BY {order} LIMIT ?",
             (session_id, limit),
         ).fetchall()
         return [_row_to_job(row) for row in rows]
 
 
 def get_latest_job_for_session(session_id: str) -> JobRecord | None:
-    jobs = list_jobs_for_session(session_id, limit=1)
-    return jobs[0] if jobs else None
+    with _session() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE session_id = ? AND internal=0 "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        return _row_to_job(row) if row else None
 
 
 def list_recent_jobs(limit: int = 50) -> list[JobRecord]:

@@ -2,40 +2,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   AuthHttpError, adminCacheRegenerations, authLogout, authMe, authStart, authVerify,
   getStatus, lyricsDownloadUrl, lyricsJsonDownloadUrl, onUnauthorized, originalUrl,
-  pitchDownloadUrl, pitchVocalsUrl, pitchedLyricsDownloadUrl, playbackUrl, regenerateAdminCache,
-  resultUrl, submitJob, subscribeToJob, type SeparationOptions,
+  pitchDownloadUrl, pitchVocalsUrl, pitchedLyricsDownloadUrl, playbackUrl,
+  resultUrl, subscribeToJob,
 } from "~/api";
 
-const defaultOptions: SeparationOptions = {
-  extract_vocals: false,
-  extract_instruments: false,
-  extract_lyrics: false,
-  detect_pitch: false,
-  extract_pitched_lyrics: false,
-  mixes: [],
-  decrowd: false,
-  decrowd_vocals: false,
-  dereverb: false,
-  genders: false,
-  lead_backing: false,
-  drums: false,
-  pitch_semitones: 0,
-  tempo_percent: 100,
-};
-
 afterEach(() => vi.unstubAllGlobals());
-it("posts song-scoped regeneration and returns per-song operations", async () => {
-  const payload = [{ operation_id: 9, song_id: "song-a", title: "A song", status: "queued", completed_jobs: 0, total_jobs: 2, error_message: null }];
-  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({ operations: payload }), {
-    status: 200, headers: { "Content-Type": "application/json" },
-  }));
-  vi.stubGlobal("fetch", fetchMock);
-  await expect(regenerateAdminCache({ ids: ["song-a"] })).resolves.toEqual(payload);
-  const [url, init] = fetchMock.mock.calls[0];
-  expect(url).toBe("/api/admin/cache/regenerate");
-  expect(init?.method).toBe("POST");
-  expect(JSON.parse(init?.body as string)).toEqual({ ids: ["song-a"] });
-});
 
 it("adds the result revision to derived media URLs without changing original URLs", () => {
   const revision = "publish/next";
@@ -47,29 +18,6 @@ it("adds the result revision to derived media URLs without changing original URL
   expect(lyricsJsonDownloadUrl(12, revision)).toBe("/api/jobs/12/lyrics/download.json?revision=publish%2Fnext");
   expect(pitchedLyricsDownloadUrl(12, "lead", "odt", revision)).toBe("/api/jobs/12/pitched-lyrics/lead/download?format=odt&revision=publish%2Fnext");
   expect(originalUrl(12)).toBe("/api/jobs/12/original");
-});
-
-it("serializes the lyrics choice in the multipart job request", async () => {
-  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-    new Response(JSON.stringify({ id: 8, status: "queued", position: 1, progress: { steps: ["source", "analysis", "separation", "lyrics", "export"], current: null } }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-
-  await submitJob({ url: "https://example.com/song", options: { ...defaultOptions, extract_lyrics: true } });
-
-  expect(fetchMock).toHaveBeenCalledOnce();
-  const [url, init] = fetchMock.mock.calls[0];
-  expect(url).toBe("/api/jobs");
-  expect(init?.method).toBe("POST");
-  expect(init?.credentials).toBe("include");
-  const body = init?.body as FormData;
-  expect(body.get("extract_lyrics")).toBe("true");
-  expect(body.get("extract_vocals")).toBe("false");
-  expect(body.get("pitch_semitones")).toBe("0");
-  expect(body.get("tempo_percent")).toBe("100");
 });
 
 

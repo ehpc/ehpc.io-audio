@@ -3,6 +3,7 @@ import { FULL_TIMING_LEVEL, timingWindows, type TimingSelection, type TimingHint
 import type { KaraokeTiming } from "./karaoke";
 
 const MAX_DRIFT = 0.08;
+export const DEFAULT_TIMING_VOLUME = 75;
 
 /** A native instrument master and an independently muted native vocal stream. */
 export class TimingAudio {
@@ -20,12 +21,21 @@ export class TimingAudio {
   private nextBoundary: number | undefined;
   private windows: KaraokeTiming[] = [];
   private level: TimingHintLevel = FULL_TIMING_LEVEL;
+  private readonly context: AudioContext;
+  private readonly gain: GainNode;
+  private readonly source: MediaElementAudioSourceNode;
 
   constructor(
     private readonly lines: readonly KaraokeTiming[],
     private readonly selection: TimingSelection,
     private readonly onError: (error: unknown) => void,
   ) {
+    this.context = new AudioContext();
+    this.gain = this.context.createGain();
+    this.gain.gain.value = DEFAULT_TIMING_VOLUME / 100;
+    this.source = this.context.createMediaElementSource(this.vocal);
+    this.source.connect(this.gain).connect(this.context.destination);
+    void this.context.resume().catch(error => this.fail(error));
     this.vocal.hidden = true;
     this.vocal.muted = true;
     this.vocal.preload = "auto";
@@ -119,6 +129,7 @@ export class TimingAudio {
   async play(): Promise<void> {
     const owner = this.owner;
     if (!owner || this.disposed || this.starting) return;
+    const resumed = this.context.resume();
     const operation = ++this.operation;
     this.starting = true;
     this.silence();
@@ -128,7 +139,7 @@ export class TimingAudio {
       if (Math.abs(this.vocal.currentTime - owner.currentTime) > 0.01) this.vocal.currentTime = owner.currentTime;
       const master = owner.play();
       const vocal = this.vocal.play();
-      await Promise.all([master, vocal]);
+      await Promise.all([master, vocal, resumed]);
       if (this.disposed || operation !== this.operation || owner.paused || owner.seeking || this.sparseHidden()) {
         if (this.disposed || owner.paused || this.sparseHidden()) this.vocal.pause();
         return;
@@ -137,6 +148,10 @@ export class TimingAudio {
     } catch (error) {
       if (!this.disposed && operation === this.operation) { this.fail(error); throw error; }
     } finally { if (operation === this.operation) this.starting = false; }
+  }
+
+  setVolume(volume: number) {
+    this.gain.gain.value = volume;
   }
 
   setLevel(level: TimingHintLevel) {
@@ -243,6 +258,9 @@ export class TimingAudio {
     this.operation++;
     this.silence();
     this.abort.abort();
+    this.source.disconnect();
+    this.gain.disconnect();
+    void this.context.close();
     this.vocal.pause();
     this.vocal.removeAttribute("src");
     this.vocal.load();

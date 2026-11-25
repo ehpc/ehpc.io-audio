@@ -21,6 +21,7 @@ def test_interrupted_clear_resumes_before_claiming_work(client, monkeypatch):
     owner = client.get("/api/auth/me").json()["id"]
     audio = tone_wav((440,), 0.3)
     job_id, song_id = original(owner, audio, options=SeparationOptions())
+    assert client.post(f"/api/jobs/{job_id}/open").json()["open_count"] == 1
     old = client.get(f"/api/jobs/{job_id}").json()
     operations = regeneration.prepare([song_id])
     status = next(
@@ -49,6 +50,7 @@ def test_interrupted_clear_resumes_before_claiming_work(client, monkeypatch):
     assert status["status"] == "done" and status["completed_jobs"] == 1
     after = client.get(f"/api/jobs/{job_id}").json()
     assert after["id"] == old["id"] and after["created_at"] == old["created_at"]
+    assert after["open_count"] == 1
     assert after["result_revision"] is not None
     assert len(client.get("/api/jobs").json()) == 1
 

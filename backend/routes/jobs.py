@@ -164,8 +164,9 @@ async def retry_job(
 @router.get("/jobs")
 async def list_jobs(
     session_id: Annotated[str, Depends(get_session_id)],
+    sort: db.JobSort = "usage",
 ) -> list[JobDTO]:
-    jobs = await asyncio.to_thread(db.list_jobs_for_session, session_id)
+    jobs = await asyncio.to_thread(db.list_jobs_for_session, session_id, sort=sort)
     return [await _to_dto(job) for job in jobs]
 
 
@@ -183,6 +184,16 @@ async def get_job(
     if job is None or job.session_id != session_id:
         raise HTTPException(404, "job not found")
     return await _to_dto(job)
+
+
+@router.post("/jobs/{job_id}/open")
+async def open_job(
+    job_id: int, session_id: Annotated[str, Depends(get_session_id)]
+) -> dict[str, int]:
+    count = await asyncio.to_thread(db.record_job_open, job_id, session_id)
+    if count is None:
+        raise HTTPException(404, "job not found")
+    return {"id": job_id, "open_count": count}
 
 
 def _remove_job_files(job_id: int) -> None:

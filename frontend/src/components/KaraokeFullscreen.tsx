@@ -1,4 +1,4 @@
-import { Show, createEffect, onCleanup, onMount, type JSX } from "solid-js";
+import { For, Show, createEffect, onCleanup, onMount, type JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { JobDTO, LearningHint } from "~/api";
 import { Button } from "~/components/button";
@@ -16,6 +16,8 @@ interface KaraokeFullscreenProps {
   onFontSize: (size: number) => void;
   learningHint?: LearningHint;
   timingMode?: boolean;
+  timingVolume: number;
+  onTimingVolume: (volume: number) => void;
   loading?: boolean;
   background: JSX.Element;
   activeSource: string;
@@ -90,6 +92,17 @@ export default function KaraokeFullscreen(props: KaraokeFullscreenProps) {
         </Button>
       </header>
       <div ref={background} class="karaoke-fullscreen-background">{props.background}</div>
+      <Show when={props.timingMode}>
+        <div role="group" aria-label="Vocals volume" class="flex flex-wrap items-center justify-center gap-2">
+          <span>Vocals volume</span>
+          <div class="grid w-full grid-cols-4 gap-2 sm:w-auto">
+            <For each={[25, 50, 75, 100]}>{volume =>
+              <Button type="button" class="min-h-11 min-w-0" variant={props.timingVolume === volume ? "secondary" : "outline"}
+                aria-pressed={props.timingVolume === volume} onClick={() => props.onTimingVolume(volume)}>{volume}%</Button>
+            }</For>
+          </div>
+        </div>
+      </Show>
       <Show when={props.error}><p role="alert" class="text-sm text-destructive">{props.error}</p></Show>
       <div class="karaoke-fullscreen-reader">
         <TimelineKaraoke job={props.job} position={props.position} playing={props.playing}

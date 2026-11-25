@@ -7,7 +7,7 @@ import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
 import { LivePitchTrace } from "~/lib/livePitchTrace";
 import type { MicrophonePitch } from "~/lib/microphonePitch";
 import { sameMediaSession } from "~/lib/mediaSession";
-import { TimingAudio } from "~/lib/timingAudio";
+import { DEFAULT_TIMING_VOLUME, TimingAudio } from "~/lib/timingAudio";
 import { FULL_TIMING_LEVEL, TIMING_HINT_LABELS, timingSelection, timingPracticeLines, type TimingHintLevel } from "~/lib/timingPractice";
 import { Button } from "~/components/button";
 import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
@@ -79,6 +79,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const [learningHint, setLearningHint] = createSignal<LearningHint>("full");
   const [learningLoading, setLearningLoading] = createSignal(false);
   const [timingLevel, setTimingLevel] = createSignal<TimingHintLevel>(FULL_TIMING_LEVEL);
+  const [timingVolume, setTimingVolume] = createSignal(DEFAULT_TIMING_VOLUME);
   const [timingReady, setTimingReady] = createSignal(false);
   let timingAudio: TimingAudio | undefined;
   let timingWantsPlay = false;
@@ -583,6 +584,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     setPosition(fromAudioTime(audio.currentTime));
     audio.pause();
     setTimingLevel(FULL_TIMING_LEVEL);
+    setTimingVolume(DEFAULT_TIMING_VOLUME);
     setTimingReady(false);
     setReferenceError("");
     setPlaybackError("");
@@ -794,6 +796,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   const changeTimingLevel = (level: TimingHintLevel) => {
     setTimingLevel(level);
     timingAudio?.setLevel(level);
+  };
+  const changeTimingVolume = (volume: number) => {
+    setTimingVolume(volume);
+    timingAudio?.setVolume(volume / 100);
   };
   const TransportControls = (control: { fullscreen?: boolean }) => (
         <div class="pitch-transport" role="group" aria-label="Timeline playback">
@@ -1040,6 +1046,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           <KaraokeFullscreen job={props.job} position={position()} mediaPosition={toAudioTime(position())} mediaDuration={mediaLimit()}
             playing={!nativePaused()} seeking={seeking()} seekRevision={seekRevision()} fontSize={karaokeFontSize()} onFontSize={setKaraokeFontSize}
             learningHint={karaokeFullscreen() === "learning" ? learningHint() : undefined} timingMode={karaokeFullscreen() === "timing"} loading={learningBlocked()}
+            timingVolume={timingVolume()} onTimingVolume={changeTimingVolume}
             background={karaokeFullscreen() === "karaoke" ? <BackgroundControls /> : <span>{karaokeFullscreen() === "timing" ? "Instruments + vocals" : "Instruments only"}</span>} activeSource={reference()} transport={<TransportControls fullscreen />}
             error={referenceError() || playbackError()} onSeek={seekMedia} onKeyDown={togglePlaybackKey} onClose={closeKaraokeFullscreen} returnFocus={fullscreenReturnFocus} />
         </Show>

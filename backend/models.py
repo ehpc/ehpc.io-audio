@@ -214,6 +214,7 @@ class JobRecord:
     pitch_json: str | None = None
     active_stage_key: str | None = None
     result_generation: str | None = None
+    open_count: int = 0
 
 
 def result_directory(job: JobRecord) -> Path:
@@ -244,6 +245,7 @@ class JobDTO(BaseModel):
     result_revision: str | None = None
     error_message: str | None
     created_at: int
+    open_count: int
     has_original: bool
     original_key: str | None
     output_key: str | None
@@ -350,6 +352,7 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         result_revision=job.result_generation,
         error_message=job.error_message,
         created_at=job.created_at,
+        open_count=job.open_count,
         has_original=_has_original(job.id),
         original_key=job.original_key,
         output_key=output_key,

@@ -62,6 +62,7 @@ it("keeps stem keys tied to the source and renders lyric markup as text", () => 
       timestamped_text: "[00:00] <img src=x onerror=alert(1)>",
     },
     error_message: null,
+    open_count: 0,
     created_at: 1700000000,
     has_original: true,
     has_pitch_vocals: false,

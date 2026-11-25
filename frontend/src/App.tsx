@@ -1,7 +1,7 @@
-import { createEffect, createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
 import * as Dialog from "@kobalte/core/dialog";
-import type { JobDTO } from "./api";
-import { getCurrentJob, getJob, listJobs, retryJob, subscribeToJob } from "./api";
+import type { JobDTO, LibrarySort } from "./api";
+import { getCurrentJob, getJob, listJobs, recordJobOpen, retryJob, subscribeToJob } from "./api";
 import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
 import JobStatusDock from "./components/JobStatusDock";
@@ -20,10 +20,24 @@ const App: Component = () => {
   let progressTarget: HTMLDivElement | undefined;
   const [history, setHistory] = createSignal<JobDTO[]>([]);
   const [historyScrollRequest, setHistoryScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
+  const [librarySort, setLibrarySort] = createSignal<LibrarySort>("usage");
   let historyScrollToken = 0;
   const deletedJobIds = new Set<number>();
   let currentJobRevision = 0;
   let historyRequestRevision = 0;
+  let historyItemRevision = 0;
+  const acknowledgedCounts = new Map<number, number>();
+  const mergeCount = (item: JobDTO) => {
+    const count = acknowledgedCounts.get(item.id) ?? 0;
+    return count > item.open_count ? { ...item, open_count: count } : item;
+  };
+  const orderedHistory = createMemo(() => {
+    const sort = librarySort();
+    return [...history()].sort((a, b) =>
+      (sort === "usage" ? b.open_count - a.open_count : 0) ||
+      b.created_at - a.created_at || b.id - a.id
+    );
+  });
   const [selectedJobRefreshError, setSelectedJobRefreshError] = createSignal<string | null>(null);
   const [retryingId, setRetryingId] = createSignal<number | null>(null);
   const [retryError, setRetryError] = createSignal<{ jobId: number; message: string } | null>(null);
@@ -69,11 +83,17 @@ const App: Component = () => {
   });
 
   const refreshHistory = async () => {
+    const itemRevision = historyItemRevision;
     const requestRevision = ++historyRequestRevision;
     try {
-      const jobs = await listJobs();
+      const jobs = await listJobs(librarySort());
       if (requestRevision !== historyRequestRevision) return;
-      setHistory(jobs.filter((item) => !deletedJobIds.has(item.id)));
+      const updated = itemRevision !== historyItemRevision
+        ? history().find(existing => existing.id === job()?.id)
+        : undefined;
+      setHistory(jobs.filter((item) => !deletedJobIds.has(item.id)).map(item =>
+        mergeCount(updated?.id === item.id ? updated : item)
+      ));
     } catch {
       // leave the previous list in place if this refresh fails
     }
@@ -85,12 +105,12 @@ const App: Component = () => {
     try {
       const latest = await getJob(id);
       if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
-      setJob(latest);
-      if (trackedJob()?.id === id) setTrackedJob(latest);
-      historyRequestRevision++;
-      setHistory(items => items.some(item => item.id === id)
-        ? items.map(item => item.id === id ? latest : item)
-        : [latest, ...items]);
+      const existing = history().find(item => item.id === id);
+      const merged = mergeCount(existing ? { ...latest, open_count: Math.max(existing.open_count, latest.open_count) } : latest);
+      setJob(merged);
+      if (trackedJob()?.id === id) setTrackedJob(merged);
+      historyItemRevision++;
+      setHistory(items => items.map(item => item.id === id ? merged : item));
     } catch (error) {
       if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
       const detail = error instanceof Error ? ` ${error.message}` : "";
@@ -124,9 +144,9 @@ const App: Component = () => {
         if (job()?.id === id) {
           currentJobRevision++;
           setSelectedJobRefreshError(null);
-          setJob(next);
+          setJob(mergeCount(next));
         }
-        if (trackedJob()?.id === id) setTrackedJob(next);
+        if (trackedJob()?.id === id) setTrackedJob(mergeCount(next));
         if (next.status === "done" || next.status === "failed") void refreshHistory();
       };
       const close = subscribeToJob(id, apply, async () => {
@@ -138,6 +158,15 @@ const App: Component = () => {
       });
       subscriptions.set(id, () => { valid = false; close(); });
     }
+  });
+  let initialLibrarySort = true;
+  createEffect(() => {
+    librarySort();
+    if (initialLibrarySort) {
+      initialLibrarySort = false;
+      return;
+    }
+    void refreshHistory();
   });
   onCleanup(() => {
     for (const unsubscribe of subscriptions.values()) unsubscribe();
@@ -243,6 +272,7 @@ const App: Component = () => {
         original_key: null,
         output_key: null,
         result_revision: null,
+        open_count: 0,
         manifest: null,
         transcript: null,
         pitch: null,
@@ -261,6 +291,14 @@ const App: Component = () => {
   };
 
   const onHistorySelect = (selected: JobDTO) => {
+    void recordJobOpen(selected.id).then(({ id, open_count }) => {
+      if (deletedJobIds.has(id)) return;
+      acknowledgedCounts.set(id, Math.max(acknowledgedCounts.get(id) ?? 0, open_count));
+      setHistory(items => items.map(item => item.id === id
+        ? { ...item, open_count: Math.max(item.open_count, open_count) }
+        : item));
+      void refreshHistory();
+    }).catch(() => {});
     setHistoryScrollRequest(null);
     setSelectedJobRefreshError(null);
     if (job()?.id !== selected.id) setJob(trackedJob()?.id === selected.id ? trackedJob()! : selected);
@@ -284,6 +322,7 @@ const App: Component = () => {
 
   const onDeleted = (id: number) => {
     deletedJobIds.add(id);
+    acknowledgedCounts.delete(id);
     historyRequestRevision++;
     setHistory((items) => items.filter((item) => item.id !== id));
     if (trackedJob()?.id === id) setTrackedJob(null);
@@ -303,7 +342,7 @@ const App: Component = () => {
     setTab(next);
     if (next === "workspace") void refreshWorkspace();
   };
-  const LibraryHistory = () => <HistoryView jobs={history()} selectedId={job()?.id} onSelect={onHistorySelect} onDeleted={onDeleted} />;
+  const LibraryHistory = () => <HistoryView jobs={orderedHistory()} selectedId={job()?.id} sort={librarySort()} onSortChange={setLibrarySort} onSelect={onHistorySelect} onDeleted={onDeleted} />;
 
   return (
     <main class="app-shell">

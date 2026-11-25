@@ -21,7 +21,7 @@ function job(): JobDTO {
   return {
     id: 7, status: "done", position: null, source_type: "upload", source_value: "voice.ogg", title: "voice.ogg",
     progress: { steps: ["source", "analysis", "separation", "lyrics", "pitch", "export"], current: null },
-    original_key: null, output_key: null, result_revision: null, transcript: null, error_message: null, created_at: 1, has_original: true,
+    original_key: null, output_key: null, result_revision: null, transcript: null, error_message: null, open_count: 0, created_at: 1, has_original: true,
     lyric_pitch_lines: null,
     has_pitch_vocals: true,
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,
@@ -216,6 +216,12 @@ function withTimedLyrics(source: JobDTO): JobDTO {
 }
 
 it.each(["public", "private"] as const)("keeps lyrics visible and disposes %s vocal practice on exit", async (availability) => {
+  const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+  const node = { connect: () => gain, disconnect: vi.fn() };
+  vi.stubGlobal("AudioContext", vi.fn(() => ({
+    createGain: () => gain, createMediaElementSource: () => node, destination: {},
+    resume: () => Promise.resolve(), close: () => Promise.resolve(),
+  })));
   const source = withTimedLyrics(job());
   if (availability === "private") source.manifest = [];
   source.manifest!.push({ label: "instruments", filename: "instruments.mp3", download_name: "instruments.mp3", duration_s: 70, size_bytes: 100 });
