@@ -2,11 +2,35 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { expect } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import { jobLabel, type JobDTO } from '../src/api';
+import { jobLabel, lyricsJsonDownloadUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, resultUrl, type JobDTO, type SongDetail, type SubmitResult } from '../src/api';
 
 const SOURCE_SHA256 = '0d277de969ce02959923ec32fd94897a6791cf183fd954198d5e02166e36fb04';
+
+async function completedPitch(page: Page, submission: SubmitResult, pitch: number, tempo: number) {
+  if (submission.work_id !== null) {
+    await expect.poll(async () => {
+      const response = await page.request.get(`/api/jobs/${submission.work_id}`, { headers: { Connection: 'close' } });
+      expect(response.ok()).toBe(true);
+      const work = await response.json() as JobDTO;
+      if (work.status === 'failed') throw new Error(work.error_message ?? 'Pitch job failed');
+      return work.status;
+    }, { timeout: 25 * 60 * 1000, intervals: [500, 2000, 5000] }).toBe('done');
+  }
+  const response = await page.request.get(`/api/songs/${submission.song_id}`);
+  expect(response.ok()).toBe(true);
+  const detail = await response.json() as SongDetail;
+  const variant = detail.variants.find(item => item.pitch_semitones === pitch && item.tempo_percent === tempo);
+  expect(variant?.karaoke_work_id).not.toBeNull();
+  expect(variant?.karaoke_work_id).toBeDefined();
+  const id = variant!.karaoke_work_id!;
+  const workResponse = await page.request.get(`/api/jobs/${id}`);
+  expect(workResponse.ok()).toBe(true);
+  const job = await workResponse.json() as JobDTO;
+  expect(job.result_revision ?? null).toBe(variant!.karaoke_revision);
+  return { detail, variant: variant!, id, job };
+}
 
 test('real full-song per-stem notes and sung words seek, zoom, persist and stay private on desktop and mobile', async ({ page, browser }, info) => {
   test.setTimeout(45 * 60 * 1000);
@@ -28,15 +52,9 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill('125');
   const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Process audio', exact: true }).click();
-  const id = (await (await submitted).json()).work_id as number;
-  let job: JobDTO | undefined;
-  await expect.poll(async () => {
-    const response = await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } });
-    expect(response.ok()).toBe(true);
-    job = await response.json() as JobDTO;
-    if (job.status === 'failed') throw new Error(job.error_message ?? 'Pitch job failed');
-    return job.status;
-  }, { timeout: 25 * 60 * 1000, intervals: [500, 2000, 5000] }).toBe('done');
+  const submission = await (await submitted).json() as SubmitResult;
+  const { detail, variant, id, job } = await completedPitch(page, submission, 1.25, 125);
+  expect(detail.summary.original_work_id).not.toBeNull();
   const analysis = job!.pitch!;
   expect(analysis.tracks.map(track => track.label)).toEqual(['vocals', 'lead', 'backing']);
   expect(analysis.source_duration_s).toBeGreaterThan(141);
@@ -50,7 +68,10 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   expect(job!.transcript!.timestamp_reference).toBe('original');
   expect(job!.transcript!.reference).not.toBeNull();
   expect(job!.transcript!.words![0].start_s / 1.25).toBeCloseTo(analysis.words[0].start_s, 6);
-  expect(job!.manifest!.map(entry => entry.label)).toEqual(['song', 'vocals', 'lead', 'backing', 'instruments', 'drums', 'bass', 'other-instruments', 'drums-vocals']);
+  expect(variant.outputs.map(entry => entry.identity)).toEqual(expect.arrayContaining(['song', 'vocals', 'lead', 'backing', 'instruments', 'drums', 'bass', 'other-instruments', 'mix:drums,vocals']));
+  if (detail.variants.filter(item => item.karaoke_work_id !== null).length > 1) {
+    await page.getByLabel('Karaoke version', { exact: true }).selectOption('1.25:125');
+  }
   const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(view).toBeVisible();
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[0].notes.length);
@@ -96,20 +117,26 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(leadStartedAt + 0.2);
   await player.evaluate(audio => audio.pause());
   await view.screenshot({ path: info.outputPath('pitch-desktop.png') });
-  const downloaded = await page.request.get(`/api/jobs/${id}/pitch`);
+  const downloaded = await page.request.get(pitchDownloadUrl(id, variant.karaoke_revision));
   expect(await downloaded.json()).toEqual(analysis);
   const downloadPromise = page.waitForEvent('download');
   await view.getByRole('link', { name: 'Download pitch JSON', exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('auld-lang-syne-full - pitch.json');
-  const originalResponse = await page.request.get(`/api/jobs/${id}/original`);
+  expect(JSON.parse(await readFile((await download.path())!, 'utf8'))).toEqual(analysis);
+  const originalResponse = await page.request.get(`/api/jobs/${detail.summary.original_work_id}/original`);
   expect(createHash('sha256').update(await originalResponse.body()).digest('hex')).toBe(SOURCE_SHA256);
-  const lyricsJson = await page.request.get(`/api/jobs/${id}/lyrics/download.json`);
+  const lyricsJson = await page.request.get(lyricsJsonDownloadUrl(id, variant.karaoke_revision));
   expect(await lyricsJson.json()).toEqual(job!.transcript);
   const storageState = await page.context().storageState();
   const mobile = await browser.newContext({ storageState, viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
   const mobilePage = await mobile.newPage();
   await mobilePage.goto(process.env.E2E_BASE_URL!);
+  await mobilePage.getByRole('button', { name: /^Library/ }).click();
+  await mobilePage.getByRole('dialog', { name: 'Library', exact: true }).getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
+  if (detail.variants.filter(item => item.karaoke_work_id !== null).length > 1) {
+    await mobilePage.getByLabel('Karaoke version', { exact: true }).selectOption('1.25:125');
+  }
   const mobileView = mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(mobileView).toBeVisible();
   // Compare against the configured device width, not an overflow-expanded innerWidth.
@@ -147,20 +174,21 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   expect(await mobilePage.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(mobilePage.viewportSize()!.width);
   await mobileView.screenshot({ path: info.outputPath('pitch-mobile-short-note-zoom.png') });
   await mobilePage.reload();
-  await expect(mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true })).toBeVisible();
   await mobilePage.getByRole('button', { name: /^Library/ }).click();
   const history = mobilePage.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
-  const historyDateTime = await mobilePage.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job!.created_at);
-  const historyCard = history.locator('.rounded-lg')
-    .filter({ has: mobilePage.getByRole('button', { name: `Delete ${jobLabel(job!)}`, exact: true }) })
+  const historyDateTime = await mobilePage.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), detail.summary.created_at);
+  const historyCard = history.getByRole('listitem')
+    .filter({ has: mobilePage.getByRole('button', { name: `Delete ${jobLabel(detail.summary)}`, exact: true }) })
     .filter({ has: mobilePage.locator(`time[datetime="${historyDateTime}"]`) });
-  await expect(historyCard.getByRole('button', { name: jobLabel(job!), exact: true })).toBeVisible();
+  await expect(historyCard.getByRole('button', { name: jobLabel(detail.summary), exact: true })).toBeVisible();
+  await historyCard.getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
+  await expect(mobilePage.getByRole('region', { name: 'Karaoke with pitches', exact: true })).toBeVisible();
   const foreign = await browser.newContext();
   await authenticateOutsider(foreign);
   const outsider = await foreign.newPage();
   await outsider.goto(process.env.E2E_BASE_URL!);
   expect((await outsider.request.get(`/api/jobs/${id}/pitch`)).status()).toBe(404);
-  expect(await (await outsider.request.get('/api/jobs')).json()).toEqual([]);
+  expect((await outsider.request.get(`/api/songs/${detail.summary.id}`)).status()).toBe(404);
   await foreign.close();
   await mobile.close();
   await writeFile(info.outputPath('pitch-proof.json'), JSON.stringify({ source_sha256: SOURCE_SHA256, job, linked_word: { text: analysis.words[wordIndex].text, notes: linkedCount }, download_filename: download.suggestedFilename(), shortest_word_note: { note: shortNote, zoom_px_per_second: 640, geometry: shortGeometry, visible_ruler_label: rulerLabel }, screenshots: ['pitch-desktop.png', 'pitch-mobile.png', 'pitch-mobile-short-note-zoom.png'] }, null, 2));
@@ -184,31 +212,34 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   await page.goto('/');
   // The form exposes more output choices; exercise the independent API request
   // and the cached private vocal prerequisite without a public vocal download.
-  const id = await page.evaluate(async bytes => {
+  const submission = await page.evaluate(async bytes => {
     const form = new FormData();
     form.append('file', new File([new Uint8Array(bytes)], 'sung-excerpt.flac', { type: 'audio/flac' }));
     form.append('detect_pitch', 'true');
     const response = await fetch('/api/jobs', { method: 'POST', body: form, credentials: 'include' });
     if (!response.ok) throw new Error(`Pitch-only API submission failed: ${response.status}`);
-    return (await response.json()).work_id as number;
+    return await response.json() as SubmitResult;
   }, [...source]);
-  let job: JobDTO | undefined;
-  await expect.poll(async () => {
-    job = await (await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } })).json() as JobDTO;
-    if (job.status === 'failed') throw new Error(job.error_message ?? 'Pitch job failed');
-    return job.status;
-  }, { timeout: 20 * 60 * 1000, intervals: [500, 2000, 5000] }).toBe('done');
-  expect(job!.manifest!.map(stem => stem.label)).toEqual(['drums-vocals']);
+  const { detail, variant, id, job } = await completedPitch(page, submission, 0, 100);
+  expect(detail.summary.original_work_id).not.toBeNull();
+  const mix = variant.outputs.find(output => output.identity === 'mix:drums,vocals');
+  expect(mix).toBeDefined();
   expect(job!.transcript).toBeNull();
   expect(job!.pitch!.tracks.map(track => track.label)).toEqual(['vocals']);
   expect(job!.pitch!.tracks[0].notes.some(note => note.start_s < 4.5 && note.end_s > 2.5)).toBe(true);
   expect(job!.pitch!.word_alignment).toBeNull();
   await page.reload();
+  await page.getByRole('region', { name: 'History', exact: true }).getByRole('listitem')
+    .filter({ has: page.locator(`time[datetime="${new Date(detail.summary.created_at * 1000).toISOString()}"]`) })
+    .getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
+  if (detail.variants.filter(item => item.karaoke_work_id !== null).length > 1) {
+    await page.getByLabel('Karaoke version', { exact: true }).selectOption('0:100');
+  }
   const view = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' })).toHaveAttribute('aria-pressed', 'true');
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
   expect((await page.request.get(`/api/jobs/${id}/results/drums`)).status()).toBe(404);
-  const mixResponse = await page.request.get(`/api/jobs/${id}/results/drums-vocals`);
+  const mixResponse = await page.request.get(resultUrl(mix!.work_id, mix!.label, mix!.revision));
   expect(mixResponse.status()).toBe(200);
   expect(mixResponse.headers()['content-type']).toContain('audio/mpeg');
   const mixPath = info.outputPath('drums-vocals.mp3');
@@ -223,7 +254,7 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   await mixButton.click();
   await expect(mixButton).toHaveAttribute('aria-pressed', 'true');
   const mixPlayer = view.locator('audio:not([hidden])');
-  await expect(mixPlayer).toHaveAttribute('src', `/api/jobs/${id}/results/drums-vocals?playback=1`);
+  await expect(mixPlayer).toHaveAttribute('src', playbackUrl(resultUrl(mix!.work_id, mix!.label, mix!.revision)));
   await expect.poll(() => mixPlayer.evaluate(element => element.paused && element.duration > 20)).toBe(true);
   await mixPlayer.evaluate(element => element.play());
   await expect.poll(() => mixPlayer.evaluate(element => element.currentTime)).toBeGreaterThan(0.2);
@@ -231,7 +262,7 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   const songButton = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Full song' });
   await songButton.click();
   await expect(songButton).toHaveAttribute('aria-pressed', 'true');
-  const original = await page.request.get(`/api/jobs/${id}/original`);
+  const original = await page.request.get(`/api/jobs/${detail.summary.original_work_id}/original`);
   expect(await original.body()).toEqual(source);
   expect(analysisPostCount).toBe(1);
   expect(job!.has_pitch_vocals).toBe(true);
@@ -241,8 +272,8 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
     resolve(process.env.E2E_DATA_DIR!, 'jobs.db'), String(id),
   ], { cwd: process.env.E2E_REPO_ROOT!, encoding: 'utf8' })) as string | null;
   const originalCallId = modalCallId();
-  const originalPitch = await (await page.request.get(`/api/jobs/${id}/pitch`)).json();
-  const privateReference = await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`);
+  const originalPitch = await (await page.request.get(pitchDownloadUrl(id, variant.karaoke_revision))).json();
+  const privateReference = await page.request.get(pitchVocalsUrl(id, variant.karaoke_revision));
   expect(privateReference.status()).toBe(200);
   expect(privateReference.headers()['content-type']).toContain('audio/mpeg');
 
@@ -250,10 +281,17 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
     process.env.E2E_DATA_DIR!,
     'results',
     String(id),
+    ...(job.result_revision ? ['generations', job.result_revision] : []),
     '.pitch-vocals.mp3',
   ));
-  expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
+  expect((await page.request.get(pitchVocalsUrl(id, variant.karaoke_revision))).status()).toBe(404);
   await page.reload();
+  await page.getByRole('region', { name: 'History', exact: true }).getByRole('listitem')
+    .filter({ has: page.locator(`time[datetime="${new Date(detail.summary.created_at * 1000).toISOString()}"]`) })
+    .getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
+  if (detail.variants.filter(item => item.karaoke_work_id !== null).length > 1) {
+    await page.getByLabel('Karaoke version', { exact: true }).selectOption('0:100');
+  }
   const recoveredView = page.getByRole('region', { name: 'Karaoke with pitches', exact: true });
   await expect(recoveredView).toBeVisible();
   await expect(recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true })).toBeVisible();
@@ -266,9 +304,9 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   await recoveredView.getByRole('button', { name: 'Recover cached vocals', exact: true }).click();
   expect((await recovery).status()).toBe(204);
   await expect(recoveredView.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: 'Just vocals' })).toHaveAttribute('aria-pressed', 'true');
-  expect((await page.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(200);
+  expect((await page.request.get(pitchVocalsUrl(id, variant.karaoke_revision))).status()).toBe(200);
   const recoveredPlayer = recoveredView.locator('audio:not([hidden])');
-  await expect(recoveredPlayer).toHaveAttribute('src', `/api/jobs/${id}/pitch-reference/vocals?playback=1`);
+  await expect(recoveredPlayer).toHaveAttribute('src', playbackUrl(pitchVocalsUrl(id, variant.karaoke_revision)));
   await expect.poll(() => recoveredPlayer.evaluate(element => element.paused)).toBe(true);
   await recoveredPlayer.evaluate(element => element.play());
   await expect.poll(() => recoveredPlayer.evaluate(element =>
@@ -287,16 +325,17 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   expect(recoveredJob.has_pitch_vocals).toBe(true);
   expect(recoveredJob.pitch).toEqual(job!.pitch);
   expect(recoveredJob.manifest).toEqual(job!.manifest);
-  expect(await (await page.request.get(`/api/jobs/${id}/pitch`)).json()).toEqual(originalPitch);
+  expect(await (await page.request.get(pitchDownloadUrl(id, variant.karaoke_revision))).json()).toEqual(originalPitch);
   expect((await page.request.get(`/api/jobs/${id}/results/vocals`)).status()).toBe(404);
   expect((await page.request.get(`/api/jobs/${id}/results/drums`)).status()).toBe(404);
-  expect((await page.request.get(`/api/jobs/${id}/results/drums-vocals`)).status()).toBe(200);
+  expect((await page.request.get(resultUrl(mix!.work_id, mix!.label, mix!.revision))).status()).toBe(200);
   expect(analysisPostCount).toBe(1);
   expect(modalCallId()).toBe(originalCallId);
 
   const foreign = await browser.newContext();
   await authenticateOutsider(foreign);
-  expect((await foreign.request.get(`/api/jobs/${id}/results/drums-vocals`)).status()).toBe(404);
+  expect((await foreign.request.get(resultUrl(mix!.work_id, mix!.label, mix!.revision))).status()).toBe(404);
   expect((await foreign.request.get(`/api/jobs/${id}/pitch-reference/vocals`)).status()).toBe(404);
   await foreign.close();
 });
+

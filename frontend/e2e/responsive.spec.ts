@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import { test } from './auth-fixture';
-import { jobLabel, type JobDTO } from '../src/api';
+import { jobLabel, resultUrl, type JobDTO, type SongDetail, type SubmitResult } from '../src/api';
 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
@@ -19,22 +19,24 @@ async function assertNoOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 }
 
-async function submitAndComplete(page: Page): Promise<JobDTO> {
+async function submitAndComplete(page: Page): Promise<{ submission: SubmitResult; detail: SongDetail }> {
   const response = page.waitForResponse(res => res.url().endsWith('/api/jobs') && res.request().method() === 'POST');
   await page.getByRole('button', { name: 'Process audio', exact: true }).click();
   const posted = await response;
   expect(posted.status()).toBe(200);
-  const submitted = await posted.json();
-  let job: JobDTO | undefined;
-  await expect.poll(async () => {
-    const response = await page.request.get(`/api/jobs/${submitted.work_id}`);
-    expect(response.ok()).toBe(true);
-    job = await response.json() as JobDTO;
-    expect(job.status, job.error_message ?? '').not.toBe('failed');
-    return job.status;
-  }, { timeout: 120_000 }).toBe('done');
-  await expect(page.locator(`a[href^='/api/jobs/${submitted.work_id}/results/song']`).first()).toBeVisible();
-  return job!;
+  const submission = await posted.json() as SubmitResult;
+  if (submission.work_id !== null) {
+    await expect.poll(async () => {
+      const response = await page.request.get(`/api/jobs/${submission.work_id}`);
+      expect(response.ok()).toBe(true);
+      const job = await response.json() as JobDTO;
+      expect(job.status, job.error_message ?? '').not.toBe('failed');
+      return job.status;
+    }, { timeout: 120_000 }).toBe('done');
+  }
+  const responseDetail = await page.request.get(`/api/songs/${submission.song_id}`);
+  expect(responseDetail.ok()).toBe(true);
+  return { submission, detail: await responseDetail.json() as SongDetail };
 }
 
 
@@ -149,23 +151,24 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await expect(page.locator('.output-tags').getByText('Lyrics (timestamped TXT)', { exact: true })).toHaveCount(0);
     await page.getByRole('tab', { name: 'Review', exact: true }).click();
     await expect(page.locator('.output-tags').getByText(mixLabel, { exact: true })).toBeVisible();
-    const mixedJob = await submitAndComplete(page);
-    expect(mixedJob.options.mixes).toEqual([{ id: 'mix-1', name: mixName, components: ['lead', 'instruments'] }]);
-    expect(mixedJob.options.pitch_semitones).toBe(2);
-    expect(mixedJob.options.tempo_percent).toBe(120);
-    expect(mixedJob.manifest?.map(stem => stem.label)).toEqual(['song', 'mix-1']);
-    const mixCard = page.locator(`a[href^='/api/jobs/${mixedJob.id}/results/mix-1']`).first().locator('../..');
-    await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
+    const mixed = await submitAndComplete(page);
+    const variant = mixed.detail.variants.find(item => item.pitch_semitones === 2 && item.tempo_percent === 120);
+    expect(variant).toBeDefined();
+    const mix = variant!.outputs.find(output => output.identity === 'mix:instruments,lead');
+    expect(mix).toBeDefined();
+    const mixLink = page.locator(`a[download][href="${resultUrl(mix!.work_id, mix!.label, mix!.revision)}"]`);
+    const mixCard = mixLink.locator('../..');
+    await expect(mixLink).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: /^Library/ }).click();
     const history = page.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
-    await expect(history.locator(`a[href^='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveCount(0);
-    const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), mixedJob.created_at);
-    const historyCard = history.locator('.rounded-lg')
-      .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(mixedJob)}`, exact: true }) })
+    await expect(history.locator(`a[href="${resultUrl(mix!.work_id, mix!.label, mix!.revision)}"]`)).toHaveCount(0);
+    const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), mixed.detail.summary.created_at);
+    const historyCard = history.getByRole('listitem')
+      .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(mixed.detail.summary)}`, exact: true }) })
       .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
-    await historyCard.getByRole('button', { name: jobLabel(mixedJob), exact: true }).click();
-    await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
+    await historyCard.getByRole('button', { name: jobLabel(mixed.detail.summary), exact: true }).click();
+    await expect(mixLink).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
     await expect(page.getByTestId('mix-item')).toHaveAttribute('data-mix-name', mixName);
@@ -174,14 +177,17 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await page.getByRole('button', { name: 'Review →', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Review', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByText(/Tracks and files you'll get \(2\)/)).toBeVisible();
-    const job = await submitAndComplete(page);
-    expect(job.options.mixes).toEqual([]);
-    expect(job.options.pitch_semitones).toBe(2);
-    expect(job.options.tempo_percent).toBe(120);
-    expect(job.manifest?.map(stem => stem.label)).toEqual(['song']);
+    const result = await submitAndComplete(page);
+    expect(result.submission.song_id).toBe(mixed.submission.song_id);
+    expect(result.submission.work_id).toBeNull();
+    const retainedVariant = result.detail.variants.find(item => item.pitch_semitones === 2 && item.tempo_percent === 120);
+    expect(retainedVariant?.outputs.find(output => output.identity === 'mix:instruments,lead')).toEqual(mix);
+    const song = retainedVariant?.outputs.find(output => output.identity === 'song');
+    expect(song).toBeDefined();
+    expect(result.detail.summary.original_work_id).not.toBeNull();
     const downloads = [
-      page.locator(`a[download][href='/api/jobs/${job.id}/original']`),
-      page.locator(`a[download][href^='/api/jobs/${job.id}/results/song']`),
+      page.locator(`a[download][href='/api/jobs/${result.detail.summary.original_work_id}/original']`),
+      page.locator(`a[download][href="${resultUrl(song!.work_id, song!.label, song!.revision)}"]`),
     ];
     for (const link of downloads) {
       await expect(link).toBeVisible();
