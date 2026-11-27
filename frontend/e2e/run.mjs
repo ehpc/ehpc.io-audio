@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { silentFixture, tonalFixture, vocalFixture } from './fixture.mjs';
 import { transform } from 'esbuild';
 import { startMediaRelay } from './media-relay.mjs';
-import { memoryEvents, observeBackend } from './backend-evidence.mjs';
+import { captureBackendFailure, memoryEvents, observeBackend, prepareBackendDiagnostics } from './backend-evidence.mjs';
 import { startAuthSmtp } from './auth-smtp.mjs';
 
 // Use the already-provisioned environment rather than resolving dependencies
@@ -104,9 +104,11 @@ const environment = {
   E2E_REPO_ROOT: root,
   E2E_FIXTURE_SEED: String(fixtureSeed),
 };
+const diagnostics = process.env.CI && process.platform === 'linux'
+  ? await prepareBackendDiagnostics(temporary, environment) : null;
 const memoryBefore = await memoryEvents();
 const backend = spawn('uv', ['run', 'uvicorn', 'backend.main:app', '--no-proxy-headers', '--host', '127.0.0.1', '--port', String(port)], {
-  cwd: root, env: environment, stdio: ['ignore', 'pipe', 'pipe'],
+  cwd: root, env: diagnostics?.environment ?? environment, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let backendLog = '';
 let backendError;
@@ -196,7 +198,10 @@ try {
   try {
     const results = resolve(frontend, 'test-results', ...(visual ? ['visual'] : youtube ? ['youtube'] : []));
     await mkdir(results, { recursive: true });
-    await writeFile(resolve(results, 'backend.log'), backendLog);
+    if (exit !== 0 && diagnostics && !interrupted) {
+      const evidence = await captureBackendFailure({ backend, diagnostics, baseURL: backendURL, cwd: root, environment });
+      await writeFile(resolve(results, 'backend-failure-diagnostics.json'), JSON.stringify(evidence, null, 2), { mode: 0o600 });
+    }
     if (mediaRelay) {
       await mediaRelay.stop();
       await writeFile(resolve(results, 'listening-transport.json'), JSON.stringify({
@@ -206,7 +211,12 @@ try {
   } finally {
     const results = resolve(frontend, 'test-results', ...(visual ? ['visual'] : youtube ? ['youtube'] : []));
     const memoryAfter = await memoryEvents();
-    await cleanup();
+    try {
+      await cleanup();
+    } finally {
+      // Stacks requested before teardown can arrive while the backend exits.
+      await writeFile(resolve(results, 'backend.log'), backendLog);
+    }
     await backendEvidence.write(resolve(results, 'backend-exit.json'), memoryBefore, memoryAfter);
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', interrupt);

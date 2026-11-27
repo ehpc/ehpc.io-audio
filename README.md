@@ -1659,6 +1659,14 @@ exit code, signal and `shutdownRequested` state, plus available cgroup-v2
 memory-event counters before and after the run (or `null` when unavailable).
 The wrapper status is not necessarily the direct Uvicorn status, and counters
 alone do not automatically attribute a failure to OOM.
+On Linux CI failures, the harness first attempts an all-thread Python stack dump
+from the identity-checked owned Uvicorn process, then records bounded unauthenticated
+`GET /health` and `OPTIONS /health` status and elapsed time in
+`backend-failure-diagnostics.json`. The same signal requests a bounded asyncio
+await-chain snapshot when the loop can run it; its timestamp may be later than
+the thread dump, or the snapshot may not appear. A missing receipt or pidfd
+prevents signaling, and either snapshot can miss a recovered transient stall.
+No request bodies, cookies, environment variables or local values are recorded.
 The long-interval Playwright job-status polls for vocal pitch and pitched lyrics
 request `Connection: close`; they still fail on HTTP errors, but do not exercise
 pooled connections on those polling paths. This is a test-client choice, not a
