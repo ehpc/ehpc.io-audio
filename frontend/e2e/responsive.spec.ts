@@ -6,6 +6,7 @@ import { jobLabel, resultUrl, type JobDTO, type SongDetail, type SubmitResult } 
 const directory = process.env.E2E_FIXTURE_DIR!;
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
 
+
 async function assertUncovered(page: Page, locator: Locator) {
   await locator.scrollIntoViewIfNeeded();
   expect(await locator.evaluate(element => {
@@ -37,6 +38,19 @@ async function submitAndComplete(page: Page): Promise<{ submission: SubmitResult
   const responseDetail = await page.request.get(`/api/songs/${submission.song_id}`);
   expect(responseDetail.ok()).toBe(true);
   return { submission, detail: await responseDetail.json() as SongDetail };
+}
+
+async function selectOutputVersion(page: Page, detail: SongDetail, identity: string) {
+  const choices = detail.variants.flatMap(variant =>
+    variant.outputs.filter(output => output.identity === identity));
+  if (choices.length > 1) {
+    // The selected variant determines the card's accessible selector name.
+    const names = [...new Set(choices.map(output => output.display_name))];
+    let selector = page.getByRole('combobox', { name: `${names[0]} version`, exact: true });
+    for (const name of names.slice(1)) selector = selector.or(page.getByRole('combobox', { name: `${name} version`, exact: true }));
+    await expect(selector).toBeVisible();
+    await selector.selectOption('2:120');
+  }
 }
 
 
@@ -156,6 +170,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     expect(variant).toBeDefined();
     const mix = variant!.outputs.find(output => output.identity === 'mix:instruments,lead');
     expect(mix).toBeDefined();
+    await selectOutputVersion(page, mixed.detail, mix!.identity);
     const mixLink = page.locator(`a[download][href="${resultUrl(mix!.work_id, mix!.label, mix!.revision)}"]`);
     const mixCard = mixLink.locator('../..');
     await expect(mixLink).toBeVisible();
@@ -168,6 +183,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
       .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(mixed.detail.summary)}`, exact: true }) })
       .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
     await historyCard.getByRole('button', { name: jobLabel(mixed.detail.summary), exact: true }).click();
+    await selectOutputVersion(page, mixed.detail, mix!.identity);
     await expect(mixLink).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Outputs', exact: true }).click();
@@ -185,6 +201,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     const song = retainedVariant?.outputs.find(output => output.identity === 'song');
     expect(song).toBeDefined();
     expect(result.detail.summary.original_work_id).not.toBeNull();
+    await selectOutputVersion(page, result.detail, song!.identity);
     const downloads = [
       page.locator(`a[download][href='/api/jobs/${result.detail.summary.original_work_id}/original']`),
       page.locator(`a[download][href="${resultUrl(song!.work_id, song!.label, song!.revision)}"]`),

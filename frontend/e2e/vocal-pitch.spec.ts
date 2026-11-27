@@ -107,9 +107,11 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await view.getByLabel('Pitch vocal stem', { exact: true }).selectOption('lead');
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect(player).toHaveAttribute('src', selectedBackgroundUrl!);
-  const leadBackground = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: /^lead/ });
+  const leadRef = variant.outputs.find(output => output.identity === 'lead')!;
+  const leadBackground = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: leadRef.display_name, exact: true });
   await leadBackground.click();
   await expect(leadBackground).toHaveAttribute('aria-pressed', 'true');
+  await expect(player).toHaveAttribute('src', playbackUrl(resultUrl(leadRef.work_id, leadRef.label, leadRef.revision)));
   await expect(view.locator('.pitch-note')).toHaveCount(analysis.tracks[1].notes.length);
   await expect.poll(() => player.evaluate(element => element.paused)).toBe(true);
   await player.evaluate(audio => audio.play());
@@ -249,7 +251,7 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
   ], { encoding: 'utf8', timeout: 10_000 }));
   expect(mixMetadata.streams[0].codec_name).toBe('mp3');
   expect(Math.abs(Number(mixMetadata.format.duration) - sourceDuration)).toBeLessThan(0.1);
-  const mixButton = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: /^Drums \+ Vocals/ });
+  const mixButton = view.getByRole('group', { name: 'Pitch background audio' }).getByRole('button', { name: mix!.label === 'drums-vocals' ? /^Drums \+ Vocals/ : mix!.display_name, exact: mix!.label !== 'drums-vocals' });
   await expect(mixButton).toBeEnabled();
   await mixButton.click();
   await expect(mixButton).toHaveAttribute('aria-pressed', 'true');

@@ -65,8 +65,13 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
     await results.getByLabel('Pitched lyrics version', { exact: true }).selectOption('1.25:125');
   }
   for (const output of variant.outputs.filter(item => ['vocals', 'song'].includes(item.identity))) {
-    if (detail.variants.filter(item => item.outputs.some(candidate => candidate.identity === output.identity)).length > 1) {
-      await results.getByLabel(`${output.display_name} version`, { exact: true }).selectOption('1.25:125');
+    const choices = detail.variants.flatMap(item => item.outputs.filter(candidate => candidate.identity === output.identity));
+    if (choices.length > 1) {
+      const names = [...new Set(choices.map(choice => choice.display_name))];
+      let selector = results.getByRole('combobox', { name: `${names[0]} version`, exact: true });
+      for (const name of names.slice(1)) selector = selector.or(results.getByRole('combobox', { name: `${name} version`, exact: true }));
+      await expect(selector).toBeVisible();
+      await selector.selectOption('1.25:125');
     }
   }
   const view = results.getByRole('region', { name: 'Lyrics with pitches', exact: true });
