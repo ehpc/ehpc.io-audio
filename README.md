@@ -1490,13 +1490,13 @@ callbacks. Run these browser cases with
 `npm --prefix frontend run test:e2e -- --cpu song-discovery.spec.ts`.
 These controlled API fixtures prove the UI contract, not real LLM/catalog accuracy.
 
-The form-retention cases use real native processing without GPU calls: desktop
-URL and mobile file upload each complete two submissions without refilling or
-reselecting the source. They check native FileList/URL, every option, fractional
-pitch/tempo, key/output previews and selected workspace tab after both POST and
-completion, alongside persisted job options and unchanged original-download
-hashes. Run only these cases with
-`npm --prefix frontend run test:e2e -- --cpu form-retention.spec.ts`.
+The form-retention cases cover desktop URL and mobile file upload without
+refilling or reselecting the source: the first submission processes a
+drums-and-vocals mix, and renaming that mix reuses the completed work. They check
+native FileList/URL, every option, fractional pitch/tempo, key/output previews,
+workspace tab, persisted options and original-download hashes. Live completion
+polling uses the existing whole-test deadline and fails immediately on a failed
+job. The full-stack run uses real inference; `--cpu` alone does not replace it.
 
 The lyrics case runs two real jobs against checksum-verified public-domain JFK
 speech: lyrics-only, then lyrics with a selected vocal stem and pitch/tempo

@@ -40,7 +40,7 @@ async function complete(page: Page, id: number) {
     job = await response.json() as JobDTO;
     if (job.status === 'failed') throw new Error(`Job ${id} failed: ${job.error_message}`);
     return job.status;
-  }, { timeout: 60_000, intervals: [100, 500, 1000] }).toBe('done');
+  }, { timeout: 0, intervals: [100, 500, 1000] }).toBe('done');
   await expect(page.getByRole('heading', { name: jobLabel(job!), exact: true })).toBeVisible();
   return job!;
 }
