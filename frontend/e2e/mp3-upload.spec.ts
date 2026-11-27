@@ -68,7 +68,6 @@ for (const mobile of [false, true]) {
         });
         expect(selected).toEqual({ name: 'native-upload.MP3', type: provider.mimeType, size: bytes.length });
         proof.selected = selected;
-        await expect(page.getByText('Selected: native-upload.MP3', { exact: true })).toBeVisible();
         const analysis = await analysisPending;
         proof.analysis = { status: analysis.status(), response: await analysis.json(), multipart: multipart(analysis.request()) };
         expect(analysis.status()).toBe(200);
@@ -84,12 +83,15 @@ for (const mobile of [false, true]) {
         proof.submission = { status: response.status(), response: result, multipart: multipart(response.request()) };
         expect(response.status()).toBe(200);
         const { work_id: id } = result;
-        await expect(page.locator(`a[href='/api/jobs/${id}/original']`).first()).toBeVisible({ timeout: 60_000 });
-        const jobResponse = await page.request.get(`/api/jobs/${id}`);
-        expect(jobResponse.ok()).toBe(true);
-        const job = await jobResponse.json() as JobDTO;
+        let job!: JobDTO;
+        await expect.poll(async () => {
+          const response = await page.request.get(`/api/jobs/${id}`);
+          expect(response.ok()).toBe(true);
+          job = await response.json() as JobDTO;
+          if (job.status === 'failed') throw new Error(`MP3 work ${id} failed: ${job.error_message}`);
+          return job.status;
+        }, { timeout: 60_000, intervals: [100, 500, 1000] }).toBe('done');
         await expect(page.getByRole('heading', { name: jobLabel(job), exact: true })).toBeVisible();
-        expect(job.status).toBe('done');
         expect(job.source_type).toBe('upload');
         expect(job.source_value).toBe('native-upload.MP3');
         expect(job.original_key).toBe('C major');

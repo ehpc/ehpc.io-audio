@@ -268,8 +268,10 @@ discovery artifacts during the CPU-worker cutover instead of paying for them aga
 The original source remains downloadable and unchanged by processing, preserving
 the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
 workflow. A source-only song can have no generated audio; its original download
-remains available. Lyrics are a separate optional text output and do not create
-an audio stem. Selecting **Karaoke with pitches** also includes and locks
+remains available. The original may be downloadable while work is queued or
+running; use job status or progress, not download availability, to determine
+completion. Lyrics are a separate optional text output and do not create an
+audio stem. Selecting **Karaoke with pitches** also includes and locks
 **Lyrics with pitches** (TXT and ODT); disabling it restores the previous
 independent preference.
 
