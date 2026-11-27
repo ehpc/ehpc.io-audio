@@ -769,7 +769,10 @@ sys.stdout.buffer.write(result.read_bytes())
       await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
       await setHidden(true);
       await masterAdvances();
-      expect(await vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      // Drift correction can briefly mute the companion while its native seek settles.
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => !audio.paused && !audio.muted)).toBe(true);
+      const vocalPosition = await vocal.evaluate((audio: HTMLAudioElement) => audio.currentTime);
+      await expect.poll(() => vocal.evaluate((audio: HTMLAudioElement) => audio.currentTime)).toBeGreaterThan(vocalPosition);
       await setHidden(false);
       const less = dialog.getByRole('button', { name: 'Less hints', exact: true });
       await less.click();
