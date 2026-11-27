@@ -36,6 +36,7 @@ from separator.inference_transport import (
     InferenceTransferError,
     load_request,
     publish_file,
+    write_request,
 )
 from separator.options import SeparationOptions
 from separator.progress import JobPhase
@@ -121,6 +122,11 @@ def _cpu_modal(
 
     monkeypatch.setattr(inference, "ensure_prepared", prepare)
     monkeypatch.setattr(modal_client, "_get_transport_volume", lambda: volume)
+    monkeypatch.setattr(
+        modal_client,
+        "stage_input",
+        lambda request, output_id: write_request(volume.root, output_id, request),
+    )
     monkeypatch.setattr(modal_client, "spawn", spawn)
     monkeypatch.setattr(modal_client, "poll", poll)
     return spawned

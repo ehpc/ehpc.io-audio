@@ -10,6 +10,9 @@ RESULTS_DIR = DATA_DIR / "results"
 QUEUE_CONCURRENCY = int(os.environ.get("QUEUE_CONCURRENCY", "1"))
 QUEUE_POLL_INTERVAL_S = float(os.environ.get("QUEUE_POLL_INTERVAL_S", "2"))
 MODAL_CALL_POLL_TIMEOUT_S = float(os.environ.get("MODAL_CALL_POLL_TIMEOUT_S", "5"))
+MODAL_INPUT_UPLOAD_TIMEOUT_S = float(
+    os.environ.get("MODAL_INPUT_UPLOAD_TIMEOUT_S", "300")
+)
 
 # Retry transient (403 / rate-limit) download failures a few times before giving up.
 DOWNLOAD_MAX_ATTEMPTS = int(os.environ.get("DOWNLOAD_MAX_ATTEMPTS", "3"))

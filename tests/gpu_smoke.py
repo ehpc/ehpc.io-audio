@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -45,7 +46,18 @@ def gpu_context(root: Path) -> ProcessingContext:
         )
         output_id = uuid4().hex
         pending[key] = output_id
-        modal_client.stage_input(request, output_id)
+        budget = FIRST_RESULT_TIMEOUT_S if first_result else SMOKE_RESULT_TIMEOUT_S
+        deadline = time.monotonic() + budget
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Inference stage timed out before dispatch")
+        modal_client.stage_input(
+            request,
+            output_id,
+            timeout=min(config.MODAL_INPUT_UPLOAD_TIMEOUT_S, remaining),
+        )
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Inference stage timed out before dispatch")
         failure: InferenceTransferError | None = None
         call = modal_client.spawn(
             output_id,
@@ -53,11 +65,7 @@ def gpu_context(root: Path) -> ProcessingContext:
             producer_digest=request.producer_digest,
         )
         try:
-            returned_id = call.get(
-                timeout=FIRST_RESULT_TIMEOUT_S
-                if first_result
-                else SMOKE_RESULT_TIMEOUT_S
-            )
+            returned_id = call.get(timeout=max(0, deadline - time.monotonic()))
         except InferenceTransferError as error:
             if error.output_id != output_id:
                 raise ValueError(

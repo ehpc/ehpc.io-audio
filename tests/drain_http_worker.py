@@ -13,7 +13,7 @@ from transport_fixture import LocalVolume, produce_result
 
 from backend import config, inference, modal_client, queue
 from backend.main import app
-from separator.inference_transport import load_request
+from separator.inference_transport import load_request, write_request
 
 ROOT = Path(os.environ["DATA_DIR"])
 PRODUCER = ROOT / "cpu-producer"
@@ -71,6 +71,11 @@ def poll(call, timeout):
 
 patch.object(inference, "ensure_prepared", prepare).start()
 patch.object(modal_client, "_get_transport_volume", lambda: VOLUME).start()
+patch.object(
+    modal_client,
+    "stage_input",
+    lambda request, output_id: write_request(VOLUME.root, output_id, request),
+).start()
 patch.object(modal_client, "spawn", spawn).start()
 patch.object(modal_client, "resume", lambda call_id: Call(call_id, call_id)).start()
 patch.object(modal_client, "poll", poll).start()

@@ -16,7 +16,7 @@ from transport_fixture import LocalVolume
 from backend import config, db, inference, modal_client, reconcile_inference
 from separator import artifact_cache
 from separator.artifact_cache import atomic_write, digest
-from separator.inference_transport import load_request, publish_file
+from separator.inference_transport import load_request, publish_file, write_request
 from separator.processing import ProcessingContext
 from separator.producer_manifest import load_manifest
 from separator.structure import assemble_structure
@@ -135,6 +135,11 @@ def main() -> None:
     patch = pytest.MonkeyPatch()
     patch.setattr(inference, "ensure_prepared", verify_prepared)
     patch.setattr(modal_client, "_get_transport_volume", lambda: volume)
+    patch.setattr(
+        modal_client,
+        "stage_input",
+        lambda request, output_id: write_request(volume.root, output_id, request),
+    )
     patch.setattr(modal_client, "spawn", spawn)
     patch.setattr(modal_client, "resume", resume)
     patch.setattr(modal_client, "poll", poll)

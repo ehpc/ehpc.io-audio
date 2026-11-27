@@ -1,10 +1,14 @@
 import hashlib
 import logging
+import math
 import os
+import subprocess
+import sys
 import tempfile
 from contextlib import suppress
 from functools import cache
 from pathlib import Path
+from time import monotonic
 
 import modal
 from modal.exception import TimeoutError as ModalTimeoutError
@@ -50,15 +54,55 @@ def _get_transport_volume() -> modal.Volume:
     )
 
 
-def stage_input(request: InferenceRequest, output_id: str) -> None:
-    """Upload on the VPS, before a model call can be accepted."""
+def stage_input(
+    request: InferenceRequest, output_id: str, *, timeout: float | None = None
+) -> None:
+    """Stage input before dispatch; kill and reap a stalled upload process."""
     validate_output_id(output_id)
+    budget = config.MODAL_INPUT_UPLOAD_TIMEOUT_S if timeout is None else timeout
+    if not math.isfinite(budget) or not (
+        0 < budget <= config.MODAL_INPUT_UPLOAD_TIMEOUT_S
+    ):
+        raise ValueError("Invalid inference input upload deadline")
+    deadline = monotonic() + budget
     with tempfile.TemporaryDirectory(prefix="inference-input-") as directory:
         root = Path(directory)
         write_request(root, output_id, request)
-        with _get_transport_volume().batch_upload(force=True) as upload:
-            for name in ("input.bin", "request.json"):
-                upload.put_file(root / output_id / name, f"/{output_id}/{name}")
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Inference input upload timed out before dispatch")
+        _run_staging_upload(root, output_id, remaining)
+
+
+def _run_staging_upload(root: Path, output_id: str, timeout: float) -> None:
+    diagnostics = config.DATA_DIR / "artifacts" / "inference-diagnostics"
+    diagnostics.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f"upload-{output_id}-", suffix=".log", dir=diagnostics, delete=False
+    ) as output:
+        path = Path(output.name)
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "backend.stage_upload", str(root), output_id],
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                check=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            output.write(f"\n{type(error).__name__}: {error}\n".encode())
+            log.warning("Input upload timed out; private diagnostics: %s", path)
+            raise TimeoutError(
+                "Inference input upload timed out before dispatch"
+            ) from None
+        except (subprocess.CalledProcessError, OSError) as error:
+            output.write(f"\n{type(error).__name__}: {error}\n".encode())
+            log.warning("Input upload failed; private diagnostics: %s", path)
+            raise RuntimeError(
+                "Inference input upload failed before dispatch"
+            ) from None
+        else:
+            path.unlink()
 
 
 def spawn(

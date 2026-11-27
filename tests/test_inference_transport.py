@@ -16,12 +16,21 @@ import pytest
 from audio_samples import mp3_measurements, tone_wav
 from transport_fixture import LocalVolume, produce_result
 
-from backend import modal_client
+from backend import modal_client, stage_upload
 from separator import inference_transport as transport
 from separator.inference import InferenceRequest
 
 OUTPUT_ID = "0123456789abcdef" * 2
 OTHER_ID = "fedcba9876543210" * 2
+
+
+@pytest.fixture(autouse=True)
+def local_staging_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        modal_client,
+        "_run_staging_upload",
+        lambda root, output_id, timeout: stage_upload.upload(root, output_id),
+    )
 
 
 @pytest.fixture

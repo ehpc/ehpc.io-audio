@@ -15,7 +15,7 @@ from backend import config, inference, modal_client
 from backend.main import app
 from separator import audio, cache_versions, stems
 from separator.inference import InferenceRequest
-from separator.inference_transport import validate_output_id
+from separator.inference_transport import validate_output_id, write_request
 
 ROOT = Path(os.environ["DATA_DIR"])
 TRACE = ROOT / "producer-trace.jsonl"
@@ -92,6 +92,11 @@ def produce(request: InferenceRequest) -> bytes:
 produce = observed("stem", produce)
 patch.object(inference, "ensure_prepared", prepare).start()
 patch.object(modal_client, "_get_transport_volume", lambda: VOLUME).start()
+patch.object(
+    modal_client,
+    "stage_input",
+    lambda request, output_id: write_request(VOLUME.root, output_id, request),
+).start()
 patch.object(modal_client, "spawn", spawn).start()
 patch.object(modal_client, "resume", resume).start()
 patch.object(modal_client, "poll", lambda call, timeout: call.output_id).start()

@@ -222,6 +222,88 @@ def test_uncertain_dispatch_remains_fail_closed_across_drain(stages, monkeypatch
     assert not (stages.context.root / "inference" / f"{key}.bin").exists()
 
 
+def test_serialization_exhausting_upload_budget_releases_claim_without_dispatch(
+    stages, monkeypatch
+):
+    times = iter([0.0, 301.0])
+    monkeypatch.setattr(modal_client, "monotonic", lambda: next(times))
+    monkeypatch.setattr(config, "MODAL_INPUT_UPLOAD_TIMEOUT_S", 300.0)
+    roots = []
+    write_request = modal_client.write_request
+
+    def capture(root, output_id, request):
+        roots.append(root)
+        write_request(root, output_id, request)
+
+    monkeypatch.setattr(modal_client, "write_request", capture)
+    monkeypatch.setattr(
+        modal_client, "_run_staging_upload", lambda *args: pytest.fail("uploaded")
+    )
+    monkeypatch.setattr(
+        modal_client, "spawn", lambda *args, **kw: pytest.fail("spawned")
+    )
+    with pytest.raises(TimeoutError, match="before dispatch"):
+        stage(stages.context, "serialization-expired")
+    assert len(roots) == 1 and not roots[0].exists()
+    owner = db.get_job(stages.job)
+    assert owner is not None
+    assert owner.active_stage_key is None and owner.modal_call_id is None
+    begin_drain()
+    asyncio.run(asyncio.wait_for(drain.state.wait(), 2))
+
+
+def test_stalled_preaccept_upload_releases_claim_and_drain_completes(
+    stages, monkeypatch, tmp_path
+):
+    marker = tmp_path / "upload-child"
+    (tmp_path / "sitecustomize.py").write_text(
+        """
+import os,time
+from pathlib import Path
+from backend import modal_client
+class Batch:
+ def __enter__(self):
+  Path(os.environ['STAGE_TEST_MARKER']).write_text(str(os.getpid()))
+  while True: time.sleep(1)
+ def __exit__(self,*args): pass
+class Volume:
+ def batch_upload(self,force=False): return Batch()
+modal_client._get_transport_volume=lambda: Volume()
+"""
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + os.pathsep + str(Path.cwd()))
+    monkeypatch.setenv("STAGE_TEST_MARKER", str(marker))
+    monkeypatch.setattr(config, "MODAL_INPUT_UPLOAD_TIMEOUT_S", 3.0)
+    spawns = []
+    monkeypatch.setattr(modal_client, "spawn", lambda *args, **kw: spawns.append(args))
+
+    async def exercise():
+        assert await drain.state.enter()
+
+        async def work():
+            try:
+                await asyncio.to_thread(stage, stages.context, "stalled")
+            finally:
+                drain.state.leave()
+
+        task = asyncio.create_task(work())
+        async with asyncio.timeout(5):
+            while not marker.exists():
+                await asyncio.sleep(0.02)
+        await drain.state.begin()
+        with pytest.raises(TimeoutError, match="before dispatch"):
+            await task
+        await asyncio.wait_for(drain.state.wait(), 2)
+
+    asyncio.run(exercise())
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(marker.read_text()), 0)
+    owner = db.get_job(stages.job)
+    assert owner is not None
+    assert owner.active_stage_key is None and owner.modal_call_id is None
+    assert spawns == []
+
+
 def test_drain_during_upload_releases_unaccepted_claim(stages, monkeypatch):
     uploads = []
     spawns = []

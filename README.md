@@ -1942,6 +1942,16 @@ recordings are included or fetched.
    validated local artifact. Model failures retain full private diagnostics;
    only a bounded typed failure crosses RPC. No provider Internet access,
    workload S3 credentials, model changes or cache-version bump is needed.
+   Before dispatch, the upload runs in a short-lived CPU process with a
+   `MODAL_INPUT_UPLOAD_TIMEOUT_S` budget (default 300 seconds). Time spent
+   serializing local input reduces that budget, although the local file write
+   itself is not preempted. If the budget expires, any started upload process is
+   killed and reaped before temporary inputs are removed and the unaccepted
+   claim is released; no GPU call is submitted or retried.
+   Upload failure details stay in a private inference-diagnostics file. Large or
+   slow legitimate uploads may need an operator-configured deadline. Killing
+   the client cannot prove an already-sent remote write did not finish; staged
+   inputs remain fingerprint-verified before inference and are not a result.
    Share preparation receipts across isolated test output roots so a cold-output
    proof does not stream gigabytes of already verified weights again.
    Historical checksum attestations retain their snapshot date and current

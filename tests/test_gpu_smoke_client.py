@@ -4,6 +4,7 @@ import hashlib
 import threading
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 
 import gpu_smoke
 import pytest
@@ -11,7 +12,7 @@ from audio_samples import tone_wav
 from gpu_smoke import gpu_context
 from transport_fixture import LocalVolume, produce_result
 
-from backend import config, modal_client
+from backend import config, modal_client, stage_upload
 from separator.inference_transport import (
     InferenceTransferError,
     load_request,
@@ -48,6 +49,11 @@ def isolated_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(gpu_smoke, "ensure_prepared", lambda *_args: None)
     volume = LocalVolume(tmp_path / "private-volume")
     monkeypatch.setattr(modal_client, "_get_transport_volume", lambda: volume)
+    monkeypatch.setattr(
+        modal_client,
+        "_run_staging_upload",
+        lambda root, output_id, timeout: stage_upload.upload(root, output_id),
+    )
     return gpu_context(tmp_path / "computed"), volume
 
 
@@ -64,6 +70,28 @@ def assert_input_retained(volume: LocalVolume, audio: bytes) -> None:
     assert request.audio_bytes == audio
     assert request.operation == "recognition"
     assert not volume.removals
+
+
+def test_expired_staging_budget_never_dispatches(
+    isolated_context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context, volume = isolated_context
+    monkeypatch.setattr(gpu_smoke, "FIRST_RESULT_TIMEOUT_S", 1.0)
+    clock = [0.0]
+    monkeypatch.setattr(gpu_smoke, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def upload(root, output_id, timeout):
+        stage_upload.upload(root, output_id)
+        clock[0] = 2.0
+
+    monkeypatch.setattr(modal_client, "_run_staging_upload", upload)
+    monkeypatch.setattr(
+        modal_client, "spawn", lambda *args, **kwargs: pytest.fail("dispatched")
+    )
+    audio = tone_wav((440.0,), duration_s=0.2)
+    with pytest.raises(TimeoutError, match="before dispatch"):
+        run_stage(context, audio)
+    assert_input_retained(volume, audio)
 
 
 def test_first_l40s_result_uses_short_deadline(
