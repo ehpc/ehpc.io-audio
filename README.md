@@ -549,10 +549,12 @@ at least two distinct entries are required. IDs match
 `^mix-[a-z0-9][a-z0-9-]{0,47}$` and are unique within a job. Names are trimmed,
 1–120 characters, without control characters. Unknown form fields and invalid
 mixes return HTTP 422 without inserting a job; the removed fixed-mix request
-booleans are not accepted. Result labels/internal filenames use stable IDs;
-`manifest.display_name` carries the editable name. Public filenames and MP3 Title
-tags share one canonical name with sanitized mix name, ID, source key, pitch and
-tempo qualifiers. Results/History use the same saved identity and display name.
+booleans are not accepted. Result labels/internal filenames use stable IDs.
+Song-library output display names add component and cleanup details to the editable
+mix name; public filenames and MP3 Title tags instead use the sanitized mix name,
+ID, source key, pitch and tempo qualifiers.
+A newly produced mix uses its submitted name; reusing an identical mix under a
+different name or ID retains the existing producer's name and does not rename it.
 
 ### Responsive workspace
 

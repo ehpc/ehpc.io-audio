@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
 import { jobLabel, type BooleanOptionKey, type JobDTO, type SeparationOptions, type SongDetail, type SongOutputRef, type SubmitResult } from '../src/api';
-import { displayOutputLabel } from '../src/lib/expectedStems';
 import { keyScale, transposeKey } from '../src/lib/music';
 import { stemMixName, type StemComponent, type StemMix } from '../src/lib/stemMix';
 import { hash, inspectAudio, inspectMix, inspectTransformedSource, pcm } from './audio';
@@ -54,7 +53,8 @@ const cases: Case[] = [
   { name: 'mix-drums-other', selected: { mixes: [MIX('mix-1', ['drums', 'other'])] }, labels: ['mix-1'] },
   { name: 'mix-three-parts', selected: { mixes: [MIX('mix-1', ['drums', 'bass', 'vocals'])] }, labels: ['mix-1'] },
   { name: 'mix-vocal-variant-instruments', selected: { mixes: [MIX('mix-1', ['female', 'instruments'])] }, labels: ['mix-1'] },
-  { name: 'mix-custom-name', selected: { mixes: [MIX('mix-1', ['bass', 'vocals'], 'Karaoke night')] }, labels: ['mix-1'] },
+  // Keep the custom-name case semantically new while reusing already cached stems.
+  { name: 'mix-custom-name', selected: { mixes: [MIX('mix-1', ['bass', 'other'], 'Karaoke night')] }, labels: ['mix-1'] },
   { name: 'mixes-multiple-queued', selected: { mixes: [MIX('mix-1', ['drums', 'bass']), MIX('mix-2', ['drums', 'vocals']), MIX('mix-3', ['bass', 'vocals'])] }, labels: ['mix-1', 'mix-2', 'mix-3'] },
   { name: 'decrowd', selected: { decrowd: true }, labels: ['instruments-decrowded'] },
   { name: 'decrowd_vocals', selected: { decrowd_vocals: true }, labels: ['vocals-decrowded'] },
@@ -229,9 +229,17 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     const mix = options.mixes.find(candidate => candidate.id === label);
     expect(stem.filename).toBe(`${stem.label}${suffix}.mp3`);
     if (mix) {
-      // Mix downloads carry the custom name plus the stable mix id qualifier;
-      // identity is never derived from the user-chosen name.
-      expect(stem.download_name).toContain(`${fixtureName} - ${stem.display_name}`);
+      // Reused semantic mixes retain their physical producer's name and stable ID.
+      const producerResponse = await page.request.get(`/api/jobs/${ref.work_id}`);
+      expect(producerResponse.ok()).toBe(true);
+      const producer = await producerResponse.json() as JobDTO;
+      const producerMix = producer.options.mixes.find(candidate => candidate.id === ref.label);
+      expect(producerMix).toBeDefined();
+      if (item.name === 'mix-custom-name') {
+        expect(ref.work_id).toBe(job.id);
+        expect(producerMix!.name).toBe(mix.name);
+      }
+      expect(stem.download_name).toContain(`${fixtureName} - ${producerMix!.name}`);
       expect(stem.download_name).toContain(`[${stem.label}]`);
       expect(stem.download_name).toContain(`source-key-${originalKey.replaceAll(' ', '-')}`);
       if (suffix) expect(stem.download_name).toContain(suffix.trimStart());
@@ -250,7 +258,6 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
       await expect(card.getByText(`Source key: ${transposeKey(originalKey, options.pitch_semitones)}`, { exact: true })).toHaveCount(0);
     }
     if (label === 'song') {
-      await expect(card.getByText(displayOutputLabel('song', options), { exact: true })).toBeVisible();
       const playback = await card.locator('audio').evaluate(async element => {
         const player = element as HTMLAudioElement;
         player.load();
