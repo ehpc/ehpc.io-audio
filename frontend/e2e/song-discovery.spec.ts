@@ -56,7 +56,7 @@ for (const width of [375, 390, 430, 1440, 2560]) {
     if (width === 390 || width === 1440) await query.press('Enter');
     else await search.click();
     await expect(search).toBeDisabled();
-    await expect(page.getByRole('status')).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Audio source', exact: true }).locator('.song-search').getByRole('status')).toBeVisible();
     await expect.poll(() => searches).toBe(1);
     if (width === 390 || width === 1440) await query.press('Enter');
     await page.screenshot({ path: info.outputPath(`song-pending-${width}.png`), fullPage: true });
@@ -133,7 +133,7 @@ test('prefixed voice dictation restores the input and never submits a search', a
   await page.goto('/');
   await page.getByRole('button', { name: 'Find song', exact: true }).click();
   await page.getByRole('button', { name: 'Start voice input' }).click();
-  await expect(page.getByRole('status')).toContainText('Listening');
+  await expect(page.getByRole('button', { name: 'Stop voice input', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.evaluate(() => (window as SpeechTestWindow).recognition.onresult?.({ results: [[{ transcript: 'First Love 宇多田ヒカル' }]] }));
   await expect(page.getByLabel('Describe a song')).toHaveValue('First Love 宇多田ヒカル');
   expect(searches).toBe(0);
