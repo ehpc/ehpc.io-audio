@@ -69,7 +69,7 @@ async function assertTranscriptAndDownload(page: Page, job: JobDTO) {
   const body = await response.body();
   expect(body.toString('utf8')).toBe(text);
   const downloadPromise = page.waitForEvent('download');
-  await results.locator(`a[href^="${url}"]`).click();
+  await results.locator(`a[href="${url}"], a[href^="${url}?"]`).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('jfk - lyrics.txt');
   return { filename: download.suggestedFilename(), sha256: createHash('sha256').update(body).digest('hex') };
@@ -180,7 +180,7 @@ test('real speech lyrics render and download in Results and History on the origi
   }, null, 2), 'utf8');
   await info.attach('lyrics-proof', { path: proofPath, contentType: 'application/json' });
   await page.getByRole('button', { name: /^Library/ }).click();
-  await historyCard(lyricsOnly).getByRole('button', { name: jobLabel(lyricsOnly), exact: true }).click();
+  await historyCard.getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
   await expect(page.locator(`a[href^="/api/jobs/${transformedId}/results/vocals"]`)).toBeVisible();
   await expect(page.getByRole('heading', { name: jobLabel(transformed), exact: true })).toBeVisible();
 });
