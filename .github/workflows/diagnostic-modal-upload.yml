@@ -1,0 +1,45 @@
+name: Temporary CPU-only mounted Volume A/B diagnostic
+
+on:
+  push:
+    branches: [diagnostic/modal-upload-46016759291]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: ehpc-audio
+      MODAL_APP_NAME: audio-upload-diag-${{ github.run_id }}-${{ github.run_attempt }}
+      UV_PYTHON: '3.15.2'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install exact locked runtime
+        run: uv sync --frozen
+      - name: Run isolated CPU-only mounted Volume A/B control
+        timeout-minutes: 13
+        run: .venv/bin/python .github/scripts/ci-modal-upload-probe.py
+      - name: Stop owned app and delete owned diagnostic Volume
+        if: always()
+        timeout-minutes: 3
+        run: |
+          if [ -x .venv/bin/python ]; then
+            .venv/bin/python .github/scripts/ci-modal-upload-probe.py cleanup
+          fi
+      - name: Publish sanitized diagnostic events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-mounted-ab-${{ github.run_id }}-${{ github.run_attempt }}
+          path: audio-upload-diagnostic/events.jsonl
+          if-no-files-found: warn
+          retention-days: 7
