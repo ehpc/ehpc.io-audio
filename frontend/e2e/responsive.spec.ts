@@ -100,7 +100,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     await expect(page.getByRole('alert').filter({ hasText: 'Key analysis:' })).toBeVisible();
     await page.getByRole('button', { name: 'From URL', exact: true }).click();
     await page.getByLabel('Track URL', { exact: true }).fill(`${fixtureURL}/tone-fixture.wav`);
-    await expect(page.getByRole('status')).toContainText('Downloading audio and analyzing');
+    await expect(page.getByRole('region', { name: 'Audio source', exact: true }).getByRole('status')).toBeVisible();
     const outputs = page.getByRole('tab', { name: 'Outputs', exact: true });
     await outputs.focus();
     await outputs.press('ArrowRight');

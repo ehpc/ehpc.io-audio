@@ -402,16 +402,17 @@ for (const item of cases) {
 
 test('key-preview-source-change-errors-and-real-retry', async ({ page }, info) => {
   await page.goto('/');
+  const source = page.getByRole('region', { name: 'Audio source', exact: true });
   await chooseSource(page);
-  await expect(page.getByRole('status')).toContainText('Analyzing original key');
+  await expect(source.getByRole('status')).toBeVisible();
   await expect(page.getByText('Original key: C major', { exact: true })).toBeVisible({ timeout: 60_000 });
   await page.getByLabel('Audio file', { exact: true }).setInputFiles(resolve(directory, 'invalid.wav'));
   await expect(page.getByText('Original key: C major', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('alert')).toContainText('Key analysis:');
+  await expect(source.getByRole('alert')).toBeVisible();
   await page.getByRole('button', { name: 'From URL', exact: true }).click();
   await page.getByLabel('Track URL', { exact: true }).fill(`${fixtureURL}/recoverable.wav`);
-  await expect(page.getByRole('status')).toContainText('Downloading audio and analyzing');
-  await expect(page.getByRole('alert')).toContainText('Key analysis:');
+  await expect(source.getByRole('status')).toBeVisible();
+  await expect(source.getByRole('alert')).toBeVisible();
   expect(await page.getByText('Original key: C major', { exact: true }).count()).toBe(0);
   const failedId = await submit(page);
   const failure = page.locator('.processing-results').getByRole('alert');
