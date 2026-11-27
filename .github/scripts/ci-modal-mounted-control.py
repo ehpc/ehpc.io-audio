@@ -16,6 +16,42 @@ if not run.isdecimal() or not attempt.isdecimal() or os.environ.get('MODAL_APP_N
     raise RuntimeError('Diagnostic app/environment guard failed')
 root = Path(os.environ['GITHUB_WORKSPACE'])
 private = Path(os.environ['RUNNER_TEMP']) / f'audio-upload-diag-{run}-{attempt}'
+
+
+def exception_chain(error):
+    chain = []
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        kind = type(error).__name__
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', kind):
+            kind = 'UnknownError'
+        frames = []
+        traceback = error.__traceback__
+        while traceback is not None:
+            code = traceback.tb_frame.f_code
+            filename, method = Path(code.co_filename).name, code.co_name
+            if not re.fullmatch(r'[A-Za-z0-9_.<>-]+', filename):
+                filename = 'unknown'
+            if not re.fullmatch(r'[A-Za-z0-9_.<>-]+', method):
+                method = 'unknown'
+            frames.append({'file': filename, 'method': method, 'line': traceback.tb_lineno})
+            traceback = traceback.tb_next
+        chain.append({'exception_class': kind, 'stack': frames})
+        error = error.__cause__ or error.__context__
+    return chain
+
+
+def capture_uncaught(_kind, error, _traceback):
+    fd = os.open(private / 'app-error.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(exception_chain(error), output)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+sys.excepthook = capture_uncaught
+
 sys.path.insert(0, str(root))
 import modal
 from separator.inference_transport import transport_volume_name
@@ -27,7 +63,7 @@ volume.hydrate()
 if volume.object_id != owner['id']:
     raise RuntimeError('Volume identity changed')
 app = modal.App(app_name)
-image = modal.Image.debian_slim(python_version='3.12')
+image = modal.Image.debian_slim(python_version='3.15.2')
 
 
 @app.function(
@@ -98,7 +134,7 @@ with app.run(name=app_name, environment_name=environment):
             result = call.get(timeout=40)
             durable_json(private / f'result-{cycle}.json', {'result': result})
         except Exception as error:
-            durable_json(private / f'result-{cycle}.json', {'error_class': type(error).__name__})
+            durable_json(private / f'result-{cycle}.json', {'error_chain': exception_chain(error)})
             break
     while not (private / 'stop-app-owner').exists():
         time.sleep(0.1)

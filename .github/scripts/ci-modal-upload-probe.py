@@ -263,6 +263,20 @@ def publish_trace(cycle):
     TRACE.unlink()
 
 
+def emit_exception_chain(phase, cycle, chain):
+    if not isinstance(chain, list):
+        return
+    for entry in chain:
+        if not isinstance(entry, dict) or set(entry) != {'exception_class', 'stack'}:
+            continue
+        kind, frames = entry['exception_class'], entry['stack']
+        if not isinstance(kind, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', kind) or not isinstance(frames, list):
+            continue
+        if any(not isinstance(frame, dict) or set(frame) != {'file', 'method', 'line'} or not isinstance(frame['line'], int) or not re.fullmatch(r'[A-Za-z0-9_.<>-]+', frame['file']) or not re.fullmatch(r'[A-Za-z0-9_.<>-]+', frame['method']) for frame in frames):
+            continue
+        emit(phase=phase, method='exception', cycle=cycle, exception_class=kind, stack=frames)
+
+
 def start_app(deadline):
     global APP_PROCESS
     if not run_phase('check_app', -1, min(60, max(0.1, deadline-time.monotonic()))):
@@ -275,6 +289,9 @@ def start_app(deadline):
     receipt = PRIVATE / 'app-owner.json'
     while not receipt.exists():
         if APP_PROCESS.poll() is not None:
+            failure = PRIVATE / 'app-error.json'
+            if failure.exists():
+                emit_exception_chain('app_start', -1, json.loads(failure.read_text()))
             emit(phase='app_start', method='failure', exception_class='AppOwnerExited')
             raise RuntimeError('Diagnostic app owner exited')
         if time.monotonic() >= until:
@@ -325,11 +342,8 @@ def mounted_call(cycle, deadline):
             raise TimeoutError('Mounted diagnostic call timed out')
         time.sleep(0.1)
     response = json.loads(result_path.read_text())
-    if 'error_class' in response:
-        kind = response['error_class']
-        if not isinstance(kind, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', kind):
-            kind = 'WorkerFailure'
-        emit(phase='mounted_function', method='failure', cycle=cycle, exception_class=kind)
+    if 'error_chain' in response:
+        emit_exception_chain('mounted_function', cycle, response['error_chain'])
         raise RuntimeError('Mounted diagnostic call failed')
     emit(phase='mounted_function', method='success', cycle=cycle, elapsed=round(time.monotonic()-started, 3))
     return response['result']
@@ -411,7 +425,7 @@ def main():
                     if not re.fullmatch(r'[0-9.]+', python) or not re.fullmatch(r'[A-Za-z0-9_.+-]+', kernel):
                         raise RuntimeError('Invalid container runtime metadata')
                     if cycle == 12:
-                        emit(phase='container_runtime', method='inspect', python=python, kernel=kernel, image='debian_slim_python_3.12')
+                        emit(phase='container_runtime', method='inspect', python=python, kernel=kernel, image='debian_slim_python_3.15.2')
                     task = result.get('task_hash')
                     method = 'task_unavailable' if not task else 'task_first' if last_task is None else 'task_reused' if task == last_task else 'task_changed'
                     emit(phase='container', method=method, cycle=cycle)
