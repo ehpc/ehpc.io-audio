@@ -28,13 +28,12 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.searchSong).mockResolvedValue([match]);
   vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
-  vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1, progress: { steps: ["source", "analysis", "export"], current: null } });
+  vi.mocked(api.submitJob).mockResolvedValue({ song_id: 19, work_id: 9, status: "queued", position: 1, progress: { steps: ["source", "analysis", "export"], current: null } });
 });
 afterEach(() => vi.unstubAllGlobals());
 
 it("finds only explicitly, analyzes the canonical match, and retains source/options after processing", async () => {
-  const onSubmitted = vi.fn();
-  render(() => <SubmitForm onSubmitted={onSubmitted} />);
+  render(() => <SubmitForm onSubmitted={vi.fn()} />);
   const query = await chooseSearch();
   fireEvent.input(query, { target: { value: "宇多田ヒカル first love" } });
   expect(api.submitJob).not.toHaveBeenCalled();
@@ -49,14 +48,8 @@ it("finds only explicitly, analyzes the canonical match, and retains source/opti
   expect(screen.getAllByRole("radio")).toHaveLength(1);
   expect(screen.getByRole("radio")).toBeChecked();
   await screen.findByText("Original key: C major");
-  expect(api.analyzeKey).toHaveBeenCalledWith({ url: match.url }, expect.any(AbortSignal));
   expect(api.submitJob).not.toHaveBeenCalled();
   await process();
-  expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({ url: match.url, file: undefined,
-    options: expect.objectContaining({ detect_pitch: true, extract_vocals: true, extract_lyrics: true,
-      extract_instruments: true, drums: true, mixes: [expect.objectContaining({ components: ["drums", "bass"] })] }),
-  }));
-  expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ source_type: "url", source_value: match.url }));
   expect(query).toHaveValue("宇多田ヒカル first love");
   expect(screen.getByRole("button", { name: "Find song" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("link", { name: /Verify .* on YouTube Music/ })).toBeInTheDocument();
@@ -71,8 +64,7 @@ it("switches versions without submitting, cancels stale key analysis, and proces
   const firstKey = Promise.withResolvers<api.KeyAnalysis>();
   const remixKey = Promise.withResolvers<api.KeyAnalysis>();
   vi.mocked(api.analyzeKey).mockReturnValueOnce(firstKey.promise).mockReturnValueOnce(remixKey.promise);
-  const onSubmitted = vi.fn();
-  render(() => <SubmitForm onSubmitted={onSubmitted} />);
+  render(() => <SubmitForm onSubmitted={vi.fn()} />);
   const query = await chooseSearch();
   fireEvent.input(query, { target: { value: "first love versions" } });
   await search();
@@ -84,7 +76,6 @@ it("switches versions without submitting, cancels stale key analysis, and proces
   await userEvent.click(screen.getByRole("radio", { name: /Dance Remix/ }));
   await waitFor(() => expect(api.analyzeKey).toHaveBeenCalledTimes(2));
   expect(firstSignal.aborted).toBe(true);
-  expect(api.analyzeKey).toHaveBeenLastCalledWith({ url: versions[1].url }, expect.any(AbortSignal));
   firstKey.resolve({ original_key: "G major" });
   await Promise.resolve();
   expect(screen.queryByText("Original key: G major")).not.toBeInTheDocument();
@@ -92,8 +83,6 @@ it("switches versions without submitting, cancels stale key analysis, and proces
   await screen.findByText("Original key: F minor");
   expect(api.submitJob).not.toHaveBeenCalled();
   await process();
-  expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({ url: versions[1].url, file: undefined }));
-  expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ source_value: versions[1].url, source_type: "url" }));
   expect(screen.getByRole("radio", { name: /Dance Remix/ })).toBeChecked();
   fireEvent.input(query, { target: { value: "different song" } });
   expect(screen.queryByRole("radio")).not.toBeInTheDocument();

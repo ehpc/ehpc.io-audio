@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, onCleanup, onMount, Show, type Component } from "solid-js";
 import * as Dialog from "@kobalte/core/dialog";
-import type { JobDTO, LibrarySort } from "./api";
-import { getCurrentJob, getJob, listJobs, recordJobOpen, retryJob, subscribeToJob } from "./api";
+import type { JobDTO, LibrarySort, SongDetail, SongSummary } from "./api";
+import { getCurrentSong, getJob, getSong, listSongs, recordSongOpen, retryJob, subscribeToJob } from "./api";
 import SubmitForm from "./components/SubmitForm";
 import QueueStatus from "./components/QueueStatus";
 import JobStatusDock from "./components/JobStatusDock";
@@ -12,43 +12,52 @@ import ProfileView from "./ProfileView";
 import AdminView from "./AdminView";
 import { Button } from "~/components/button";
 import { pauseOtherMedia } from "~/lib/mediaSession";
+import OutputsNavigation, { type OutputTarget } from "./components/OutputsNavigation";
 
 const App: Component = () => {
   const [job, setJob] = createSignal<JobDTO | null>(null);
   const [trackedJob, setTrackedJob] = createSignal<JobDTO | null>(null);
-  const subscriptions = new Map<number, () => void>();
-  let progressTarget: HTMLDivElement | undefined;
-  const [history, setHistory] = createSignal<JobDTO[]>([]);
-  const [historyScrollRequest, setHistoryScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
-  const [librarySort, setLibrarySort] = createSignal<LibrarySort>("usage");
-  let historyScrollToken = 0;
-  const deletedJobIds = new Set<number>();
-  let currentJobRevision = 0;
-  let historyRequestRevision = 0;
-  let historyItemRevision = 0;
-  const acknowledgedCounts = new Map<number, number>();
-  const mergeCount = (item: JobDTO) => {
-    const count = acknowledgedCounts.get(item.id) ?? 0;
-    return count > item.open_count ? { ...item, open_count: count } : item;
+  const [selectedId, setSelectedId] = createSignal<number | null>(null);
+  const [detail, setDetail] = createSignal<SongDetail | null>(null);
+  const [augmentation, setAugmentation] = createSignal<SongSummary | null>(null);
+  const augmentationTarget = () => {
+    const target = augmentation();
+    return target && detail()?.summary.id === target.id ? detail()!.summary : target;
   };
-  const orderedHistory = createMemo(() => {
-    const sort = librarySort();
-    return [...history()].sort((a, b) =>
-      (sort === "usage" ? b.open_count - a.open_count : 0) ||
-      b.created_at - a.created_at || b.id - a.id
-    );
-  });
+  const [submissionNotice, setSubmissionNotice] = createSignal("");
+  const [history, setHistory] = createSignal<SongSummary[]>([]);
+  const [historyScrollRequest, setHistoryScrollRequest] = createSignal<HistoryScrollRequest | null>(null);
+  const [resultsRefreshToken, setResultsRefreshToken] = createSignal(0);
+  const [librarySort, setLibrarySort] = createSignal<LibrarySort>("usage");
   const [selectedJobRefreshError, setSelectedJobRefreshError] = createSignal<string | null>(null);
   const [retryingId, setRetryingId] = createSignal<number | null>(null);
   const [retryError, setRetryError] = createSignal<{ jobId: number; message: string } | null>(null);
   const auth = useAuth();
-  const [tab, setTab] = createSignal<"workspace" | "profile" | "people">("workspace");
+  const [tab, setTab] = createSignal<"workspace" | "profile" | "admin">("workspace");
   const [accountError, setAccountError] = createSignal("");
   const [mobileLibrary, setMobileLibrary] = createSignal(false);
   const [libraryOpen, setLibraryOpen] = createSignal(false);
+  const [modalOpen, setModalOpen] = createSignal(false);
+  const subscriptions = new Map<number, () => void>();
+  const workSnapshots = new Map<number, JobDTO>();
+  const workOwners = new Map<number, number>();
+  const workRefreshVersions = new Map<number, number>();
+  let trackedSongId: number | null = null;
+  let selectedWorkId: number | null = null;
+  const deletedSongIds = new Set<number>();
+  const acknowledgedCounts = new Map<number, number>();
+  let selectionGeneration = 0;
+  let selectedRevision = 0;
+  let historyRevision = 0;
+  let sourceTarget: HTMLDivElement | undefined;
+  let historyScrollToken = 0;
+  let progressTarget: HTMLDivElement | undefined;
   let libraryTrigger: HTMLButtonElement | undefined;
   let selectedFromLibrary = false;
   let viewingFromLibrary = false;
+  const orderedHistory = createMemo(() => [...history()].sort((a, b) =>
+    (librarySort() === "usage" ? b.open_count - a.open_count : 0) ||
+    b.created_at - a.created_at || b.id - a.id));
 
   onMount(() => {
     const query = window.matchMedia?.("(max-width: 1000px)");
@@ -57,6 +66,14 @@ const App: Component = () => {
     update();
     query.addEventListener("change", update);
     onCleanup(() => query.removeEventListener("change", update));
+  });
+  onMount(() => {
+    const update = () => setModalOpen(Boolean(document.fullscreenElement || document.querySelector('[role="dialog"][aria-modal="true"]')));
+    const observer = new MutationObserver(update);
+    observer.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener("fullscreenchange", update);
+    update();
+    onCleanup(() => { observer.disconnect(); document.removeEventListener("fullscreenchange", update); });
   });
 
   onMount(() => {
@@ -83,89 +100,108 @@ const App: Component = () => {
   });
 
   const refreshHistory = async () => {
-    const itemRevision = historyItemRevision;
-    const requestRevision = ++historyRequestRevision;
+    const revision = ++historyRevision;
+    const selected = selectedId();
+    const selection = selectionGeneration;
     try {
-      const jobs = await listJobs(librarySort());
-      if (requestRevision !== historyRequestRevision) return;
-      const updated = itemRevision !== historyItemRevision
-        ? history().find(existing => existing.id === job()?.id)
-        : undefined;
-      setHistory(jobs.filter((item) => !deletedJobIds.has(item.id)).map(item =>
-        mergeCount(updated?.id === item.id ? updated : item)
-      ));
-    } catch {
-      // leave the previous list in place if this refresh fails
+      const songs = await listSongs(librarySort());
+      if (revision !== historyRevision) return;
+      setHistory(songs.filter(song => !deletedSongIds.has(song.id)).map(song => ({
+        ...song, open_count: Math.max(song.open_count, acknowledgedCounts.get(song.id) ?? 0),
+      })));
+      if (selected !== null && selection === selectionGeneration && selectedId() === selected &&
+        detail()?.summary.id === selected && !songs.some(song => song.id === selected)) {
+        void refreshSelectedSong(selected);
+      }
+    } catch { /* Keep the last successful library listing. */ }
+  };
+  const adoptSong = (oldId: number, canonicalId: number) => {
+    if (oldId === canonicalId) return;
+    for (const [workId, owner] of workOwners) if (owner === oldId) workOwners.set(workId, canonicalId);
+    if (trackedSongId === oldId) trackedSongId = canonicalId;
+    if (selectedId() === oldId) {
+      setSelectedId(canonicalId);
+      setAugmentation(target => target?.id === oldId ? { ...target, id: canonicalId } : target);
+      void refreshSelectedSong(canonicalId);
+    }
+    void refreshHistory();
+  };
+
+  const refreshSelectedSong = async (id: number, scrollToken?: number, refreshWork = false) => {
+    const revision = ++selectedRevision;
+    try {
+      const next = await getSong(id);
+      if (revision !== selectedRevision || selectedId() !== id || deletedSongIds.has(id)) return;
+      selectedWorkId = next.summary.latest_work_id;
+      for (const workId of next.summary.active_work_ids) watchWork(workId, id);
+      setDetail(next);
+      setSelectedJobRefreshError(null);
+      if (refreshWork || job()?.id !== next.summary.latest_work_id) {
+        const workId = next.summary.latest_work_id;
+        const selection = selectionGeneration;
+        const previousSnapshot = workSnapshots.get(workId);
+        const workVersion = (workRefreshVersions.get(workId) ?? 0) + 1;
+        workRefreshVersions.set(workId, workVersion);
+        void getJob(workId).then(work => {
+          if (selection !== selectionGeneration || selectedId() !== id || detail()?.summary.latest_work_id !== workId || workRefreshVersions.get(workId) !== workVersion) return;
+          const currentSnapshot = workSnapshots.get(workId);
+          const latest = currentSnapshot !== previousSnapshot ? currentSnapshot! : work;
+          workSnapshots.set(workId, latest);
+          if (latest.song_id != null && latest.song_id !== id) adoptSong(id, latest.song_id);
+          setJob(latest);
+          if (trackedJob()?.id === workId) setTrackedJob(latest);
+        }).catch(() => {});
+      }
+      if (scrollToken !== undefined) setHistoryScrollRequest({ jobId: id, token: scrollToken });
+      return next;
+    } catch (error) {
+      if (revision !== selectedRevision || selectedId() !== id) return;
+      const workId = job()?.id ?? selectedWorkId;
+      if (workId !== null) {
+        try {
+          const latest = await getJob(workId);
+          if (revision !== selectedRevision || selectedId() !== id) return;
+          if (latest.song_id != null && latest.song_id !== id) { adoptSong(id, latest.song_id); return; }
+        } catch { /* Preserve the original refresh error. */ }
+      }
+      setSelectedJobRefreshError(`Could not refresh this song. ${error instanceof Error ? error.message : ""}`);
     }
   };
 
-  const refreshSelectedJob = async (id: number, scrollToken?: number) => {
-    const requestRevision = ++currentJobRevision;
-    setSelectedJobRefreshError(null);
-    try {
-      const latest = await getJob(id);
-      if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
-      const existing = history().find(item => item.id === id);
-      const merged = mergeCount(existing ? { ...latest, open_count: Math.max(existing.open_count, latest.open_count) } : latest);
-      setJob(merged);
-      if (trackedJob()?.id === id) setTrackedJob(merged);
-      historyItemRevision++;
-      setHistory(items => items.map(item => item.id === id ? merged : item));
-    } catch (error) {
-      if (requestRevision !== currentJobRevision || deletedJobIds.has(id) || job()?.id !== id) return;
-      const detail = error instanceof Error ? ` ${error.message}` : "";
-      setSelectedJobRefreshError(`Could not refresh this result.${detail} The displayed version may be stale.`);
-    }
-    if (scrollToken !== undefined && requestRevision === currentJobRevision && job()?.id === id) {
-      setHistoryScrollRequest({ jobId: id, token: scrollToken });
-    }
-  };
-  // One stream per active ID, shared by the selected view and the latest
-  // accepted job. A late fallback is ignored once that ID is no longer watched.
-  createEffect(() => {
-    const selected = job();
-    const tracked = trackedJob();
-    const wanted = new Set<number>();
-    if (selected && (selected.status === "queued" || selected.status === "running")) wanted.add(selected.id);
-    if (tracked && (tracked.status === "queued" || tracked.status === "running")) wanted.add(tracked.id);
-    for (const [id, unsubscribe] of subscriptions) {
-      if (!wanted.has(id)) {
-        subscriptions.delete(id);
-        unsubscribe();
+  const watchWork = (workId: number, songId: number) => {
+    workOwners.set(workId, songId);
+    if (subscriptions.has(workId)) return;
+    let valid = true;
+    let version = 0;
+    const apply = (next: JobDTO) => {
+      const owner = workOwners.get(workId) ?? songId;
+      if (!valid || next.id !== workId || deletedSongIds.has(owner)) return;
+      if (next.song_id != null && next.song_id !== owner) adoptSong(owner, next.song_id);
+      const canonicalId = workOwners.get(workId) ?? owner;
+      version++;
+      workSnapshots.set(workId, next);
+      if (selectedId() === canonicalId && job()?.id === workId) setJob(next);
+      if (trackedJob()?.id === workId) setTrackedJob(next);
+      if (next.status === "done" || next.status === "failed") {
+        subscriptions.delete(workId);
+        valid = false;
+        void refreshHistory();
+        if (selectedId() === canonicalId) void refreshSelectedSong(canonicalId);
       }
-    }
-    for (const id of wanted) {
-      if (subscriptions.has(id)) continue;
-      let valid = true;
-      let updateRevision = 0;
-      const apply = (next: JobDTO) => {
-        if (!valid || next.id !== id || deletedJobIds.has(id)) return;
-        updateRevision++;
-        if (job()?.id === id) {
-          currentJobRevision++;
-          setSelectedJobRefreshError(null);
-          setJob(mergeCount(next));
-        }
-        if (trackedJob()?.id === id) setTrackedJob(mergeCount(next));
-        if (next.status === "done" || next.status === "failed") void refreshHistory();
-      };
-      const close = subscribeToJob(id, apply, async () => {
-        const revision = updateRevision;
-        try {
-          const snapshot = await getJob(id);
-          if (revision === updateRevision) apply(snapshot);
-        } catch { /* Keep the last known status while the stream reconnects. */ }
-      });
-      subscriptions.set(id, () => { valid = false; close(); });
-    }
-  });
+    };
+    const close = subscribeToJob(workId, apply, async () => {
+      const previous = version;
+      try {
+        const snapshot = await getJob(workId);
+        if (version === previous) apply(snapshot);
+      } catch { /* Retain the last known state. */ }
+    });
+    subscriptions.set(workId, () => { valid = false; close(); });
+  };
   let initialLibrarySort = true;
   createEffect(() => {
     librarySort();
-    if (initialLibrarySort) {
-      initialLibrarySort = false;
-      return;
-    }
+    if (initialLibrarySort) { initialLibrarySort = false; return; }
     void refreshHistory();
   });
   onCleanup(() => {
@@ -210,157 +246,156 @@ const App: Component = () => {
     });
   });
 
+  const selectSong = (song: SongSummary, scroll = false) => {
+    setResultsRefreshToken(value => value + 1);
+    selectionGeneration++;
+    selectedWorkId = song.latest_work_id;
+    if (selectedId() !== song.id) {
+      selectedRevision++;
+      setDetail(null);
+      setJob(null);
+      setSelectedId(song.id);
+    }
+    setAugmentation(null);
+    setSubmissionNotice("");
+    setHistoryScrollRequest(null);
+    void refreshSelectedSong(song.id, scroll ? ++historyScrollToken : undefined, true);
+    for (const workId of song.active_work_ids) watchWork(workId, song.id);
+  };
   const viewTrackedJob = () => {
     const tracked = trackedJob();
-    if (!tracked || deletedJobIds.has(tracked.id)) return;
-    currentJobRevision++;
-    setSelectedJobRefreshError(null);
-    setHistoryScrollRequest(null);
-    setTab("workspace");
-    if (libraryOpen()) {
-      viewingFromLibrary = true;
-      selectedFromLibrary = false;
-      setLibraryOpen(false);
-    }
-    setJob(tracked);
-    if (tracked.status === "done" || tracked.status === "failed") void refreshSelectedJob(tracked.id);
-    if (!viewingFromLibrary) {
-      requestAnimationFrame(() => {
-        progressTarget?.scrollIntoView({ block: "start", behavior: "auto" });
-        progressTarget?.focus({ preventScroll: true });
-      });
-    }
+    const songId = trackedSongId;
+    const selection = selectionGeneration;
+    if (!tracked || songId === null) return;
+    const open = (song: SongSummary) => {
+      if (selection !== selectionGeneration || trackedSongId !== songId || trackedJob()?.id !== tracked.id) return;
+      selectSong(song);
+      setJob(trackedJob());
+      setTab("workspace");
+      if (libraryOpen()) { viewingFromLibrary = true; selectedFromLibrary = false; setLibraryOpen(false); }
+      else requestAnimationFrame(() => { progressTarget?.scrollIntoView({ block: "start", behavior: "auto" }); progressTarget?.focus({ preventScroll: true }); });
+    };
+    const song = history().find(item => item.id === songId);
+    if (song) open(song);
+    else void getSong(songId).then(result => open(result.summary)).catch(() => setSelectedJobRefreshError("Could not open the tracked song."));
   };
-
-
   onMount(async () => {
-    const requestRevision = ++currentJobRevision;
+    const revision = selectedRevision;
     try {
-      const current = await getCurrentJob();
-      if (requestRevision === currentJobRevision) {
-        setJob(current);
-        if (current && (current.status === "queued" || current.status === "running")) setTrackedJob(current);
+      const current = await getCurrentSong();
+      if (current && revision === selectedRevision && selectedId() === null) {
+        selectSong(current);
+        const work = await getJob(current.latest_work_id);
+        if (!trackedJob()) {
+          setTrackedJob(workSnapshots.get(work.id) ?? work);
+          trackedSongId = current.id;
+        }
       }
-    } catch {
-      if (requestRevision === currentJobRevision) setJob(null);
-    }
+    } catch { /* A failed initial load leaves the workspace empty. */ }
     void refreshHistory();
   });
-
-  const onSubmitted = (newJob: JobDTO, select = true) => {
+  const onSubmitted = (newJob: JobDTO | null, songId: number, token?: number, targetSongId?: number) => {
+    const select = token === undefined || token === selectionGeneration;
     if (select) {
-      currentJobRevision++;
-      setSelectedJobRefreshError(null);
+      selectionGeneration++;
+      selectedWorkId = newJob?.id ?? (selectedId() === songId ? selectedWorkId : null);
+      if (selectedId() !== songId) { selectedRevision++; setDetail(null); setSelectedId(songId); }
+      setSubmissionNotice(newJob ? "" : "Those outputs are already available.");
+      setJob(newJob);
       setLibraryOpen(false);
       setHistoryScrollRequest(null);
+      if (targetSongId !== undefined) {
+        setAugmentation(target => target && (target.id === targetSongId || target.id === songId) ? { ...target, id: songId } : target);
+      }
+      void refreshSelectedSong(songId);
     }
-    setTrackedJob(newJob);
-    if (select) setJob(newJob);
+    if (newJob) {
+      trackedSongId = songId;
+      setTrackedJob(newJob);
+      if (newJob.status === "queued" || newJob.status === "running") watchWork(newJob.id, songId);
+    }
     void refreshHistory();
   };
-
   const retrySelectedJob = async () => {
     const failed = job();
     if (!failed || failed.status !== "failed" || retryingId() !== null) return;
+    const token = selectionGeneration;
     setRetryingId(failed.id);
     setRetryError(null);
     try {
       const result = await retryJob(failed.id);
-      onSubmitted({
-        ...failed,
-        ...result,
-        original_key: null,
-        output_key: null,
-        result_revision: null,
-        open_count: 0,
-        manifest: null,
-        transcript: null,
-        pitch: null,
-        pitched_lyrics: null,
-        lyric_pitch_lines: null,
-        error_message: null,
-        created_at: Math.floor(Date.now() / 1000),
-        has_original: false,
-        has_pitch_vocals: false,
-      }, job()?.id === failed.id);
+      onSubmitted(result.work_id === null ? null : { ...failed, id: result.work_id, song_id: result.song_id, status: result.status, position: result.position, progress: result.progress, error_message: null }, result.song_id, token);
     } catch (error) {
       setRetryError({ jobId: failed.id, message: error instanceof Error ? error.message : "Could not retry this job." });
-    } finally {
-      setRetryingId(null);
-    }
+    } finally { setRetryingId(null); }
   };
-
-  const onHistorySelect = (selected: JobDTO) => {
-    void recordJobOpen(selected.id).then(({ id, open_count }) => {
-      if (deletedJobIds.has(id)) return;
+  const onHistorySelect = (selected: SongSummary) => {
+    void recordSongOpen(selected.id).then(({ id, open_count }) => {
+      if (deletedSongIds.has(id)) return;
       acknowledgedCounts.set(id, Math.max(acknowledgedCounts.get(id) ?? 0, open_count));
-      setHistory(items => items.map(item => item.id === id
-        ? { ...item, open_count: Math.max(item.open_count, open_count) }
-        : item));
+      setHistory(items => items.map(item => item.id === id ? { ...item, open_count: Math.max(item.open_count, open_count) } : item));
       void refreshHistory();
     }).catch(() => {});
-    setHistoryScrollRequest(null);
-    setSelectedJobRefreshError(null);
-    if (job()?.id !== selected.id) setJob(trackedJob()?.id === selected.id ? trackedJob()! : selected);
-    if (libraryOpen()) {
-      selectedFromLibrary = true;
-      setLibraryOpen(false);
-    }
-    void refreshSelectedJob(selected.id, ++historyScrollToken);
+    selectSong(selected, true);
+    if (libraryOpen()) { selectedFromLibrary = true; setLibraryOpen(false); }
   };
   const onReset = () => {
-    currentJobRevision++;
+    selectionGeneration++;
+    selectedRevision++;
+    selectedWorkId = null;
+    setSelectedId(null);
+    setDetail(null);
+    setJob(null);
+    setAugmentation(null);
     setSelectedJobRefreshError(null);
     setHistoryScrollRequest(null);
-    if (trackedJob()?.id === job()?.id && trackedJob()?.status !== "queued" && trackedJob()?.status !== "running") setTrackedJob(null);
-    setJob(null);
   };
-
-
   const isActive = () => job()?.status === "queued" || job()?.status === "running";
-  const isDone = () => job()?.status === "done";
-
   const onDeleted = (id: number) => {
-    deletedJobIds.add(id);
+    deletedSongIds.add(id);
     acknowledgedCounts.delete(id);
-    historyRequestRevision++;
-    setHistory((items) => items.filter((item) => item.id !== id));
-    if (trackedJob()?.id === id) setTrackedJob(null);
-    if (job()?.id === id) {
-      currentJobRevision++;
-      setSelectedJobRefreshError(null);
-      setHistoryScrollRequest(null);
-      setJob(null);
+    historyRevision++;
+    setHistory(items => items.filter(item => item.id !== id));
+    if (trackedSongId === id) { setTrackedJob(null); trackedSongId = null; }
+    if (selectedId() === id) onReset();
+  };
+  const selectTab = (next: "workspace" | "profile" | "admin") => {
+    setTab(next);
+    if (next === "workspace") {
+      setResultsRefreshToken(value => value + 1);
+      void refreshHistory();
+      const id = selectedId();
+      if (id !== null) void refreshSelectedSong(id, undefined, true);
     }
   };
-  const refreshWorkspace = async () => {
-    await refreshHistory();
-    const current = job();
-    if (current?.status === "done" && job()?.id === current.id) await refreshSelectedJob(current.id);
-  };
-  const selectTab = (next: "workspace" | "profile" | "people") => {
-    setTab(next);
-    if (next === "workspace") void refreshWorkspace();
-  };
-  const LibraryHistory = () => <HistoryView jobs={orderedHistory()} selectedId={job()?.id} sort={librarySort()} onSortChange={setLibrarySort} onSelect={onHistorySelect} onDeleted={onDeleted} />;
+  const LibraryHistory = () => <HistoryView jobs={orderedHistory()} selectedId={selectedId()} sort={librarySort()} onSortChange={setLibrarySort} onSelect={onHistorySelect} onDeleted={onDeleted} />;
+  const outputTargets = createMemo<OutputTarget[]>(() => {
+    const song = detail();
+    if (!song) return [];
+    const targets: OutputTarget[] = [];
+    if (song.variants.some(v => v.karaoke_work_id !== null)) targets.push({ kind: "karaoke", id: "song-karaoke" });
+    if (song.variants.some(v => v.pitched_lyrics_work_id !== null)) targets.push({ kind: "pitched-lyrics", id: "song-pitched-lyrics" });
+    if (song.variants.some(v => v.lyrics_work_id !== null)) targets.push({ kind: "lyrics", id: "song-lyrics" });
+    if (song.summary.has_original || song.variants.some(v => v.outputs.length)) targets.push({ kind: "audio", id: "song-audio" });
+    return targets;
+  });
 
   return (
     <main class="app-shell">
       <header class="app-header">
         <h1>ehpc's Vocal Tools</h1>
-        <p>Your audio workspace</p>
       </header>
       <nav class="account-nav" aria-label="Account navigation">
         <div class="account-tabs">
           <Button variant={tab() === "workspace" ? "secondary" : "ghost"} aria-pressed={tab() === "workspace"} onClick={() => selectTab("workspace")}>Workspace</Button>
           <Button variant={tab() === "profile" ? "secondary" : "ghost"} aria-pressed={tab() === "profile"} onClick={() => selectTab("profile")}>Profile</Button>
-          <Show when={auth.profile().is_admin}><Button variant={tab() === "people" ? "secondary" : "ghost"} aria-pressed={tab() === "people"} onClick={() => selectTab("people")}>People</Button></Show>
+          <Show when={auth.profile().is_admin}><Button variant={tab() === "admin" ? "secondary" : "ghost"} aria-pressed={tab() === "admin"} onClick={() => selectTab("admin")}>Admin</Button></Show>
         </div>
         <div class="account-actions"><span>{auth.profile().email}</span><Button variant="outline" onClick={() => { setAccountError(""); void auth.logout().catch((error) => setAccountError(error instanceof Error ? error.message : "Could not sign out.")); }}>Sign out</Button></div>
       </nav>
       <Show when={accountError()}><p role="alert" class="auth-error">{accountError()}</p></Show>
       <Show when={tab() === "profile"}><ProfileView profile={auth.profile()} refresh={auth.refresh} /></Show>
-      <Show when={tab() === "people" && auth.profile().is_admin}><AdminView /></Show>
+      <Show when={tab() === "admin" && auth.profile().is_admin}><AdminView /></Show>
       <div hidden={tab() !== "workspace"}>
       <div class="library-workspace">
         <Show when={!mobileLibrary()}>
@@ -395,21 +430,31 @@ const App: Component = () => {
             </Dialog.Root>
           </Show>
           <Show when={selectedJobRefreshError()}><p role="alert" class="auth-error">{selectedJobRefreshError()}</p></Show>
-      <SubmitForm onSubmitted={onSubmitted} />
+          <Show when={submissionNotice()}><p role="status">{submissionNotice()}</p></Show>
+      <div ref={sourceTarget} tabIndex={-1}>
+        <SubmitForm onSubmitted={onSubmitted} selectionToken={() => selectionGeneration} target={augmentationTarget()} onClearTarget={() => setAugmentation(null)} />
+      </div>
 
-      <Show when={job()}>
+      <Show when={selectedId() !== null}>
         <div class="processing-results" ref={progressTarget} tabIndex={-1}>
+          <Show when={detail()}>{song => <Button type="button" variant="outline" onClick={() => {
+            setAugmentation(song().summary);
+            requestAnimationFrame(() => {
+              sourceTarget?.scrollIntoView({ block: "start", behavior: "instant" });
+              sourceTarget?.focus({ preventScroll: true });
+            });
+          }}>Add outputs</Button>}</Show>
           <Show when={isActive()}>
             <QueueStatus job={job()!} />
           </Show>
-
-          <Show when={isDone()}>
-            <ResultsView job={job()!} onReset={onReset} scrollRequest={historyScrollRequest()} />
-          </Show>
+          <Show when={detail()}>{song =>
+            <ResultsView detail={song()} onReset={onReset} scrollRequest={historyScrollRequest()} refreshToken={resultsRefreshToken()} onStaleDetail={id => { if (selectedId() === id) void refreshSelectedSong(id); }} />
+          }</Show>
           <Show when={job()?.status === "failed"}>
             <section role="alert">
               <h2>Processing failed</h2>
               <p>{job()?.error_message || "The job failed."}</p>
+              <Show when={detail()?.summary.has_original || detail()?.variants.length}><p>Previously generated outputs remain available.</p></Show>
               <Show when={retryError()?.jobId === job()?.id}><p>{retryError()!.message}</p></Show>
               <Button type="button" variant="outline" class="min-h-11" disabled={retryingId() !== null} onClick={() => void retrySelectedJob()}>
                 {retryingId() === job()?.id ? "Retrying..." : "Retry"}
@@ -423,6 +468,7 @@ const App: Component = () => {
 
 
       </div>
+      <OutputsNavigation targets={outputTargets()} visible={tab() === "workspace" && !libraryOpen() && !modalOpen()} />
       <Show when={trackedJob()}>{tracked => <JobStatusDock job={tracked()} onView={viewTrackedJob} />}</Show>
     </main>
   );

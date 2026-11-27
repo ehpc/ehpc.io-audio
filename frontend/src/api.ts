@@ -18,6 +18,56 @@ export interface StemManifestEntry {
   duration_s: number;
 }
 
+export interface SongAvailability {
+  audio: boolean;
+  karaoke: boolean;
+  lyrics: boolean;
+  pitched_lyrics: boolean;
+}
+
+export interface SongSummary {
+  id: number;
+  title: string | null;
+  source_type: string;
+  source_value: string;
+  created_at: number;
+  open_count: number;
+  has_original: boolean;
+  original_work_id: number | null;
+  original_key: string | null;
+  status: JobStatus;
+  latest_work_id: number;
+  active_work_id: number | null;
+  active_work_ids: number[];
+  availability: SongAvailability;
+}
+
+export interface SongOutputRef {
+  identity: string;
+  label: string;
+  display_name: string;
+  work_id: number;
+  revision: string | null;
+  manifest: StemManifestEntry;
+}
+
+export interface SongVariant {
+  pitch_semitones: number;
+  tempo_percent: number;
+  outputs: SongOutputRef[];
+  karaoke_work_id: number | null;
+  karaoke_revision: string | null;
+  lyrics_work_id: number | null;
+  lyrics_revision: string | null;
+  pitched_lyrics_work_id: number | null;
+  pitched_lyrics_revision: string | null;
+}
+
+export interface SongDetail {
+  summary: SongSummary;
+  variants: SongVariant[];
+}
+
 export interface SeparationOptions {
   extract_vocals: boolean;
   extract_instruments: boolean;
@@ -232,6 +282,7 @@ export interface ReferenceReviewDTO {
 
 export interface JobDTO {
   id: number;
+  song_id: number | null;
   status: JobStatus;
   position: number | null;
   progress: JobProgress;
@@ -245,8 +296,6 @@ export interface JobDTO {
   options: SeparationOptions;
   manifest: StemManifestEntry[] | null;
   transcript: TranscriptDTO | null;
-  /** User-initiated opens of this job in the library. */
-  open_count: number;
   /** Absent in historical API payloads predating vocal pitch analysis. */
   pitch?: PitchAnalysisDTO | null;
   pitched_lyrics?: PitchedLyricsTrackDTO[] | null;
@@ -265,17 +314,14 @@ export type BooleanOptionKey = {
 
 
 /** What to show a user for a job: the resolved track title, else the raw source. */
-export function jobLabel(job: JobDTO): string {
+export function jobLabel(job: Pick<JobDTO, "title" | "source_value">): string {
   return job.title ?? job.source_value;
 }
 
 
-export interface SubmitResult {
-  id: number;
-  status: "queued";
-  position: number;
-  progress: JobProgress;
-}
+export type SubmitResult =
+  | { song_id: number; work_id: null; status: "done"; position: null; progress: null }
+  | { song_id: number; work_id: number; status: "queued" | "running" | "done"; position: number | null; progress: JobProgress };
 
 export interface DiskUsage {
   total_bytes: number;
@@ -559,7 +605,7 @@ export function audioSettingsError(options: SeparationOptions): string | null {
   return null;
 }
 
-export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
+export async function submitJob(input: SubmitInput, songId?: number): Promise<SubmitResult> {
   const invalid = audioSettingsError(input.options);
   if (invalid) throw new Error(invalid);
   const form = new FormData();
@@ -575,7 +621,7 @@ export async function submitJob(input: SubmitInput): Promise<SubmitResult> {
   form.append("tempo_percent", String(input.options.tempo_percent));
   form.append("mixes", JSON.stringify(input.options.mixes));
 
-  const res = await fetch(`${API_BASE}/jobs`, {
+  const res = await fetch(`${API_BASE}${songId === undefined ? "/jobs" : `/songs/${songId}/work`}`, {
     method: "POST",
     body: form,
     credentials: "include",
@@ -635,16 +681,6 @@ export async function searchSong(query: string, signal: AbortSignal): Promise<So
   }
 }
 
-export async function getCurrentJob(): Promise<JobDTO | null> {
-  const res = await fetch(`${API_BASE}/jobs/current`, {
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw await responseError(res);
-  }
-  return (await res.json()) as JobDTO | null;
-}
-
 export async function getJob(id: number): Promise<JobDTO> {
   const res = await fetch(`${API_BASE}/jobs/${id}`, {
     credentials: "include",
@@ -665,26 +701,26 @@ export async function retryJob(id: number): Promise<SubmitResult> {
   }
   return (await res.json()) as SubmitResult;
 }
-export async function deleteJob(id: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/jobs/${id}`, {
-    method: "DELETE",
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw await responseError(res);
-  }
-}
-
 export type LibrarySort = "usage" | "added";
 
-export async function listJobs(sort: LibrarySort = "usage"): Promise<JobDTO[]> {
-  const res = await fetch(`${API_BASE}/jobs?sort=${sort}`, {
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw await responseError(res);
-  }
-  return (await res.json()) as JobDTO[];
+export function listSongs(sort: LibrarySort = "usage"): Promise<SongSummary[]> {
+  return authRequest(`/songs?sort=${sort}`);
+}
+
+export function getCurrentSong(): Promise<SongSummary | null> {
+  return authRequest("/songs/current");
+}
+
+export function getSong(id: number): Promise<SongDetail> {
+  return authRequest(`/songs/${id}`);
+}
+
+export function recordSongOpen(id: number): Promise<JobOpenDTO> {
+  return authRequest(`/songs/${id}/open`, { method: "POST" });
+}
+
+export function deleteSong(id: number): Promise<void> {
+  return authRequest(`/songs/${id}`, { method: "DELETE" });
 }
 
 export interface JobOpenDTO {
@@ -692,16 +728,6 @@ export interface JobOpenDTO {
   open_count: number;
 }
 
-export async function recordJobOpen(id: number): Promise<JobOpenDTO> {
-  const res = await fetch(`${API_BASE}/jobs/${id}/open`, {
-    method: "POST",
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw await responseError(res);
-  }
-  return (await res.json()) as JobOpenDTO;
-}
 
 export async function getStatus(): Promise<StatusDTO> {
   const res = await fetch(`${API_BASE}/status`, { credentials: "include" });

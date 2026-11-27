@@ -27,13 +27,13 @@ async function submitAndComplete(page: Page): Promise<JobDTO> {
   const submitted = await posted.json();
   let job: JobDTO | undefined;
   await expect.poll(async () => {
-    const response = await page.request.get(`/api/jobs/${submitted.id}`);
+    const response = await page.request.get(`/api/jobs/${submitted.work_id}`);
     expect(response.ok()).toBe(true);
     job = await response.json() as JobDTO;
     expect(job.status, job.error_message ?? '').not.toBe('failed');
     return job.status;
   }, { timeout: 120_000 }).toBe('done');
-  await expect(page.locator(`a[href='/api/jobs/${submitted.id}/results/song']`).first()).toBeVisible();
+  await expect(page.locator(`a[href^='/api/jobs/${submitted.work_id}/results/song']`).first()).toBeVisible();
   return job!;
 }
 
@@ -154,12 +154,12 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     expect(mixedJob.options.pitch_semitones).toBe(2);
     expect(mixedJob.options.tempo_percent).toBe(120);
     expect(mixedJob.manifest?.map(stem => stem.label)).toEqual(['song', 'mix-1']);
-    const mixCard = page.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`).first().locator('../..');
+    const mixCard = page.locator(`a[href^='/api/jobs/${mixedJob.id}/results/mix-1']`).first().locator('../..');
     await expect(mixCard.getByText(mixLabel, { exact: true })).toBeVisible();
     await expect(mixCard.getByText('Source key: C major', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: /^Library/ }).click();
     const history = page.getByRole('dialog', { name: 'Library', exact: true }).getByRole('region', { name: 'History', exact: true });
-    await expect(history.locator(`a[href='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveCount(0);
+    await expect(history.locator(`a[href^='/api/jobs/${mixedJob.id}/results/mix-1']`)).toHaveCount(0);
     const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), mixedJob.created_at);
     const historyCard = history.locator('.rounded-lg')
       .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(mixedJob)}`, exact: true }) })
@@ -181,7 +181,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 390, height: 844 }
     expect(job.manifest?.map(stem => stem.label)).toEqual(['song']);
     const downloads = [
       page.locator(`a[download][href='/api/jobs/${job.id}/original']`),
-      page.locator(`a[download][href='/api/jobs/${job.id}/results/song']`),
+      page.locator(`a[download][href^='/api/jobs/${job.id}/results/song']`),
     ];
     for (const link of downloads) {
       await expect(link).toBeVisible();

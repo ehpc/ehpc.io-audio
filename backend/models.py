@@ -108,6 +108,56 @@ class ResultManifestEntry(BaseModel):
     display_name: str = ""
 
 
+class SongAvailability(BaseModel):
+    audio: bool = False
+    karaoke: bool = False
+    lyrics: bool = False
+    pitched_lyrics: bool = False
+
+
+class SongSummary(BaseModel):
+    id: int
+    title: str | None
+    source_type: str
+    source_value: str
+    created_at: int
+    open_count: int
+    has_original: bool
+    original_work_id: int | None
+    original_key: str | None
+    status: JobStatus
+    latest_work_id: int
+    active_work_id: int | None
+    active_work_ids: list[int]
+    availability: SongAvailability
+
+
+class SongOutputRef(BaseModel):
+    identity: str
+    label: str
+    display_name: str
+    work_id: int
+    revision: str | None
+    manifest: ResultManifestEntry
+
+
+class SongVariant(BaseModel):
+    pitch_semitones: float
+    tempo_percent: float
+    outputs: list[SongOutputRef]
+    karaoke_work_id: int | None = None
+    karaoke_revision: str | None = None
+    lyrics_work_id: int | None = None
+    lyrics_revision: str | None = None
+    pitched_lyrics_work_id: int | None = None
+    pitched_lyrics_revision: str | None = None
+
+
+class SongDetail(BaseModel):
+    summary: SongSummary
+    variants: list[SongVariant]
+
+
 class TranscriptDTO(BaseModel):
     segments: list[TranscriptSegment]
     language: str | None
@@ -234,6 +284,7 @@ class JobDTO(BaseModel):
     """API-facing job shape — must match the frontend's JobDTO contract exactly."""
 
     id: int
+    song_id: int | None
     status: JobStatus
     position: int | None
     progress: JobProgress
@@ -245,7 +296,6 @@ class JobDTO(BaseModel):
     result_revision: str | None = None
     error_message: str | None
     created_at: int
-    open_count: int
     has_original: bool
     original_key: str | None
     output_key: str | None
@@ -309,7 +359,9 @@ def job_progress(
     return JobProgress(steps=steps, current=current)
 
 
-def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
+def job_to_dto(
+    job: JobRecord, position: int | None, song_id: int | None = None
+) -> JobDTO:
     pitch = pitch_from_json(job.pitch_json) if job.pitch_json else None
     title = header_title(job.title)
     output_key = transposed_key(job.original_key, job.options.pitch_semitones)
@@ -320,6 +372,7 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
     )
     return JobDTO(
         id=job.id,
+        song_id=song_id,
         status=job.status,
         position=position if job.status == JobStatus.QUEUED else None,
         progress=job_progress(
@@ -352,7 +405,6 @@ def job_to_dto(job: JobRecord, position: int | None) -> JobDTO:
         result_revision=job.result_generation,
         error_message=job.error_message,
         created_at=job.created_at,
-        open_count=job.open_count,
         has_original=_has_original(job.id),
         original_key=job.original_key,
         output_key=output_key,

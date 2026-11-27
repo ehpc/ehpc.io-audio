@@ -28,7 +28,7 @@ test('real full-song per-stem notes and sung words seek, zoom, persist and stay 
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill('125');
   const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Process audio', exact: true }).click();
-  const id = (await (await submitted).json()).id as number;
+  const id = (await (await submitted).json()).work_id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {
     const response = await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } });
@@ -190,7 +190,7 @@ test('API pitch analysis publishes drums and vocals mix while retaining recovera
     form.append('detect_pitch', 'true');
     const response = await fetch('/api/jobs', { method: 'POST', body: form, credentials: 'include' });
     if (!response.ok) throw new Error(`Pitch-only API submission failed: ${response.status}`);
-    return (await response.json()).id as number;
+    return (await response.json()).work_id as number;
   }, [...source]);
   let job: JobDTO | undefined;
   await expect.poll(async () => {

@@ -24,7 +24,7 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   await page.getByLabel('Tempo (% of original)', { exact: true }).fill('125');
   const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Process audio', exact: true }).click();
-  const id = (await (await submitted).json()).id as number;
+  const id = (await (await submitted).json()).work_id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {
     job = await (await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } })).json() as JobDTO;
@@ -127,12 +127,12 @@ test('real full-song pitched lyrics preserve detected per-stem notes, output clo
   await view.screenshot({ path: info.outputPath('pitched-lyrics-1440.png') });
   // New output does not add players; selected tracks retain exclusive playback.
   const original = results.locator(`a[href="/api/jobs/${id}/original"]`).locator('..').locator('audio');
-  const vocal = results.locator(`a[download][href="/api/jobs/${id}/results/vocals"]`).locator('..').locator('audio');
+  const vocal = results.locator(`a[download][href^="/api/jobs/${id}/results/vocals"]`).locator('..').locator('audio');
   await original.evaluate(element => element.play());
   await vocal.evaluate(element => element.play());
   await expect.poll(() => original.evaluate(element => element.paused)).toBe(true);
   await vocal.evaluate(element => element.pause());
-  const song = results.locator(`a[download][href="/api/jobs/${id}/results/song"]`).locator('..').locator('audio');
+  const song = results.locator(`a[download][href^="/api/jobs/${id}/results/song"]`).locator('..').locator('audio');
   await song.evaluate(element => { element.preload = 'metadata'; element.load(); });
   await expect.poll(() => song.evaluate(element => element.duration)).toBeGreaterThan(0);
   const durationProof = {
@@ -214,7 +214,7 @@ test('pitched lyrics alone analyze hidden vocals without adding audio exports', 
   const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-30s.flac'));
   await page.goto('/');
   const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: { file: { name: 'public-domain-excerpt.flac', mimeType: 'audio/flac', buffer: source }, extract_pitched_lyrics: 'true' } });
-  const id = (await response.json()).id as number;
+  const id = (await response.json()).work_id as number;
   let job: JobDTO | undefined;
   await expect.poll(async () => {
     job = await (await page.request.get(`/api/jobs/${id}`, { headers: { Connection: 'close' } })).json() as JobDTO;

@@ -17,6 +17,7 @@ from backend.routes import (
     learning_progress,
     results,
     song_search,
+    songs,
     status,
 )
 
@@ -39,6 +40,7 @@ def _expensive_work(request: Request) -> bool:
             "/api/song-search",
             "/api/key-analysis",
         }
+        or (path.startswith("/api/songs/") and path.endswith("/work"))
         or path.endswith("/retry")
         or path.endswith("/pitch-reference/vocals")
     )
@@ -64,7 +66,7 @@ class CacheAdmission:
         deletion = (
             request.method == "DELETE"
             and len(path.rstrip("/").split("/")) == 4
-            and path.startswith("/api/jobs/")
+            and path.startswith("/api/songs/")
         )
         if not (_expensive_work(request) or playback or deletion):
             await self.app(scope, receive, send)
@@ -96,6 +98,19 @@ class JobAccess:
 
     def end_delete(self, job_id: int) -> None:
         self.deleting.remove(job_id)
+
+    def begin_read(self, job_id: int) -> bool:
+        if job_id in self.deleting:
+            return False
+        self.active[job_id] = self.active.get(job_id, 0) + 1
+        return True
+
+    def end_read(self, job_id: int) -> None:
+        count = self.active[job_id] - 1
+        if count:
+            self.active[job_id] = count
+        else:
+            del self.active[job_id]
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -215,6 +230,7 @@ def create_app() -> FastAPI:
     fastapi_app.include_router(key_analysis.router, prefix="/api")
     fastapi_app.include_router(status.router, prefix="/api")
     fastapi_app.include_router(song_search.router, prefix="/api")
+    fastapi_app.include_router(songs.router, prefix="/api")
 
     if FRONTEND_DIST.is_dir():
         root = FRONTEND_DIST.resolve()

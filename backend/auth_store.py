@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
-from backend import config, db
+from backend import config, db, library
 
 SESSION_IDLE = 72 * 3600
 OTP_TTL = 600
@@ -586,6 +586,7 @@ def bind_legacy(legacy_id: str, user_id: str) -> None:
             "INSERT INTO auth_legacy_bindings VALUES (?,?,?)",
             (legacy_id, user_id, int(time.time())),
         )
+        library.reassign_owner(conn, legacy_id, user_id)
         conn.execute(
             "UPDATE jobs SET session_id=? WHERE session_id=?", (user_id, legacy_id)
         )

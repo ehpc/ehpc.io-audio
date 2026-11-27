@@ -12,9 +12,11 @@ from separator.options import SeparationOptions
 def original(
     owner, audio, *, source_type="upload", source_value="original.wav", options=None
 ):
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         owner, source_type, source_value, options or SeparationOptions()
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     directory = config.UPLOADS_DIR / str(job_id)
     directory.mkdir(parents=True)
     (directory / "original.wav").write_bytes(audio)
@@ -41,11 +43,17 @@ def test_migrated_snapshot_retry_survives_deleted_original(
 ):
     owner = other_client.get("/api/auth/me").json()["id"]
     audio = tone_wav((392,), 0.3)
+    original_owner = client.get("/api/auth/me").json()["id"]
     original_id, song = original(
-        owner, audio, source_type="url", source_value="https://example.test/song"
+        original_owner,
+        audio,
+        source_type="url",
+        source_value="https://example.test/song",
     )
     options = SeparationOptions(pitch_semitones=2)
-    old_clone = db.insert_job(owner, "url", "https://example.test/song", options)
+    clone_work = db.insert_job(owner, "url", "https://example.test/song", options)
+    assert clone_work.work_id is not None
+    old_clone = clone_work.work_id
     directory = config.UPLOADS_DIR / str(old_clone)
     directory.mkdir(parents=True)
     (directory / "original.wav").write_bytes(audio)
@@ -79,11 +87,12 @@ def test_migrated_snapshot_retry_survives_deleted_original(
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='regenerations'"
         ).fetchone()
-    assert other_client.delete(f"/api/jobs/{original_id}").status_code == 204
+    original_song_id = client.get(f"/api/jobs/{original_id}").json()["song_id"]
+    assert client.delete(f"/api/songs/{original_song_id}").status_code == 204
     assert client.post(f"/api/jobs/{old_clone}/retry").status_code == 404
     response = other_client.post(f"/api/jobs/{old_clone}/retry")
     assert response.status_code == 200
-    new_id = response.json()["id"]
+    new_id = response.json()["work_id"]
     job = db.get_job(new_id)
     assert job is not None and job.session_id == owner and job.options == options
     assert job.source_type == "url" and job.source_value == "https://example.test/song"

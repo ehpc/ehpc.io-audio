@@ -38,16 +38,17 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
 `;
 
 for (const width of [1440, 390]) {
-  test(`ODT download ${width} keeps selected private stem and shared timestamp columns`, async ({ page, browser }, info) => {
+  test(`ODT download ${width} keeps selected private stem and shared timestamp columns`, async ({ page, browser, context }, info) => {
     expect(process.env.QUEUE_CONCURRENCY).toBe('0');
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.setViewportSize({ width, height: 900 });
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'synthetic-odt.wav', mimeType: 'audio/wav', buffer: source }, extract_pitched_lyrics: 'true',
+      file: { name: 'synthetic-odt.wav', mimeType: 'audio/wav', buffer: Buffer.concat([source, Buffer.from(`odt-${width}`)]) }, extract_pitched_lyrics: 'true',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const id = (await response.json()).work_id as number;
     execFileSync('uv', ['run', 'python', '-c', publish, String(id)], {
       cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
     });
@@ -59,6 +60,9 @@ for (const width of [1440, 390]) {
     for (const track of job.pitched_lyrics!) {
       await view.getByRole('combobox', { name: 'Pitched lyrics vocal stem' }).selectOption(track.label);
       expect(await text.textContent()).toBe(track.text);
+      await view.getByRole('button', { name: `Copy ${track.label} lyrics` }).click();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(track.text);
+      await expect(view.getByRole('status')).toContainText('Lyrics copied');
       const pending = page.waitForEvent('download');
       await view.getByRole('link', { name: 'Download lyrics with pitches ODT', exact: true }).click();
       const download = await pending;
@@ -112,20 +116,21 @@ for (const width of [1440, 390]) {
   });
 }
 
-test('historical karaoke exposes saved pitched lyrics without reprocessing', async ({ page, browser }, info) => {
+test('historical karaoke exposes saved pitched lyrics without reprocessing', async ({ page, browser, context }, info) => {
   expect(process.env.QUEUE_CONCURRENCY).toBe('0');
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
   const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
   const response = await page.request.post('/api/jobs', {
     headers: { Origin: process.env.E2E_BASE_URL! },
     multipart: {
-      file: { name: 'historical-karaoke.wav', mimeType: 'audio/wav', buffer: source },
+      file: { name: 'historical-karaoke.wav', mimeType: 'audio/wav', buffer: Buffer.concat([source, Buffer.from('historical-karaoke')]) },
       detect_pitch: 'true', extract_lyrics: 'true',
     },
   });
   expect(response.ok()).toBe(true);
-  const id = (await response.json()).id as number;
+  const id = (await response.json()).work_id as number;
   execFileSync('uv', ['run', 'python', '-c', publish, String(id)], {
     cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
   });
@@ -135,6 +140,9 @@ test('historical karaoke exposes saved pitched lyrics without reprocessing', asy
   const view = page.getByRole('region', { name: 'Lyrics with pitches', exact: true }).first();
   await expect(view).toBeVisible();
   const track = job.pitched_lyrics![0];
+  const transcript = page.getByRole('region', { name: 'Lyrics transcript', exact: true });
+  await transcript.getByRole('button', { name: 'Copy lyrics', exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(job.transcript!.timestamped_text);
   const txtPending = page.waitForEvent('download');
   await view.getByRole('link', { name: 'Download lyrics with pitches TXT', exact: true }).click();
   const txt = await txtPending;

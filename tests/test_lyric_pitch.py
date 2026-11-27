@@ -166,7 +166,7 @@ def test_saved_job_api_txt_and_odt_share_line_projection(client: TestClient) -> 
         "/api/jobs",
         data={"url": "https://example.org/synthetic", "extract_pitched_lyrics": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     stored_pitch = pitch_to_json(analysis)
     db.mark_done(job_id, [], transcript, stored_pitch)
     payload = client.get(f"/api/jobs/{job_id}").json()

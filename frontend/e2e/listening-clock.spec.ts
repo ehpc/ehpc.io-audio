@@ -42,7 +42,7 @@ test('Firefox partial-stream seeking keeps decoded audio on the native clock', a
     detect_pitch: 'true',
   } });
   expect(submitted.ok()).toBe(true);
-  const id = (await submitted.json()).id as number;
+  const id = (await submitted.json()).work_id as number;
   execFileSync('uv', ['run', 'python', '-c', completeSourceJob, String(id)], {
     cwd: process.env.E2E_REPO_ROOT,
     env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },

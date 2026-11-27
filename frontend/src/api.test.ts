@@ -3,7 +3,7 @@ import {
   AuthHttpError, adminCacheRegenerations, authLogout, authMe, authStart, authVerify,
   getStatus, lyricsDownloadUrl, lyricsJsonDownloadUrl, onUnauthorized, originalUrl,
   pitchDownloadUrl, pitchVocalsUrl, pitchedLyricsDownloadUrl, playbackUrl,
-  resultUrl, subscribeToJob,
+  resultUrl, submitJob, subscribeToJob,
 } from "~/api";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -19,6 +19,29 @@ it("adds the result revision to derived media URLs without changing original URL
   expect(pitchedLyricsDownloadUrl(12, "lead", "odt", revision)).toBe("/api/jobs/12/pitched-lyrics/lead/download?format=odt&revision=publish%2Fnext");
   expect(originalUrl(12)).toBe("/api/jobs/12/original");
 });
+
+it("adds work to an owned song without resending its private source and preserves a covered response", async () => {
+  const requests: { url: string; init?: RequestInit }[] = [];
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+    requests.push({ url: String(url), init });
+    return Response.json({ song_id: 21, work_id: null, status: "done", position: null, progress: null });
+  }));
+  const result = await submitJob({ options: {
+    extract_vocals: true, extract_instruments: false, extract_lyrics: false, detect_pitch: false,
+    extract_pitched_lyrics: false, mixes: [], decrowd: false, decrowd_vocals: false,
+    dereverb: false, genders: false, lead_backing: false, drums: false, pitch_semitones: -2.5, tempo_percent: 120,
+  } }, 21);
+  expect(result).toEqual({ song_id: 21, work_id: null, status: "done", position: null, progress: null });
+  expect(requests[0].url).toBe("/api/songs/21/work");
+  expect(requests[0].init?.credentials).toBe("include");
+  const payload = requests[0].init?.body as FormData;
+  expect(payload.has("file")).toBe(false);
+  expect(payload.has("url")).toBe(false);
+  expect(payload.get("extract_vocals")).toBe("true");
+  expect(payload.get("pitch_semitones")).toBe("-2.5");
+  expect(payload.get("tempo_percent")).toBe("120");
+});
+
 
 
 it("notifies only on private 401 responses and supports unsubscribe", async () => {

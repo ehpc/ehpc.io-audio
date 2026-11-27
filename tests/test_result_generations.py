@@ -21,7 +21,7 @@ from separator.pitch import PitchAnalysis, PitchTrack, pitch_to_json
 def _job(client: TestClient) -> int:
     job_id = client.post(
         "/api/jobs", files={"file": ("source.mp3", b"source", "audio/mpeg")}
-    ).json()["id"]
+    ).json()["work_id"]
     db.mark_done(
         job_id,
         [

@@ -540,7 +540,7 @@ def test_pitched_lyrics_lifecycle_canonical_bytes_history_retry_and_privacy(
         files={"file": ("Cœur.wav", b"source", "audio/wav")},
         data={"extract_pitched_lyrics": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(queue, "reference_metadata", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -576,16 +576,27 @@ def test_pitched_lyrics_lifecycle_canonical_bytes_history_retry_and_privacy(
     assert client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
     db.init_db()
     assert (
-        client.get("/api/jobs").json()[0]["pitched_lyrics"] == payload["pitched_lyrics"]
+        client.get(f"/api/jobs/{job_id}").json()["pitched_lyrics"]
+        == payload["pitched_lyrics"]
     )
     event = json.loads(
         client.get(f"/api/jobs/{job_id}/events").text.removeprefix("data: ")
     )
     assert event["pitched_lyrics"] == payload["pitched_lyrics"]
-    assert client.post(f"/api/jobs/{job_id}/retry").status_code == 200
+    before_retry = client.get(f"/api/songs/{payload['song_id']}").json()
+    retried = client.post(f"/api/jobs/{job_id}/retry")
+    assert retried.status_code == 200
+    assert retried.json() == {
+        "song_id": payload["song_id"],
+        "work_id": None,
+        "status": "done",
+        "position": None,
+        "progress": None,
+    }
+    assert client.get(f"/api/songs/{payload['song_id']}").json() == before_retry
     assert (
-        client.get("/api/jobs/current").json()["options"]["extract_pitched_lyrics"]
-        is True
+        client.get(f"/api/jobs/{job_id}").json()["pitched_lyrics"]
+        == payload["pitched_lyrics"]
     )
 
 
@@ -601,7 +612,7 @@ def test_pitched_download_uses_transform_filename_and_requires_explicit_option(
             "pitch_semitones": "1.25",
             "tempo_percent": "125",
         },
-    ).json()["id"]
+    ).json()["work_id"]
     db.mark_done(job_id, [], transcript, pitch_to_json(analysis))
     response = client.get(f"/api/jobs/{job_id}/pitched-lyrics/lead/download")
     assert "lead - lyrics-with-pitches - pitch+1.25st - tempo125pct.txt" in unquote(
@@ -615,7 +626,9 @@ def test_pitched_download_uses_transform_filename_and_requires_explicit_option(
     assert payload["pitched_lyrics"][0]["text"] == response.text
     job = db.get_job(job_id)
     assert job is not None
-    plain_id = db.insert_job(job.session_id, "url", "example", SeparationOptions())
+    plain_work = db.insert_job(job.session_id, "url", "example", SeparationOptions())
+    assert plain_work.work_id is not None
+    plain_id = plain_work.work_id
     db.mark_done(plain_id, [], transcript, pitch_to_json(analysis))
     assert (
         client.get(f"/api/jobs/{plain_id}/pitched-lyrics/lead/download").status_code
@@ -636,7 +649,7 @@ def test_word_only_saved_job_downloads_both_real_formats(
     job_id = client.post(
         "/api/jobs",
         data={"url": "https://example.org/song", "extract_pitched_lyrics": "true"},
-    ).json()["id"]
+    ).json()["work_id"]
     db.mark_done(job_id, [], transcript, pitch_to_json(analysis))
     plain = client.get(f"/api/jobs/{job_id}/lyrics/download")
     pitched = client.get(f"/api/jobs/{job_id}/pitched-lyrics/lead/download")

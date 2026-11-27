@@ -25,6 +25,13 @@ def _transcript(word):
     )
 
 
+def _work_count(owner):
+    with db._session() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE session_id=?", (owner,)
+        ).fetchone()[0]
+
+
 def _pitch(word, midi, frequency):
     return pitch_to_json(
         PitchAnalysis(
@@ -72,7 +79,7 @@ def test_single_global_slot_processes_all_song_variants(client, monkeypatch):
         )
         assert status["completed_jobs"] == completed + 1
     assert status["status"] == "done"
-    assert len(client.get("/api/jobs").json()) == 3
+    assert _work_count(owner) == 3
     for job_id, old in zip(jobs, before, strict=True):
         new = db.get_job(job_id)
         assert old is not None and new is not None
@@ -188,4 +195,4 @@ def test_worker_publishes_lyrics_pitch_reference_and_key_together(client, monkey
     assert ID3(BytesIO(response.content))["TIT2"].text[0] == new_dto["manifest"][0][
         "download_name"
     ].removesuffix(".mp3")
-    assert len(client.get("/api/jobs").json()) == 1
+    assert _work_count(owner) == 1

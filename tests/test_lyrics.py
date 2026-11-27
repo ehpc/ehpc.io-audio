@@ -33,7 +33,7 @@ def _complete(
         data={"extract_lyrics": "true"},
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue, "process_source", lambda *args: ProcessingResult({}, transcript)
@@ -74,15 +74,24 @@ def test_lyrics_download_matches_browser_text_and_survives_history(
     assert client.get(f"/api/jobs/{job_id}/original").content == b"source-audio"
     assert client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
     db.init_db()
-    assert client.get("/api/jobs").json()[0]["transcript"] == payload
-    assert client.get("/api/jobs/current").json()["transcript"] == payload
+    assert client.get(f"/api/jobs/{job_id}").json()["transcript"] == payload
     event = client.get(f"/api/jobs/{job_id}/events").text
     assert json.loads(event.removeprefix("data: ").strip())["transcript"] == payload
     for suffix in ("", "/lyrics", "/lyrics/download", "/events"):
         assert other_client.get(f"/api/jobs/{job_id}{suffix}").status_code == 404
-    assert other_client.get("/api/jobs").json() == []
-    assert client.post(f"/api/jobs/{job_id}/retry").status_code == 200
-    assert client.get("/api/jobs/current").json()["options"]["extract_lyrics"] is True
+    assert other_client.get("/api/songs").json() == []
+    before_retry = client.get(f"/api/songs/{job['song_id']}").json()
+    retried = client.post(f"/api/jobs/{job_id}/retry")
+    assert retried.status_code == 200
+    assert retried.json() == {
+        "song_id": job["song_id"],
+        "work_id": None,
+        "status": "done",
+        "position": None,
+        "progress": None,
+    }
+    assert client.get(f"/api/songs/{job['song_id']}").json() == before_retry
+    assert client.get(f"/api/jobs/{job_id}").json()["transcript"] == payload
 
 
 def test_empty_recognition_is_distinct_from_not_requested(
@@ -98,9 +107,9 @@ def test_empty_recognition_is_distinct_from_not_requested(
     assert download.status_code == 200
     assert download.content == "歌声\n".encode()
     unrequested = client.post("/api/jobs", data={"url": "https://example.org/song"})
-    other_id = unrequested.json()["id"]
-    assert client.get(f"/api/jobs/{other_id}").json()["transcript"] is None
-    assert client.get(f"/api/jobs/{other_id}/lyrics").status_code == 404
+    other_work_id = unrequested.json()["work_id"]
+    assert client.get(f"/api/jobs/{other_work_id}").json()["transcript"] is None
+    assert client.get(f"/api/jobs/{other_work_id}/lyrics").status_code == 404
 
 
 def test_missing_or_failed_asr_is_not_success_with_fabricated_text(
@@ -117,9 +126,11 @@ def test_missing_or_failed_asr_is_not_success_with_fabricated_text(
 
 
 def test_older_job_without_lyrics_fields_remains_download_only() -> None:
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         "old-session", "url", "https://example.org", SeparationOptions()
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     with sqlite3.connect(config.DB_PATH) as connection:
         connection.execute(
             "UPDATE jobs SET options_json = ? WHERE id = ?",
@@ -177,7 +188,7 @@ def test_transformed_audio_does_not_rescale_original_lyrics_clock(
             "tempo_percent": "200",
         },
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue, "process_source", lambda *args: ProcessingResult({}, transcript)

@@ -34,9 +34,11 @@ def stages(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", config.DATA_DIR / "jobs.db")
     db.init_db()
     manifest = fixture_manifest(tmp_path / "producer")
-    job = db.insert_job("drain-test", "upload", "source.wav", SeparationOptions())
+    submitted = db.insert_job("drain-test", "upload", "source.wav", SeparationOptions())
+    assert submitted.work_id is not None
+    job = submitted.work_id
     stop = threading.Event()
-    runner = inference.StageRunner(job, manifest, stop)
+    runner = inference.StageRunner(submitted.work_id, manifest, stop)
     context = ProcessingContext(
         config.DATA_DIR / "artifacts", manifest, runner, on_committed=runner.committed
     )

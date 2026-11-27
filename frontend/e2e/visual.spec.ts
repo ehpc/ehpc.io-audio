@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page, type TestInfo } from '@playwright/test';
@@ -26,20 +27,22 @@ test.afterEach(async ({ page, browser }, info) => {
 
 // Real owner-scoped completed job; no processing or model inference.
 const seedDeleteDialog = String.raw`
-import sys
+import json,sys
 from backend import db
+from separator.options import SeparationOptions
+song_id,work_id=db.insert_job(sys.argv[1],"upload","fixture.wav",SeparationOptions())
 with db._session() as c:
-    cursor = c.execute("INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,created_at,finished_at) VALUES (?,?,?,?,?,?,?,?)",
-                       (sys.argv[1], "done", "upload", "fixture.wav", "Visual fixture track", "{}", 1767268800, 1767268801))
-    print(cursor.lastrowid)
+    c.execute("UPDATE jobs SET status='done',title=?,created_at=?,finished_at=? WHERE id=?",
+              ("Visual fixture track",1767268800,1767268801,work_id))
+print(json.dumps([song_id,work_id]))
 `;
 for (const viewport of [mobile, desktop]) {
   test(`delete confirmation ${viewport.width}`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
     const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
-    const id = execFileSync('uv', ['run', 'python', '-c', seedDeleteDialog, identity.id], {
+    const [songId] = JSON.parse(execFileSync('uv', ['run', 'python', '-c', seedDeleteDialog, identity.id], {
       cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! }, encoding: 'utf8',
-    }).trim();
+    }).trim()) as [number, number];
     try {
       await page.goto('/');
       if (viewport.width <= 1000) await page.getByRole('button', { name: 'Library', exact: true }).click();
@@ -48,30 +51,29 @@ for (const viewport of [mobile, desktop]) {
       await expect(dialog).toContainText('Shared reusable processing cache is not deleted.');
       await compare(dialog, info, `delete-confirmation-${viewport.width}.png`);
     } finally {
-      execFileSync('uv', ['run', 'python', '-c',
-        'import sys; from backend import db\nwith db._session() as c: c.execute("DELETE FROM jobs WHERE id=? AND session_id=?", (int(sys.argv[1]), sys.argv[2]))', id, identity.id], {
-        cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
-      });
+      const response = await page.request.delete(`/api/songs/${songId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      expect([204, 404]).toContain(response.status());
     }
   });
 }
 // A private, queue-disabled fixture exercises the real accepted-job dock.
 const seedQueuedDock = String.raw`
-import sys
+import json,sys
 from backend import config, db
+from separator.options import SeparationOptions
 assert config.QUEUE_CONCURRENCY == 0
+song_id,work_id=db.insert_job(sys.argv[1],"upload","fixture.wav",SeparationOptions())
 with db._session() as c:
-    cursor = c.execute("INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,created_at) VALUES (?,?,?,?,?,?,?)",
-                       (sys.argv[1], "queued", "upload", "fixture.wav", "Queued visual fixture song", "{}", 1767268800))
-    print(cursor.lastrowid)
+    c.execute("UPDATE jobs SET title=?,created_at=? WHERE id=?",("Queued visual fixture song",1767268800,work_id))
+print(json.dumps([song_id,work_id]))
 `;
 for (const viewport of [mobile, desktop]) {
   test(`queued job dock ${viewport.width}`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
     const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
-    const id = execFileSync('uv', ['run', 'python', '-c', seedQueuedDock, identity.id], {
+    const [songId, id] = JSON.parse(execFileSync('uv', ['run', 'python', '-c', seedQueuedDock, identity.id], {
       cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! }, encoding: 'utf8',
-    }).trim();
+    }).trim()) as [number, number];
     try {
       await page.goto('/');
       const dock = page.locator('.job-dock');
@@ -97,8 +99,12 @@ import sys
 from backend import config, db
 assert config.QUEUE_CONCURRENCY == 0
 with db._session() as c:
-    c.execute("DELETE FROM jobs WHERE id=? AND session_id=? AND status='queued' AND title='Queued visual fixture song'", (int(sys.argv[1]), sys.argv[2]))
-`, id, identity.id], {
+    assert c.execute("SELECT 1 FROM jobs WHERE id=? AND session_id=? AND status='queued' AND title='Queued visual fixture song'", (int(sys.argv[1]), sys.argv[2])).fetchone()
+    c.execute("DELETE FROM library_song_jobs WHERE job_id=?", (int(sys.argv[1]),))
+    c.execute("DELETE FROM library_song_sources WHERE song_id=?", (int(sys.argv[3]),))
+    c.execute("DELETE FROM library_songs WHERE id=?", (int(sys.argv[3]),))
+    c.execute("DELETE FROM jobs WHERE id=?", (int(sys.argv[1]),))
+`, String(id), identity.id, String(songId)], {
         cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
       });
     }
@@ -110,26 +116,32 @@ with db._session() as c:
 const seedExpandedProgress = String.raw`
 import json,sys
 from backend import config, db
+from separator.options import SeparationOptions
 assert config.QUEUE_CONCURRENCY == 0
-options = {"extract_vocals": True, "extract_lyrics": True, "detect_pitch": True}
+options=SeparationOptions(extract_vocals=True,extract_lyrics=True,detect_pitch=True)
+song_id,work_id=db.insert_job(sys.argv[1],"upload","fixture.wav",options)
 with db._session() as c:
-    cursor = c.execute("INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,created_at) VALUES (?,?,?,?,?,?,?)",
-                       (sys.argv[1], "running", "upload", "fixture.wav", "Expanded visual fixture song", json.dumps(options), 1767268800))
-    print(cursor.lastrowid)
+    c.execute("UPDATE jobs SET status='running',title=?,created_at=? WHERE id=?",("Expanded visual fixture song",1767268800,work_id))
+print(json.dumps([song_id,work_id]))
 `;
 for (const viewport of [mobile, desktop]) {
   test(`expanded progress gauge ${viewport.width}`, async ({ page }, info) => {
     await page.setViewportSize(viewport);
     const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
-    const id = execFileSync('uv', ['run', 'python', '-c', seedExpandedProgress, identity.id], {
+    const [songId, id] = JSON.parse(execFileSync('uv', ['run', 'python', '-c', seedExpandedProgress, identity.id], {
       cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! }, encoding: 'utf8',
-    }).trim();
+    }).trim()) as [number, number];
     try {
       const response = await page.request.get(`/api/jobs/${id}`);
       expect(response.ok()).toBe(true);
       const job = await response.json();
       expect(job.progress.steps).toEqual(['source', 'analysis', 'wait', 'metadata', 'separation', 'lyrics', 'pitch', 'export']);
       job.progress.current = 'lyrics';
+      // Keep physical-work refreshes consistent with the running SSE snapshot.
+      await page.route(`**/api/jobs/${id}`, async route => {
+        if (route.request().method() === 'GET') await route.fulfill({ json: job });
+        else await route.continue();
+      });
       await page.addInitScript(snapshot => {
         class VisualEventSource {
           onmessage: ((event: MessageEvent) => void) | null = null;
@@ -157,8 +169,12 @@ import sys
 from backend import config, db
 assert config.QUEUE_CONCURRENCY == 0
 with db._session() as c:
-    c.execute("DELETE FROM jobs WHERE id=? AND session_id=? AND status='running' AND title='Expanded visual fixture song'", (int(sys.argv[1]), sys.argv[2]))
-`, id, identity.id], {
+    assert c.execute("SELECT 1 FROM jobs WHERE id=? AND session_id=? AND status='running' AND title='Expanded visual fixture song'", (int(sys.argv[1]), sys.argv[2])).fetchone()
+    c.execute("DELETE FROM library_song_jobs WHERE job_id=?", (int(sys.argv[1]),))
+    c.execute("DELETE FROM library_song_sources WHERE song_id=?", (int(sys.argv[3]),))
+    c.execute("DELETE FROM library_songs WHERE id=?", (int(sys.argv[3]),))
+    c.execute("DELETE FROM jobs WHERE id=?", (int(sys.argv[1]),))
+`, String(id), identity.id, String(songId)], {
         cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
       });
     }
@@ -200,8 +216,8 @@ for (const viewport of [desktop, mobile]) {
     seedCachedSongs();
     await page.setViewportSize(viewport);
     await page.goto('/');
-    await page.getByRole('button', { name: 'People', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    await page.getByRole('button', { name: 'Admin', exact: true }).click();
+    await page.getByRole('button', { name: 'Cached songs', exact: true }).click();
     const cache = page.getByRole('region', { name: 'Cached songs' });
     await expect(cache.getByText('Silver harbor')).toBeVisible();
     await cache.getByRole('checkbox', { name: /Silver harbor/ }).check();
@@ -236,7 +252,7 @@ for (const viewport of [desktop, mobile]) {
     await expect(page.getByText(/Unlimited invitations/)).toBeVisible();
     await compare(page, info, `profile-${viewport.width}.png`);
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await page.getByRole('button', { name: 'People', exact: true }).click();
+    await page.getByRole('button', { name: 'Admin', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'People', exact: true })).toBeVisible();
     await compare(page, info, `people-${viewport.width}.png`);
     const admin = await (await page.request.get('/api/auth/me')).json();
@@ -622,11 +638,11 @@ for (const viewport of [mobile, desktop]) {
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8');
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
       detect_pitch: 'true', extract_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const id = (await response.json()).work_id as number;
     execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
       cwd: process.env.E2E_REPO_ROOT!, input: fixture,
       env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
@@ -725,16 +741,17 @@ for (const viewport of [mobile, desktop]) {
     expect(process.env.QUEUE_CONCURRENCY).toBe('0');
     await page.setViewportSize(viewport);
     let jobId: number | undefined;
+    let songId: number | undefined;
     try {
       await page.goto('/');
       const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
       const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/line-pitch-fallback.json'), 'utf8'));
       const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-        file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+        file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
         detect_pitch: 'true', extract_lyrics: 'true', pitch_semitones: '0', tempo_percent: '100',
       } });
       expect(response.status()).toBe(200);
-      jobId = (await response.json()).id as number;
+      ({ work_id: jobId, song_id: songId } = await response.json() as { work_id: number; song_id: number });
       execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(jobId)], {
         cwd: process.env.E2E_REPO_ROOT!,
         input: JSON.stringify({ ...fixture, playback_labels: ['song'] }),
@@ -804,8 +821,8 @@ for (const viewport of [mobile, desktop]) {
       });
     } finally {
       await page.goto('about:blank');
-      if (jobId !== undefined) {
-        const deleted = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      if (songId !== undefined) {
+        const deleted = await page.request.delete(`/api/songs/${songId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
         expect(deleted.status()).toBe(204);
       }
     }
@@ -854,11 +871,11 @@ for (const viewport of [mobile, desktop]) {
       ...['C#5', 'D#5', 'F#5'].map((name, i) => note(name, [73, 75, 78][i], 11 + i * 0.2, 3)),
     ] }];
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
       detect_pitch: 'true', extract_lyrics: 'true', extract_instruments: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const id = (await response.json()).work_id as number;
     execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
       cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify({ ...fixture, playback_labels: ['song', 'instruments'] }),
       env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
@@ -918,11 +935,11 @@ for (const viewport of [mobile, desktop]) {
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8'));
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
       detect_pitch: 'true', extract_lyrics: 'true', extract_vocals: 'true', extract_instruments: 'true',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const { work_id: id, song_id: songId } = await response.json() as { work_id: number; song_id: number };
     try {
       execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
         cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify({ ...fixture, playback_labels: ['song', 'instruments', 'vocals'] }),
@@ -951,7 +968,7 @@ for (const viewport of [mobile, desktop]) {
       await expect.soft(dialog).toHaveScreenshot(`learn-timings-${viewport.width}.png`);
     } finally {
       await page.goto('about:blank');
-      const deleted = await page.request.delete(`/api/jobs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      const deleted = await page.request.delete(`/api/songs/${songId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
       expect(deleted.status()).toBe(204);
     }
   });
@@ -975,11 +992,11 @@ for (const viewport of [mobile, desktop]) {
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'synthetic-reference.wav', mimeType: 'audio/wav', buffer: source },
+      file: { name: 'synthetic-reference.wav', mimeType: 'audio/wav', buffer: Buffer.concat([source, randomBytes(16)]) },
       extract_lyrics: 'true',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const id = (await response.json()).work_id as number;
     const original = [{ start_s: 1, end_s: 3, text: 'Amber lanterns shine' }];
     const fixture = {
       segments: [{ start_s: 1, end_s: 3, text: 'Amber lanterns softly shine' }],
@@ -1036,11 +1053,11 @@ for (const viewport of [mobile, desktop]) {
     await page.goto('/');
     const source = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'synthetic-pitch-typography.wav', mimeType: 'audio/wav', buffer: source },
+      file: { name: 'synthetic-pitch-typography.wav', mimeType: 'audio/wav', buffer: Buffer.concat([source, randomBytes(16)]) },
       extract_pitched_lyrics: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const id = (await response.json()).work_id as number;
     // Deliberately synthetic data tests typography, not model accuracy.
     const words = [
       { start_s: 1, end_s: 2, text: 'Cœur', probability: null, alignment_score: 0.8, origin: 'reference-aligned' },
@@ -1108,12 +1125,12 @@ for (const viewport of [mobile, desktop]) {
       fixture.pitch.words = [fixture.pitch.words.find((word: { text: string }) => word.text === 'acquaintance')];
       fixture.playback_labels = ['song', 'vocals', 'lead', 'backing'];
       const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-        file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+        file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
         detect_pitch: 'true', extract_vocals: 'true', extract_lyrics: 'true', lead_backing: 'true',
         pitch_semitones: '1.25', tempo_percent: '125',
       } });
       expect(response.ok()).toBe(true);
-      const id = (await response.json()).id as number;
+      const id = (await response.json()).work_id as number;
       execFileSync('uv', ['run', 'python', '-c', publishTimeline, String(id)], {
         cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify(fixture),
         env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
@@ -1202,8 +1219,8 @@ for (const viewport of [mobile, desktop]) {
       });
     });
     await page.goto('/');
-    await page.getByRole('button', { name: 'People', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    await page.getByRole('button', { name: 'Admin', exact: true }).click();
+    await page.getByRole('button', { name: 'Cached songs', exact: true }).click();
     const cache = page.getByRole('region', { name: 'Cached songs' });
     await expect(cache.getByText(fixture.title)).toBeVisible();
     await expect(cache.getByText('2 saved job variants will be regenerated.')).toBeVisible();

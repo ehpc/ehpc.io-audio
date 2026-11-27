@@ -11,6 +11,8 @@ vi.mock("./api", async (original) => ({
   grantInviteSlot: vi.fn(),
   deleteInvite: vi.fn(),
   updateAdminUser: vi.fn(),
+  adminCache: vi.fn(),
+  adminCacheRegenerations: vi.fn(),
   revokeUserSessions: vi.fn(),
 }));
 
@@ -27,6 +29,11 @@ beforeEach(() => {
   vi.mocked(api.adminUserActivity).mockResolvedValue({
     registered_at: null, last_login_at: null, last_activity_at: null, invite_used: 0, invites: [], jobs: [], searches: [],
   });
+  vi.mocked(api.adminCache).mockResolvedValue({
+    songs: [{ id: "cache-1", title: "Harbor cache", artist: null, bytes: 42, regenerable: false, matched_jobs: 0, unavailable_reason: null }],
+    unattributed_bytes: 0, selective_ready: true, busy: false, unsafe: false, unmatched_completed_jobs: 0,
+  });
+  vi.mocked(api.adminCacheRegenerations).mockResolvedValue([]);
   vi.mocked(api.revokeUserSessions).mockResolvedValue(undefined);
 });
 
@@ -180,5 +187,17 @@ describe("AdminView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Retry activity" }));
     expect(await screen.findByText("No jobs.")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps people and cached-song management in separate sections", async () => {
+    render(() => <AdminView />);
+    expect(await screen.findByText("person@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("Harbor cache")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Cached songs" }));
+    expect(await screen.findByText("Harbor cache")).toBeInTheDocument();
+    expect(screen.queryByText("person@example.com")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "People" }));
+    expect(await screen.findByText("person@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("Harbor cache")).not.toBeInTheDocument();
   });
 });

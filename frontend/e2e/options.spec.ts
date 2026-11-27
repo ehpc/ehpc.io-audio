@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import { jobLabel, type BooleanOptionKey, type JobDTO, type SeparationOptions } from '../src/api';
+import { jobLabel, type BooleanOptionKey, type JobDTO, type SeparationOptions, type SongDetail, type SongOutputRef, type SubmitResult } from '../src/api';
 import { displayOutputLabel } from '../src/lib/expectedStems';
 import { keyScale, transposeKey } from '../src/lib/music';
 import { stemMixName, type StemComponent, type StemMix } from '../src/lib/stemMix';
@@ -117,10 +117,12 @@ async function submit(page: Page) {
   await page.locator('form button[type=submit]').click();
   const res = await response;
   expect(res.status()).toBe(200);
-  const submitted = await res.json();
-  expect(submitted.status).toBe('queued');
+  const submitted = await res.json() as SubmitResult;
   if (submitted.position !== null) expect(submitted.position).toBeGreaterThan(0);
-  return submitted.id as number;
+  if (submitted.work_id !== null) return submitted.work_id;
+  expect(submitted.status).toBe('done');
+  const song = await (await page.request.get(`/api/songs/${submitted.song_id}`)).json() as SongDetail;
+  return song.summary.latest_work_id;
 }
 
 async function complete(page: Page, id: number) {
@@ -136,9 +138,25 @@ async function complete(page: Page, id: number) {
   return job!;
 }
 
+function requestedOutput(detail: SongDetail, options: SeparationOptions, label: string): SongOutputRef {
+  const variant = detail.variants.find(item => item.pitch_semitones === options.pitch_semitones && item.tempo_percent === options.tempo_percent);
+  expect(variant, `missing requested pitch/tempo variant for ${label}`).toBeDefined();
+  const mix = options.mixes.find(item => item.id === label);
+  const semantic = (stem: string) => {
+    if (options.decrowd && ['drums', 'bass', 'other-instruments'].includes(stem)) return `${stem}:decrowded`;
+    if (options.decrowd_vocals && ['vocals-male', 'vocals-female', 'lead', 'backing'].includes(stem.replace(/-dry$/, ''))) return `${stem}:decrowded`;
+    return stem;
+  };
+  const identity = mix
+    ? `mix:${mix.components.flatMap(component => componentStems(component, options)).map(semantic).sort().join(',')}`
+    : semantic(label);
+  const output = variant!.outputs.find(item => item.identity === identity);
+  expect(output, `missing requested semantic output ${identity}`).toBeDefined();
+  return output!;
+}
+
 async function referenceMixInputs(page: Page, info: TestInfo, options: SeparationOptions, labels: string[]) {
-  // A distinct real job publishes reference stems without exposing prerequisites
-  // in the mix-only job whose manifest and links were already asserted.
+  // Reference stems may already belong to earlier work on the same song.
   const components = [...new Set(options.mixes.flatMap(mix => mix.components))];
   const needsSplit = (variants: StemComponent[], flag: BooleanOptionKey) =>
     components.some(component => variants.includes(component)) && { [flag]: true };
@@ -159,13 +177,13 @@ async function referenceMixInputs(page: Page, info: TestInfo, options: Separatio
     await configure(referencePage, referenceOptions);
     const id = await submit(referencePage);
     const job = await complete(referencePage, id);
-    expect(job.options).toEqual(referenceOptions);
+    const detail = await (await referencePage.request.get(`/api/songs/${job.song_id}`)).json() as SongDetail;
     const files: Record<string, string> = {};
     for (const label of labels) {
-      expect(job.manifest!.map(stem => stem.label)).toContain(label);
-      const response = await referencePage.request.get(`/api/jobs/${id}/results/${label}`);
+      const output = requestedOutput(detail, referenceOptions, label);
+      const response = await referencePage.request.get(`/api/jobs/${output.work_id}/results/${output.label}`);
       expect(response.status()).toBe(200);
-      files[label] = info.outputPath(`reference-${id}-${label}.mp3`);
+      files[label] = info.outputPath(`reference-${output.work_id}-${label}.mp3`);
       await writeFile(files[label], await response.body());
       await inspectAudio(referencePage, files[label], 8);
     }
@@ -178,56 +196,60 @@ async function referenceMixInputs(page: Page, info: TestInfo, options: Separatio
 async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, originalKey: string) {
   const fixtureName = item.fixture ?? (item.labels.some(label => label !== 'song') ? 'musical-fixture' : 'tone-fixture');
   const options = { ...defaults, ...item.selected };
-  expect(job.options).toEqual(options);
-  expect(job.manifest!.map(stem => stem.label)).toEqual(item.labels);
-  expect(job.has_original).toBe(true);
-  expect(job.original_key).toBe(originalKey);
-  expect(job.output_key).toBe(transposeKey(originalKey, options.pitch_semitones));
-  const links = page.locator(`a[download][href^='/api/jobs/${job.id}/']`).filter({ visible: true });
-  // Compact history has no download chips; the opened result exposes every track.
-  expect(await links.count()).toBe(item.labels.length + 1);
-  expect(await links.evaluateAll(anchors => anchors.map(anchor => anchor.getAttribute('href')).sort())).toEqual(
-    ['original', ...item.labels.map(label => `results/${label}`)].map(path => `/api/jobs/${job.id}/${path}`).sort(),
-  );
+  const detail = await (await page.request.get(`/api/songs/${job.song_id}`)).json() as SongDetail;
+  const outputs = item.labels.map(label => ({ label, output: requestedOutput(detail, options, label) }));
+  expect(detail.summary.original_work_id).not.toBeNull();
+  for (const { output } of outputs) {
+    const names = new Set(detail.variants.flatMap(variant =>
+      variant.outputs.filter(candidate => candidate.identity === output.identity).map(candidate => candidate.display_name)));
+    for (const name of names) {
+      const selector = page.getByRole('combobox', { name: `${name} version`, exact: true });
+      if (await selector.count()) {
+        await selector.selectOption(`${options.pitch_semitones}:${options.tempo_percent}`);
+        break;
+      }
+    }
+  }
   const files: Record<string, string> = {};
   const audio: Record<string, unknown> = {};
-  const original = page.locator(`a[href='/api/jobs/${job.id}/original']`).first();
+  const originalWork = await (await page.request.get(`/api/jobs/${detail.summary.original_work_id}`)).json() as JobDTO;
+  const original = page.locator(`a[href^='/api/jobs/${detail.summary.original_work_id}/original']`).first();
   const originalDownload = page.waitForEvent('download');
   await original.click();
   const download = await originalDownload;
   files.original = info.outputPath(download.suggestedFilename());
   await download.saveAs(files.original);
   const originalBytes = await readFile(files.original);
-  if (job.source_type === 'upload') expect(hash(originalBytes)).toBe(hash(await readFile(resolve(directory, `${fixtureName}.wav`))));
-  expect(download.suggestedFilename()).toBe(`${fixtureName} - original.${job.source_type === 'upload' ? 'wav' : 'mp3'}`);
+  if (originalWork.source_type === 'upload') expect(hash(originalBytes)).toBe(hash(await readFile(resolve(directory, `${fixtureName}.wav`))));
+  expect(download.suggestedFilename()).toBe(`${fixtureName} - original.${originalWork.source_type === 'upload' ? 'wav' : 'mp3'}`);
   audio.original = await inspectAudio(page, files.original, 8, fixtureName === 'tone-fixture' ? 261.6256 : undefined);
   const suffix = `${options.pitch_semitones ? ` - pitch${options.pitch_semitones > 0 ? '+' : ''}${options.pitch_semitones}st` : ''}${options.tempo_percent !== 100 ? ` - tempo${options.tempo_percent}pct` : ''}`;
-  for (const stem of job.manifest!) {
-    const mix = options.mixes.find(candidate => candidate.id === stem.label);
-    expect(stem.display_name).toBe(mix ? mix.name : stem.label);
+  for (const { label, output: ref } of outputs) {
+    const stem = ref.manifest;
+    const mix = options.mixes.find(candidate => candidate.id === label);
     expect(stem.filename).toBe(`${stem.label}${suffix}.mp3`);
     if (mix) {
       // Mix downloads carry the custom name plus the stable mix id qualifier;
       // identity is never derived from the user-chosen name.
-      expect(stem.download_name).toContain(`${fixtureName} - ${mix.name}`);
-      expect(stem.download_name).toContain(`[${mix.id}]`);
+      expect(stem.download_name).toContain(`${fixtureName} - ${stem.display_name}`);
+      expect(stem.download_name).toContain(`[${stem.label}]`);
       expect(stem.download_name).toContain(`source-key-${originalKey.replaceAll(' ', '-')}`);
       if (suffix) expect(stem.download_name).toContain(suffix.trimStart());
     } else {
       expect(stem.download_name).toBe(`${fixtureName} - ${stem.label} - source-key-${originalKey.replaceAll(' ', '-')}${suffix}.mp3`);
     }
-    const served = await page.request.get(`/api/jobs/${job.id}/results/${stem.label}`);
+    const served = await page.request.get(`/api/jobs/${ref.work_id}/results/${ref.label}`);
     expect(served.status()).toBe(200);
     expect(decodeURIComponent(served.headers()['content-disposition'])).toContain(stem.download_name);
-    const stemLinks = page.locator(`a[href='/api/jobs/${job.id}/results/${stem.label}']`);
+    const stemLinks = page.locator(`a[href='/api/jobs/${ref.work_id}/results/${ref.label}'], a[href^='/api/jobs/${ref.work_id}/results/${ref.label}?']`);
     await expect(stemLinks).toHaveCount(1);
     const card = stemLinks.first().locator('../..');
-    if (mix) await expect(card.getByText(mix.name, { exact: true })).toBeVisible();
+    if (mix) await expect(card.getByText(ref.display_name, { exact: true })).toBeVisible();
     await expect(card.getByText(`Source key: ${originalKey}`, { exact: true })).toBeVisible();
-    if (job.output_key !== originalKey) {
-      await expect(card.getByText(`Source key: ${job.output_key}`, { exact: true })).toHaveCount(0);
+    if (transposeKey(originalKey, options.pitch_semitones) !== originalKey) {
+      await expect(card.getByText(`Source key: ${transposeKey(originalKey, options.pitch_semitones)}`, { exact: true })).toHaveCount(0);
     }
-    if (stem.label === 'song') {
+    if (label === 'song') {
       await expect(card.getByText(displayOutputLabel('song', options), { exact: true })).toBeVisible();
       const playback = await card.locator('audio').evaluate(async element => {
         const player = element as HTMLAudioElement;
@@ -250,30 +272,27 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
       audio.songPlayback = playback;
     }
     const event = page.waitForEvent('download');
-    await page.locator(`a[href='/api/jobs/${job.id}/results/${stem.label}']`).first().click();
+    await stemLinks.first().click();
     const output = await event;
     expect(output.suggestedFilename()).toBe(stem.download_name);
-    files[stem.label] = info.outputPath(output.suggestedFilename());
-    await output.saveAs(files[stem.label]);
-    expect((await readFile(files[stem.label])).length).toBe(stem.size_bytes);
+    files[label] = info.outputPath(output.suggestedFilename());
+    await output.saveAs(files[label]);
+    expect((await readFile(files[label])).length).toBe(stem.size_bytes);
     const metadata = JSON.parse(execFileSync('ffprobe', [
-      '-v', 'error', '-show_entries', 'format_tags=title:stream=codec_name', '-of', 'json', files[stem.label],
+      '-v', 'error', '-show_entries', 'format_tags=title:stream=codec_name', '-of', 'json', files[label],
     ], { encoding: 'utf8' }));
     expect(metadata.streams[0].codec_name).toBe('mp3');
     expect(metadata.format.tags.title).toBe(stem.download_name.slice(0, -4));
-    audio[stem.label] = {
-      ...await inspectAudio(page, files[stem.label], 8 * 100 / options.tempo_percent, stem.label === 'song' && fixtureName === 'tone-fixture' ? 261.6256 * 2 ** (options.pitch_semitones / 12) : undefined),
+    audio[label] = {
+      ...await inspectAudio(page, files[label], 8 * 100 / options.tempo_percent, label === 'song' && fixtureName === 'tone-fixture' ? 261.6256 * 2 ** (options.pitch_semitones / 12) : undefined),
       metadata,
     };
-    if (stem.label === 'song') {
+    if (label === 'song') {
       audio.songSourceFidelity = inspectTransformedSource(
         files.song, files.original, options.pitch_semitones, options.tempo_percent,
         info.outputPath('full-source-reference.mp3'),
       );
     }
-  }
-  for (const label of [...allLabels, 'song'].filter(label => !item.labels.includes(label))) {
-    expect((await page.request.get(`/api/jobs/${job.id}/results/${label}`)).status()).toBe(404);
   }
   const mixes: Record<string, unknown> = {};
   const selectedMixes = options.mixes;
@@ -290,8 +309,8 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
     expect(hash(await readFile(files.lead))).not.toBe(hash(await readFile(files.backing)));
     for (const width of [1440, 1920, 2560, 3840, 375, 390, 430]) {
       await page.setViewportSize({ width, height: width < 700 ? 844 : 1100 });
-      const geometry = await page.evaluate(id => {
-        const links = [...document.querySelectorAll<HTMLAnchorElement>(`a[href^="/api/jobs/${id}/results/"]`)];
+      const geometry = await page.evaluate(() => {
+        const links = [...document.querySelectorAll<HTMLAnchorElement>('a[download][href*="/results/"]')];
         return {
           pageWidth: document.documentElement.scrollWidth,
           viewportWidth: window.innerWidth,
@@ -300,8 +319,9 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
             return { left: rect.left, right: rect.right, width: link.clientWidth, contentWidth: link.scrollWidth };
           }),
         };
-      }, job.id);
+      });
       expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+      expect(geometry.links.length).toBeGreaterThanOrEqual(item.labels.length);
       for (const link of geometry.links) {
         expect(link.left).toBeGreaterThanOrEqual(0);
         expect(link.right).toBeLessThanOrEqual(width);
@@ -312,7 +332,8 @@ async function prove(page: Page, info: TestInfo, item: Case, job: JobDTO, origin
   }
   if (item.name === 'pitch-only') {
     await page.setViewportSize({ width: 2560, height: 1440 });
-    const card = page.locator(`a[href='/api/jobs/${job.id}/results/song']`).first().locator('../..');
+    const song = requestedOutput(detail, options, 'song');
+    const card = page.locator(`a[href^='/api/jobs/${song.work_id}/results/${song.label}']`).first().locator('../..');
     await card.screenshot({ path: info.outputPath('source-key-pitched-card-2560.png') });
   }
   const proof = { case: item.name, modal_app: process.env.E2E_MODAL_APP_NAME, fixture_seed: process.env.E2E_FIXTURE_SEED, options, expected_labels: item.labels, job, audio, mixes, reference };
@@ -344,12 +365,13 @@ for (const item of cases) {
     if (item.name === 'identity-original-only') {
       await page.reload();
       const history = page.getByRole('region', { name: 'History', exact: true });
-      const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
+      const detail = await (await page.request.get(`/api/songs/${job.song_id}`)).json() as SongDetail;
+      const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), detail.summary.created_at);
       const historyCard = history.getByRole('listitem')
-        .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+        .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(detail.summary)}`, exact: true }) })
         .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
-      await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
-      await expect(page.locator(`a[href='/api/jobs/${id}/original']`)).toBeVisible();
+      await historyCard.getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
+      await expect(page.locator(`a[href^='/api/jobs/${detail.summary.original_work_id}/original']`)).toBeVisible();
     }
     if (item.name === 'identity-original-only' || item.name === 'all-booleans-enabled') {
       const stranger = await browser.newContext();
@@ -360,7 +382,12 @@ for (const item of cases) {
         await expect(isolated.getByText('No jobs yet.', { exact: true })).toBeVisible();
         expect((await isolated.request.get(`/api/jobs/${id}`)).status()).toBe(404);
         expect((await isolated.request.get(`/api/jobs/${id}/original`)).status()).toBe(404);
-        for (const label of item.labels) expect((await isolated.request.get(`/api/jobs/${id}/results/${label}`)).status()).toBe(404);
+        const detail = await (await page.request.get(`/api/songs/${job.song_id}`)).json() as SongDetail;
+        expect((await isolated.request.get(`/api/songs/${job.song_id}`)).status()).toBe(404);
+        for (const label of item.labels) {
+          const output = requestedOutput(detail, options, label);
+          expect((await isolated.request.get(`/api/jobs/${output.work_id}/results/${output.label}`)).status()).toBe(404);
+        }
       } finally { await stranger.close(); }
     }
   });
@@ -394,8 +421,8 @@ test('key-preview-source-change-errors-and-real-retry', async ({ page }, info) =
   const response = page.waitForResponse(response => response.url().endsWith(`/api/jobs/${failedId}/retry`));
   await failure.getByRole('button', { name: 'Retry', exact: true }).click();
   const retried = await (await response).json();
-  expect(retried.id).not.toBe(failedId);
-  const job = await complete(page, retried.id);
+  expect(retried.work_id).not.toBe(failedId);
+  const job = await complete(page, retried.work_id);
   expect(job.options).toEqual(failed.options);
   expect(job.source_value).toBe(failed.source_value);
   await writeFile(info.outputPath('proof.json'), JSON.stringify({ case: 'key-preview-source-change-errors-and-real-retry', failed, recovered: job }, null, 2));
@@ -411,17 +438,18 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   const job = await complete(page, id);
   expect(job.original_key).toBeNull();
   expect(job.output_key).toBeNull();
-  expect(job.manifest!.map(stem => stem.label)).toEqual(['song']);
-  expect(job.manifest![0].filename).toBe('song - pitch+2st.mp3');
-  expect(job.manifest![0].download_name).toBe('silent-fixture - song - pitch+2st.mp3');
-  const served = await page.request.get(`/api/jobs/${id}/results/song`);
+  const detail = await (await page.request.get(`/api/songs/${job.song_id}`)).json() as SongDetail;
+  const song = requestedOutput(detail, { ...defaults, pitch_semitones: 2 }, 'song');
+  expect(song.manifest.filename).toBe('song - pitch+2st.mp3');
+  expect(song.manifest.download_name).toBe('silent-fixture - song - pitch+2st.mp3');
+  const served = await page.request.get(`/api/jobs/${song.work_id}/results/${song.label}`);
   expect(served.status()).toBe(200);
   expect(decodeURIComponent(served.headers()['content-disposition'])).toContain('silent-fixture - song - pitch+2st.mp3');
   expect(served.headers()['content-disposition']).not.toContain('source-key');
-  const resultCard = page.locator(`a[href='/api/jobs/${id}/results/song']`).first().locator('../..');
+  const resultCard = page.locator(`a[href^='/api/jobs/${song.work_id}/results/${song.label}']`).first().locator('../..');
   await expect(resultCard.getByText(/Source key:/)).toHaveCount(0);
   const event = page.waitForEvent('download');
-  await page.locator(`a[href='/api/jobs/${id}/results/song']`).first().click();
+  await page.locator(`a[href^='/api/jobs/${song.work_id}/results/${song.label}']`).first().click();
   const download = await event;
   expect(download.suggestedFilename()).toBe('silent-fixture - song - pitch+2st.mp3');
   const path = info.outputPath(download.suggestedFilename());
@@ -429,17 +457,17 @@ test('undetermined-source-key-omits-stem-label-and-download-token', async ({ pag
   const decoded = pcm(path);
   expect(decoded.length / 96000).toBeCloseTo(8, 1);
   expect(decoded.every(sample => sample === 0)).toBe(true);
-  const original = await page.request.get(`/api/jobs/${id}/original`);
+  const original = await page.request.get(`/api/jobs/${detail.summary.original_work_id}/original`);
   expect(hash(await original.body())).toBe(hash(await readFile(resolve(directory, 'silent-fixture.wav'))));
   expect(original.headers()['content-disposition']).toContain('silent-fixture%20-%20original.wav');
   await page.reload();
   const history = page.getByRole('region', { name: 'History', exact: true });
-  const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
+  const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), detail.summary.created_at);
   const historyCard = history.getByRole('listitem')
-    .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
+    .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(detail.summary)}`, exact: true }) })
     .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
-  await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
-  const historyStem = page.locator(`a[href='/api/jobs/${id}/results/song']`);
+  await historyCard.getByRole('button', { name: jobLabel(detail.summary), exact: true }).click();
+  const historyStem = page.locator(`a[href^='/api/jobs/${song.work_id}/results/${song.label}']`);
   await expect(historyStem).toHaveCount(1);
   await expect(historyStem.locator('../..')).not.toContainText('Source key:');
   await expect(historyStem).toHaveAttribute('download', 'silent-fixture - song - pitch+2st.mp3');

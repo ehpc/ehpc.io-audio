@@ -344,4 +344,6 @@ def test_local_api_reuses_copied_inference_and_persisted_query_cache(
     assert client.get(refreshed_path).json()["songs"][0]["play_count"] == 19_000_000
     assert len(received) == 2  # Expiry refreshes catalog, not unchanged inference.
     assert len(catalog_calls) == (3 if migrated_cache else 2)
-    assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []
+    assert (
+        client.get("/api/songs").json() == other_client.get("/api/songs").json() == []
+    )

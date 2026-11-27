@@ -10,7 +10,16 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from backend import config, db, drain, events, song_search_worker
+from backend import (
+    config,
+    coverage,
+    db,
+    drain,
+    events,
+    library,
+    song_projection,
+    song_search_worker,
+)
 from backend.cache_catalog import capture
 from backend.inference import (
     UncertainInferenceDispatch,
@@ -50,12 +59,20 @@ async def _publish_status(job_id: int) -> None:
         if job.status == JobStatus.QUEUED
         else None
     )
-    events.publish(job_id, job_to_dto(job, position).model_dump(mode="json"))
+    song_id = await asyncio.to_thread(library.song_for_work, job.id, job.session_id)
+    events.publish(job_id, job_to_dto(job, position, song_id).model_dump(mode="json"))
+
+
+async def _set_phase_for_song(
+    job: JobRecord, phase: JobPhase, song_id: int | None
+) -> None:
+    events.set_phase(job.id, phase)
+    events.publish(job.id, job_to_dto(job, None, song_id).model_dump(mode="json"))
 
 
 async def _set_phase(job: JobRecord, phase: JobPhase) -> None:
-    events.set_phase(job.id, phase)
-    events.publish(job.id, job_to_dto(job, None).model_dump(mode="json"))
+    song_id = await asyncio.to_thread(library.song_for_work, job.id, job.session_id)
+    await _set_phase_for_song(job, phase, song_id)
 
 
 def _load_source_bytes(job: JobRecord) -> tuple[bytes, str]:
@@ -171,7 +188,12 @@ async def _process(
 
     def on_phase(phase: JobPhase) -> None:
         # Wait for publication before entering the next actual operation.
-        asyncio.run_coroutine_threadsafe(_set_phase(job, phase), loop).result()
+        # Resolve here in the producer thread: the event loop must not request
+        # another executor thread while this callback waits for publication.
+        song_id = library.song_for_work(job.id, job.session_id)
+        asyncio.run_coroutine_threadsafe(
+            _set_phase_for_song(job, phase, song_id), loop
+        ).result()
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -189,14 +211,50 @@ async def _process(
         raise
 
 
+async def _enrich_job(job: JobRecord, song_id: int) -> bool:
+    song = await asyncio.to_thread(song_projection.detail, job.session_id, song_id)
+    if song is None:
+        return False
+    options = job.options
+    enriched = coverage.enrich_options(options, song)
+    if enriched != options and await asyncio.to_thread(
+        db.enrich_running_options, job.id, options, enriched
+    ):
+        job.options = enriched
+        return True
+    return False
+
+
 async def _run_job(job: JobRecord) -> None:
-    with capture() as recorder:
-        await _run_job_captured(job, recorder)
+    song_id = await asyncio.to_thread(library.song_for_work, job.id, job.session_id)
+    if song_id is None:
+        with capture() as recorder:
+            await _run_job_captured(job, recorder)
+        return
+    while True:
+        async with async_locked(
+            config.DATA_DIR / "artifacts" / "song-locks" / str(song_id)
+        ):
+            current = await asyncio.to_thread(
+                library.song_for_work, job.id, job.session_id
+            )
+            if current is not None and current != song_id:
+                song_id = current
+                continue
+            with capture() as recorder:
+                await _run_job_captured(job, recorder, song_id)
+            return
 
 
-async def _run_job_captured(job: JobRecord, recorder) -> None:
+async def _run_job_captured(
+    job: JobRecord, recorder, locked_song_id: int | None = None
+) -> None:
     work = await asyncio.to_thread(db.regeneration_work, job.id)
+    source_lock = contextlib.AsyncExitStack()
     try:
+        if locked_song_id is not None:
+            await _enrich_job(job, locked_song_id)
+        provenance = await _cache_thread(coverage.known_signatures, job.options)
         await _set_phase(job, JobPhase.SOURCE)
         log.info(
             "job %s starting (source=%s value=%s options=%s)",
@@ -207,6 +265,22 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
         )
         log.info("job %s loading source", job.id)
         audio_bytes, filename = await _cache_thread(_load_source_bytes, job)
+        canonical = await asyncio.to_thread(
+            library.bind_digest, job.id, digest(audio_bytes)
+        )
+        if (
+            canonical is not None
+            and locked_song_id is not None
+            and canonical != locked_song_id
+        ):
+            while await asyncio.to_thread(
+                library.older_running_work, canonical, job.id
+            ):
+                if drain.state.draining:
+                    raise drain.DrainDeferred()
+                await asyncio.sleep(0.05)
+            if await _enrich_job(job, canonical):
+                provenance = await _cache_thread(coverage.known_signatures, job.options)
         if (
             job.source_type == "upload"
             or await asyncio.to_thread(db.regeneration_snapshot, job.id) is not None
@@ -236,23 +310,32 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
             or job.options.output_labels
         ):
             await _set_phase(job, JobPhase.WAIT)
-            # Coalesce identical sources while the shared model graph runs.
-            async with async_locked(
-                config.DATA_DIR / "artifacts" / "gpu-locks" / digest(audio_bytes)
-            ):
-                metadata = None
-                if job.options.needs_lyrics:
-                    await _set_phase(job, JobPhase.METADATA)
-                    metadata = await asyncio.to_thread(
-                        reference_metadata,
-                        audio_bytes,
-                        downloaded_metadata=(
-                            config.DATA_DIR / "source-metadata" / f"{job.id}.json"
-                            if job.source_type == "url"
-                            else None
-                        ),
-                    )
-                processed = await _process(job, audio_bytes, filename, metadata)
+            # Keep the source lock through publication, so later work sees the
+            # completed companion analysis before planning its own output clock.
+            await source_lock.enter_async_context(
+                async_locked(
+                    config.DATA_DIR / "artifacts" / "gpu-locks" / digest(audio_bytes)
+                )
+            )
+            current = await asyncio.to_thread(
+                library.song_for_work, job.id, job.session_id
+            )
+            if current is not None and await _enrich_job(job, current):
+                provenance = await _cache_thread(coverage.known_signatures, job.options)
+                await _publish_status(job.id)
+            metadata = None
+            if job.options.needs_lyrics:
+                await _set_phase(job, JobPhase.METADATA)
+                metadata = await asyncio.to_thread(
+                    reference_metadata,
+                    audio_bytes,
+                    downloaded_metadata=(
+                        config.DATA_DIR / "source-metadata" / f"{job.id}.json"
+                        if job.source_type == "url"
+                        else None
+                    ),
+                )
+            processed = await _process(job, audio_bytes, filename, metadata)
         if (
             job.options.output_labels
             or job.options.needs_lyrics
@@ -284,6 +367,8 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
         )
         if processed.pitch_vocals is not None:
             await _cache_thread(persist_pitch_vocals, job, processed.pitch_vocals)
+        if provenance != await _cache_thread(coverage.known_signatures, job.options):
+            provenance = None
         if work:
             assert original is not None
             generation = uuid.uuid4().hex
@@ -297,6 +382,7 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
                 processed.transcript,
                 processed.pitch_json,
                 job.original_key,
+                provenance,
             )
         else:
             await asyncio.to_thread(
@@ -305,6 +391,7 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
                 manifest,
                 processed.transcript,
                 processed.pitch_json,
+                provenance,
             )
         log.info("job %s done", job.id)
     except drain.DrainDeferred:
@@ -326,6 +413,7 @@ async def _run_job_captured(job: JobRecord, recorder) -> None:
                     type(cleanup_error).__name__,
                 )
     finally:
+        await source_lock.aclose()
         events.clear_phase(job.id)
         await _publish_status(job.id)
 

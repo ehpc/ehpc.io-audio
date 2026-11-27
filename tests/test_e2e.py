@@ -141,7 +141,7 @@ def _submit_upload(
         data={name: str(value).lower() for name, value in options.items()},
     )
     assert response.status_code == 200
-    return response.json()["id"]
+    return response.json()["work_id"]
 
 
 def _wait_for_terminal(
@@ -241,7 +241,7 @@ def test_url_job_downloads_titles_and_separates(
         "/api/jobs",
         data={"url": "https://example.com/x", "extract_vocals": "true"},
     )
-    job_id = submitted.json()["id"]
+    job_id = submitted.json()["work_id"]
     job = _wait_for_terminal(worker_client, job_id)
 
     assert job["status"] == JobStatus.DONE, job["error_message"]
@@ -490,7 +490,7 @@ def test_progress_plan_matches_requested_work_and_terminal_overrides_phase(
         data={"pitch_semitones": "2", "tempo_percent": "120"},
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     job = db.claim_oldest_queued()
     assert job is not None and job.id == job_id
     try:
@@ -636,7 +636,7 @@ def test_pitch_and_tempo_modify_every_download_but_not_the_original(
         },
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     job = _wait_for_terminal(worker_client, job_id, timeout_s=30)
     assert job["status"] == JobStatus.DONE, job["error_message"]
     assert job["original_key"] == "C major"
@@ -679,7 +679,7 @@ def test_pitch_and_tempo_modify_every_download_but_not_the_original(
         assert float(duration.stdout) == pytest.approx(4 / 1.2, abs=0.12)
 
     # Reloads/history must retain the analysis and transformations, not just SSE.
-    historical = worker_client.get("/api/jobs").json()[0]
+    historical = worker_client.get(f"/api/jobs/{job_id}").json()
     assert historical["original_key"] == "C major"
     assert historical["output_key"] == "D major"
     assert historical["options"]["pitch_semitones"] == 2
@@ -738,7 +738,7 @@ def test_whole_song_jobs_bypass_modal_and_preserve_original(
                 assert preview.json() == {
                     "original_key": audio.detect_key(source, "source.mp3")
                 }
-                assert worker_client.get("/api/jobs").json() == []
+                assert worker_client.get("/api/songs").json() == []
                 response = worker_client.post(
                     "/api/jobs",
                     data={
@@ -753,7 +753,7 @@ def test_whole_song_jobs_bypass_modal_and_preserve_original(
                     data=options,
                 )
             assert response.status_code == 200
-            job_id = response.json()["id"]
+            job_id = response.json()["work_id"]
             job = _wait_for_terminal(worker_client, job_id, timeout_s=30)
         finally:
             server.shutdown()
@@ -781,7 +781,7 @@ def test_whole_song_jobs_bypass_modal_and_preserve_original(
         assert (
             worker_client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
         )
-    historical = worker_client.get("/api/jobs").json()[0]
+    historical = worker_client.get(f"/api/jobs/{job_id}").json()
     assert historical["manifest"] == job["manifest"]
 
 
@@ -813,7 +813,7 @@ def test_pitched_full_source_is_not_reconstructed_from_selected_stem(
         },
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     job = _wait_for_terminal(worker_client, job_id, timeout_s=30)
     assert job["status"] == JobStatus.DONE, job["error_message"]
     assert [entry["label"] for entry in job["manifest"]] == ["song", "instruments"]
@@ -846,5 +846,5 @@ def test_pitched_full_source_is_not_reconstructed_from_selected_stem(
             == entry["download_name"][:-4]
         )
         assert "source-key-C-major" in entry["download_name"]
-    historical = worker_client.get("/api/jobs").json()[0]
+    historical = worker_client.get(f"/api/jobs/{job_id}").json()
     assert historical["manifest"] == job["manifest"]

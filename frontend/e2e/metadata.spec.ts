@@ -19,8 +19,8 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
   const submitted = page.waitForResponse(response => response.url().endsWith('/api/jobs') && response.request().method() === 'POST');
   await page.locator('form button[type=submit]').click();
   const response = await submitted;
-  const { id } = await response.json();
-  const generatedLink = page.locator(`a[href='/api/jobs/${id}/results/song']`);
+  const { work_id: id } = await response.json();
+  const generatedLink = page.locator(`a[href^='/api/jobs/${id}/results/song']`);
   await expect(generatedLink).toBeVisible({ timeout: 120_000 });
   const jobResponse = await page.request.get(`/api/jobs/${id}`);
   expect(jobResponse.ok()).toBe(true);
@@ -45,7 +45,7 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
     await writeFile(info.outputPath(evidenceName), json);
     return JSON.parse(json);
   };
-  const generated = await downloadTrack(result.locator(`a[href='/api/jobs/${id}/results/song']`), 'results');
+  const generated = await downloadTrack(result.locator(`a[href^='/api/jobs/${id}/results/song']`), 'results');
   expect(generated.filename).toBe(expectedName);
   const metadata = await probe(generated.path, 'results-ffprobe.json');
   expect(metadata.streams[0].codec_name).toBe('mp3');
@@ -62,9 +62,9 @@ test('downloaded MP3 Title matches its descriptive filename in Results and reloa
     .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
     .filter({ has: page.locator(`time[datetime="${new Date(job.created_at * 1000).toISOString()}"]`) });
   await expect(historyCard).toHaveCount(1);
-  await expect(historyCard.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
+  await expect(historyCard.locator(`a[href^='/api/jobs/${id}/results/song']`)).toHaveCount(0);
   await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
-  const historyLink = result.locator(`a[href='/api/jobs/${id}/results/song']`);
+  const historyLink = result.locator(`a[href^='/api/jobs/${id}/results/song']`);
   await expect(historyLink).toBeVisible();
   const restored = await downloadTrack(historyLink, 'history');
   expect(restored.filename).toBe(expectedName);

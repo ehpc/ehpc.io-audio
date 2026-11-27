@@ -141,7 +141,9 @@ def test_title_is_added_when_existing_id3_has_no_title(
 def test_every_generated_output_persists_canonical_title_without_touching_audio(
     client: TestClient, tagged_mp3: bytes, key: str | None, tmp_path: Path
 ) -> None:
-    job_id = db.insert_job("s1", "upload", "Björk: Song.MP3", _ALL_OUTPUTS)
+    submitted = db.insert_job("s1", "upload", "Björk: Song.MP3", _ALL_OUTPUTS)
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     job = db.get_job(job_id)
     assert job is not None
     job.original_key = key
@@ -206,7 +208,9 @@ def test_named_mix_native_transform_has_correct_audio_and_private_metadata(
         pitch_semitones=2,
         tempo_percent=120,
     )
-    job_id = db.insert_job("s1", "upload", "Source.mp3", options)
+    submitted = db.insert_job("s1", "upload", "Source.mp3", options)
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     job = db.get_job(job_id)
     assert job is not None
     job.original_key = "C major"
@@ -240,7 +244,9 @@ def test_transformed_whole_song_persists_combined_suffix_title(
     tagged_mp3: bytes,
 ) -> None:
     options = SeparationOptions(pitch_semitones=-2.25, tempo_percent=112.5)
-    job_id = db.insert_job("s1", "upload", "Source.mp3", options)
+    submitted = db.insert_job("s1", "upload", "Source.mp3", options)
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     job = db.get_job(job_id)
     assert job is not None
     job.original_key = "C major"
@@ -297,7 +303,7 @@ def test_native_http_history_download_has_title_and_preserves_original(
                 data={"pitch_semitones": "2.5", "tempo_percent": "120"},
             )
             assert response.status_code == 200
-            job_id = response.json()["id"]
+            job_id = response.json()["work_id"]
             db.set_original_key(job_id, "Bb minor")
             directory = config.RESULTS_DIR / str(job_id)
             directory.mkdir(parents=True)
@@ -318,7 +324,7 @@ def test_native_http_history_download_has_title_and_preserves_original(
                     )
                 ],
             )
-            history = browser.get("/api/jobs").json()[0]
+            history = browser.get(f"/api/jobs/{job_id}").json()
             expected = history["manifest"][0]["download_name"]
             assert expected == (
                 "Artist - Song - vocals - source-key-Bb-minor"
@@ -330,7 +336,7 @@ def test_native_http_history_download_has_title_and_preserves_original(
             assert quote(expected) in result.headers["content-disposition"]
             assert len(result.content) != legacy_size
             assert int(result.headers["content-length"]) == len(result.content)
-            refreshed = browser.get("/api/jobs").json()[0]["manifest"][0]
+            refreshed = browser.get(f"/api/jobs/{job_id}").json()["manifest"][0]
             assert refreshed["size_bytes"] == len(result.content)
             stored = db.get_job(job_id)
             assert stored is not None and stored.result_manifest is not None
@@ -388,7 +394,9 @@ def test_native_http_history_download_has_title_and_preserves_original(
 
 
 def test_concurrent_result_size_updates_preserve_other_manifest_fields() -> None:
-    job_id = db.insert_job("s1", "upload", "Source.mp3", SeparationOptions())
+    submitted = db.insert_job("s1", "upload", "Source.mp3", SeparationOptions())
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     labels = ("vocals", "instruments", "mix-legacy-female", "song")
     manifest = [
         ResultManifestEntry(

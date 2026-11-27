@@ -7,15 +7,16 @@ import { test } from './auth-fixture';
 const insertLibraryTrack = String.raw`
 import json,sys
 from backend import db
+from separator.options import SeparationOptions
 from separator.pitch import pitch_from_json,pitch_to_json
 session_id,title,source_value,pitch_text=sys.argv[1:]
 pitch_json=pitch_to_json(pitch_from_json(pitch_text))
+song_id,work_id=db.insert_job(session_id,'upload',source_value,SeparationOptions(detect_pitch=True))
+assert work_id is not None
 with db._session() as connection:
- cursor=connection.execute(
-  'INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,result_manifest_json,pitch_json,created_at,finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-  (session_id,'done','upload',source_value,title,json.dumps({'detect_pitch':True}),None,pitch_json,1767268800,1767268801),
- )
- print(cursor.lastrowid,flush=True)
+ connection.execute('UPDATE jobs SET status=?,title=?,pitch_json=?,created_at=?,finished_at=? WHERE id=?',
+  ('done',title,pitch_json,1767268800,1767268801,work_id))
+print(song_id,flush=True)
 `;
 
 const tracks = [
@@ -81,7 +82,7 @@ for (const viewport of [
         await expect(history.getByRole('button', { name: currentTitle, exact: true })).toBeVisible();
         await expect(history.getByRole('button', { name: tracks[1].title, exact: true })).toBeVisible();
         const selectedResponse = page.waitForResponse(response =>
-          response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${trackIds.get(currentTitle)}`);
+          response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/songs/${trackIds.get(currentTitle)}`);
         await history.getByRole('button', { name: currentTitle, exact: true }).click();
         expect((await selectedResponse).ok()).toBe(true);
         await page.mouse.move(0, 0);
@@ -101,7 +102,7 @@ for (const viewport of [
         await expect(history.getByRole('button', { name: currentTitle, exact: true })).toBeVisible();
         await expect(history.getByRole('button', { name: tracks[1].title, exact: true })).toBeVisible();
         const selectedResponse = page.waitForResponse(response =>
-          response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${trackIds.get(currentTitle)}`);
+          response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/songs/${trackIds.get(currentTitle)}`);
         await history.getByRole('button', { name: currentTitle, exact: true }).click();
         expect((await selectedResponse).ok()).toBe(true);
         await page.mouse.move(0, 0);
@@ -123,7 +124,7 @@ for (const viewport of [
       await sortPopup.screenshot({ path: info.outputPath(`library-sort-${viewport.width}-actual.png`), animations: 'disabled', caret: 'hide', scale: 'css' });
       await expect.soft(sortPopup).toHaveScreenshot(`library-sort-${viewport.width}.png`);
     } finally {
-      const responses = await Promise.all(ids.map(id => page.request.delete(`/api/jobs/${id}`, {
+      const responses = await Promise.all(ids.map(id => page.request.delete(`/api/songs/${id}`, {
         headers: { Origin: process.env.E2E_BASE_URL! },
       })));
       for (const response of responses) expect([204, 404]).toContain(response.status());
@@ -213,7 +214,7 @@ for (const viewport of [
       await expect.soft(row).toHaveScreenshot(`history-item-${viewport.width}.png`);
 
       const selectedResponse = page.waitForResponse(response =>
-        response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${jobId}`);
+        response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/songs/${jobId}`);
       await titleButton.press('Enter');
       expect((await selectedResponse).ok()).toBe(true);
       if (viewport.isMobile) {
@@ -234,13 +235,13 @@ for (const viewport of [
       await deleteButton.click();
       confirmation = page.getByRole('alertdialog');
       const deletion = page.waitForResponse(response =>
-        response.request().method() === 'DELETE' && new URL(response.url()).pathname === `/api/jobs/${jobId}`);
+        response.request().method() === 'DELETE' && new URL(response.url()).pathname === `/api/songs/${jobId}`);
       await confirmation.getByRole('button', { name: 'Delete track' }).click();
       expect((await deletion).status()).toBe(204);
       await expect(row).toHaveCount(0);
     } finally {
       if (jobId !== null && Number.isSafeInteger(jobId) && jobId > 0) {
-        const response = await page.request.delete(`/api/jobs/${jobId}`, {
+        const response = await page.request.delete(`/api/songs/${jobId}`, {
           headers: { Origin: process.env.E2E_BASE_URL! },
         });
         expect([204, 404]).toContain(response.status());
@@ -335,7 +336,7 @@ for (const viewport of [
       const firstTitle = wrappingTitles[0];
       const openFetched = Promise.withResolvers<void>();
       if (viewport.width === 2560) {
-        await page.route(`**/api/jobs/${ids[0]}/open`, async route => {
+        await page.route(`**/api/songs/${ids[0]}/open`, async route => {
           const response = await route.fetch();
           openFetched.resolve();
           await openGate.promise;
@@ -343,7 +344,7 @@ for (const viewport of [
         });
       }
       const selected = page.waitForResponse(response =>
-        response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/jobs/${ids[0]}`);
+        response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/songs/${ids[0]}`);
       await history.getByRole('button', { name: firstTitle, exact: true }).press('Enter');
       expect((await selected).ok()).toBe(true);
       if (viewport.isMobile) await library.click();
@@ -353,7 +354,7 @@ for (const viewport of [
       if (viewport.width === 2560) {
         await openFetched.promise;
         const refresh = page.waitForResponse(response =>
-          response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/jobs');
+          response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/songs');
         openGate.resolve();
         await refresh;
         await expect(history.getByRole('listitem').first().getByRole('button', { name: firstTitle, exact: true })).toBeVisible();
@@ -367,7 +368,7 @@ for (const viewport of [
     } finally {
       openGate.resolve();
       for (const id of ids) {
-        const response = await page.request.delete(`/api/jobs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+        const response = await page.request.delete(`/api/songs/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
         expect([204, 404]).toContain(response.status());
       }
     }

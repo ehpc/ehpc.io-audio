@@ -4,7 +4,7 @@ import { readFile, unlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Page } from '@playwright/test';
 
-interface LearningFixtureRecord { id: number; digest: string; owner: string }
+interface LearningFixtureRecord { id: number; songId: number; digest: string; owner: string }
 const owned = new WeakMap<Page, LearningFixtureRecord[]>();
 
 export async function cleanupLearning(page: Page) {
@@ -27,7 +27,7 @@ assert not source.is_symlink()
 if source.exists():
     assert hashlib.sha256(source.read_bytes()).hexdigest() == digest
 `, String(item.id), item.digest, item.owner], { cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! } });
-    const deleted = await page.request.delete(`/api/jobs/${item.id}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+    const deleted = await page.request.delete(`/api/songs/${item.songId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
     expect(deleted.status()).toBe(204);
     execFileSync('uv', ['run', 'python', '-c', String.raw`
 import os, re, sys
@@ -88,9 +88,9 @@ export async function seedLearning(page: Page, options: { untimed?: boolean; mis
     tempo_percent: String(options.tempo ?? 100),
   } });
   expect(response.ok()).toBe(true);
-  const id = (await response.json()).id as number;
+  const { work_id: id, song_id: songId } = await response.json() as { work_id: number; song_id: number };
   const items = owned.get(page) ?? [];
-  items.push({ id, digest: createHash('sha256').update(source).digest('hex'), owner });
+  items.push({ id, songId, digest: createHash('sha256').update(source).digest('hex'), owner });
   owned.set(page, items);
   const transcript = {
     segments: [

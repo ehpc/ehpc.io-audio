@@ -1,8 +1,8 @@
 import { createMemo, createSignal, For, Show, type Component } from "solid-js";
 import * as Popover from "@kobalte/core/popover";
 import * as AlertDialog from "@kobalte/core/alert-dialog";
-import type { JobDTO, LibrarySort } from "~/api";
-import { AuthHttpError, deleteJob, jobLabel } from "~/api";
+import type { SongSummary, LibrarySort } from "~/api";
+import { AuthHttpError, deleteSong, jobLabel } from "~/api";
 import { Button } from "~/components/button";
 import { Card, CardContent } from "~/components/card";
 
@@ -13,18 +13,18 @@ function formatDate(unixSeconds: number): string {
 }
 
 const HistoryView: Component<{
-  jobs: JobDTO[];
+  jobs: SongSummary[];
   selectedId?: number | null;
   sort: LibrarySort;
   onSortChange: (sort: LibrarySort) => void;
-  onSelect: (job: JobDTO) => void;
+  onSelect: (job: SongSummary) => void;
   onDeleted: (id: number) => void;
 }> = (props) => {
   const [deleting, setDeleting] = createSignal(false);
-  const [deleteTarget, setDeleteTarget] = createSignal<JobDTO | null>(null);
+  const [deleteTarget, setDeleteTarget] = createSignal<SongSummary | null>(null);
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
   const jobsById = createMemo(() => {
-    const jobs = new Map<number, JobDTO>();
+    const jobs = new Map<number, SongSummary>();
     for (const job of props.jobs) jobs.set(job.id, job);
     return jobs;
   });
@@ -53,7 +53,7 @@ const HistoryView: Component<{
     setDeleting(true);
     setDeleteError(null);
     try {
-      await deleteJob(target.id);
+      await deleteSong(target.id);
       setDeleteTarget(null);
       props.onDeleted(target.id);
     } catch (error) {
@@ -115,7 +115,7 @@ const HistoryView: Component<{
                       {formatDate(job().created_at)}
                     </time>
                   </div>
-                  <Show when={job().status === "done"}>
+                  <Show when={!job().active_work_id}>
                     <Button type="button" variant="outline" size="sm" class="min-h-11 shrink-0"
                       aria-label={`Delete ${jobLabel(job())}`}
                       onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(job()); }}>

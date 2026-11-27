@@ -15,4 +15,5 @@
 
 ## Git and CI
 
-- After every push, watch the GitHub Actions workflow to completion and investigate and fix failures before declaring the work done. If workflow status cannot be observed, report that limitation explicitly and do not claim the pipeline passed.
+- By default, after completing requested application changes and required verification, commit and push the intended changes, then deploy using the documented production process. Do not deploy before verification; verify the live release before declaring the work done.
+- Watch the GitHub Actions workflow through completion after every push, investigate and fix failures before declaring the work done, and report explicitly if workflow status cannot be observed.

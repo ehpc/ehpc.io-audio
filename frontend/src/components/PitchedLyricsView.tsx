@@ -3,6 +3,8 @@ import type { JobDTO } from "~/api";
 import { pitchedLyricsDownloadUrl } from "~/api";
 import LearnLyricsDialog from "~/components/LearnLyricsDialog";
 import { displayOutputLabel } from "~/lib/expectedStems";
+import OutputIcon from "~/components/OutputIcon";
+import CopyLyricsButton from "~/components/CopyLyricsButton";
 
 const PitchedLyricsView: Component<{ job: JobDTO }> = (props) => {
   const [label, setLabel] = createSignal(props.job.pitched_lyrics?.[0]?.label ?? "");
@@ -27,7 +29,10 @@ const PitchedLyricsView: Component<{ job: JobDTO }> = (props) => {
   });
   return (
     <section class="pitched-lyrics-view" aria-label="Lyrics with pitches">
-      <h3 class="text-base font-semibold">Lyrics with pitches</h3>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="flex items-center gap-2 text-base font-semibold"><OutputIcon kind="pitched-lyrics" label="Lyrics with pitches" />Lyrics with pitches</h3>
+        <CopyLyricsButton text={track()?.text ?? ""} trackLabel={track()?.label} />
+      </div>
       <div class="pitch-controls">
         <label>Vocal stem
           <select aria-label="Pitched lyrics vocal stem" value={track()?.label} onChange={event => setLabel(event.currentTarget.value)}>
@@ -40,8 +45,7 @@ const PitchedLyricsView: Component<{ job: JobDTO }> = (props) => {
         <a href={pitchedLyricsDownloadUrl(props.job.id, track()?.label ?? "", "odt", props.job.result_revision)} download=""
           class="text-sm font-medium text-primary hover:underline">Download lyrics with pitches ODT</a>
       </div>
-      <p class="text-sm text-muted-foreground">Output clock · pitch {props.job.options.pitch_semitones >= 0 ? "+" : ""}{props.job.options.pitch_semitones} semitones · tempo {props.job.options.tempo_percent}%. Source detections projected, not re-measured.</p>
-      <p class="text-sm text-muted-foreground">Notes above whole words; multiple notes stay together over one word. [line] notes are not linked to a word. Long lines continue as aligned pairs. Scroll horizontally on small screens. ODT keeps each pair together on the page, ready to import into Google Docs. ? means unknown, not a rest. Detected melody estimates may be wrong.</p>
+      <p class="text-sm text-muted-foreground">Output clock · pitch {props.job.options.pitch_semitones >= 0 ? "+" : ""}{props.job.options.pitch_semitones} semitones · tempo {props.job.options.tempo_percent}%.</p>
       <pre class="pitched-lyrics-text" tabIndex={0} role="region" aria-label="Aligned pitch and lyric text">
         <For each={textRuns()}>{run => run.wide
           ? <span style={{ display: "inline-block", width: "2ch" }}>{run.text}</span>

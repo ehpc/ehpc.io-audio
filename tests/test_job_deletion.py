@@ -17,7 +17,9 @@ from separator.options import SeparationOptions
 
 
 def completed_job(owner: str, name: str) -> int:
-    job = db.insert_job(owner, "upload", name, SeparationOptions())
+    submitted = db.insert_job(owner, "upload", name, SeparationOptions())
+    assert submitted.work_id is not None
+    job = submitted.work_id
     uploads = config.UPLOADS_DIR / str(job)
     results = config.RESULTS_DIR / str(job)
     uploads.mkdir(parents=True)
@@ -30,6 +32,15 @@ def completed_job(owner: str, name: str) -> int:
     metadata.write_text('{"artist":"private"}')
     db.mark_done(job, [])
     return job
+
+
+def song_for_work(work_id: int) -> int:
+    with db._session() as conn:
+        row = conn.execute(
+            "SELECT song_id FROM library_song_jobs WHERE job_id=?", (work_id,)
+        ).fetchone()
+    assert row is not None
+    return row["song_id"]
 
 
 def stage(job: int, *, cleaned: bool = True) -> tuple[Path, Path]:
@@ -67,13 +78,14 @@ def test_delete_is_owned_and_preserves_shared_cache_and_other_user(
     anonymous = TestClient(
         app, base_url="https://testserver", headers={"origin": "https://testserver"}
     )
-    assert anonymous.delete(f"/api/jobs/{first}").status_code == 401
-    assert other_client.delete(f"/api/jobs/{first}").status_code == 404
-    assert client.delete(f"/api/jobs/{second}").status_code == 404
+    first_song, second_song = song_for_work(first), song_for_work(second)
+    assert anonymous.delete(f"/api/songs/{first_song}").status_code == 401
+    assert other_client.delete(f"/api/songs/{first_song}").status_code == 404
+    assert client.delete(f"/api/songs/{second_song}").status_code == 404
     assert db.get_job(first) is not None and db.get_job(second) is not None
-    assert client.delete(f"/api/jobs/{first}").status_code == 204
+    assert client.delete(f"/api/songs/{first_song}").status_code == 204
     assert client.get(f"/api/jobs/{first}").status_code == 404
-    assert client.delete(f"/api/jobs/{first}").status_code == 404
+    assert client.delete(f"/api/songs/{first_song}").status_code == 404
     assert not (config.UPLOADS_DIR / str(first)).exists()
     assert not (config.RESULTS_DIR / str(first)).exists()
     assert not (config.DATA_DIR / "source-metadata" / f"{first}.json").exists()
@@ -95,7 +107,7 @@ def test_noncompleted_jobs_cannot_be_deleted(client, state):
     job = completed_job(owner, "original.wav")
     with db._session() as conn:
         conn.execute("UPDATE jobs SET status=? WHERE id=?", (state, job))
-    assert client.delete(f"/api/jobs/{job}").status_code == 409
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 409
     assert db.get_job(job) is not None
     assert (config.UPLOADS_DIR / str(job) / "original.wav").exists()
     assert (config.RESULTS_DIR / str(job) / "song.mp3").exists()
@@ -109,12 +121,12 @@ def test_drain_rejects_deletion_without_removing_job_or_files(client):
             "SELECT COUNT(*) FROM auth_work WHERE user_id = ?", (owner,)
         ).fetchone()[0]
     client.portal.call(drain.state.begin)
-    assert client.delete(f"/api/jobs/{job}").status_code == 503
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 503
     assert db.get_job(job) is not None
     assert (config.UPLOADS_DIR / str(job) / "original.wav").exists()
     assert (config.RESULTS_DIR / str(job) / "song.mp3").exists()
     drain.state.reset()
-    assert client.delete(f"/api/jobs/{job}").status_code == 204
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 204
     with db._session() as conn:
         after = conn.execute(
             "SELECT COUNT(*) FROM auth_work WHERE user_id = ?", (owner,)
@@ -140,7 +152,7 @@ def test_unresolved_inference_prevents_job_deletion(client, problem):
         lock = artifact.with_suffix(".lock").open("a+b")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
-        assert client.delete(f"/api/jobs/{job}").status_code == 409
+        assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 409
     finally:
         if lock is not None:
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -153,14 +165,15 @@ def test_unresolved_inference_prevents_job_deletion(client, problem):
 
 def test_missing_owned_files_can_be_deleted_but_unsafe_symlink_cannot(client, tmp_path):
     owner = client.get("/api/auth/me").json()["id"]
-    empty = db.insert_job(owner, "upload", "missing.wav", SeparationOptions())
-    db.mark_done(empty, [])
-    assert client.delete(f"/api/jobs/{empty}").status_code == 204
+    empty_work = db.insert_job(owner, "upload", "missing.wav", SeparationOptions())
+    assert empty_work.work_id is not None
+    db.mark_done(empty_work.work_id, [])
+    assert client.delete(f"/api/songs/{empty_work.song_id}").status_code == 204
     job = completed_job(owner, "original.wav")
     outside = tmp_path / "other-user-data"
     outside.write_bytes(b"do not touch")
     (config.RESULTS_DIR / str(job) / "unsafe").symlink_to(outside)
-    assert client.delete(f"/api/jobs/{job}").status_code == 409
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 409
     assert outside.read_bytes() == b"do not touch"
     assert (config.UPLOADS_DIR / str(job) / "original.wav").exists()
     assert db.get_job(job) is not None
@@ -177,11 +190,11 @@ def test_partial_file_error_keeps_row_and_allows_retry(client, monkeypatch):
         return real_rmtree(path)
 
     monkeypatch.setattr(jobs.shutil, "rmtree", fail_results)
-    assert client.delete(f"/api/jobs/{job}").status_code == 503
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 503
     assert db.get_job(job) is not None
     assert (config.RESULTS_DIR / str(job) / "song.mp3").exists()
     monkeypatch.setattr(jobs.shutil, "rmtree", real_rmtree)
-    assert client.delete(f"/api/jobs/{job}").status_code == 204
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 204
     assert db.get_job(job) is None
 
 
@@ -216,8 +229,10 @@ def test_delete_http_fails_fast_during_download_without_blocking_other_reads(
     download.start()
     try:
         assert started.wait(5)
-        assert other_client.delete(f"/api/jobs/{job}").status_code == 404
-        assert client.delete(f"/api/jobs/{job}").status_code == 409
+        assert (
+            other_client.delete(f"/api/songs/{song_for_work(job)}").status_code == 404
+        )
+        assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 409
         assert (
             client.get(f"/api/jobs/{job}/original").content == b"original shared source"
         )
@@ -226,7 +241,7 @@ def test_delete_http_fails_fast_during_download_without_blocking_other_reads(
         download.join(timeout=5)
     assert not download.is_alive()
     assert observed == [200]
-    assert client.delete(f"/api/jobs/{job}").status_code == 204
+    assert client.delete(f"/api/songs/{song_for_work(job)}").status_code == 204
 
 
 def test_delete_fails_fast_for_stream_and_readers_remain_concurrent():

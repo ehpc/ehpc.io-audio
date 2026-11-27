@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator } from '@playwright/test';
@@ -113,11 +114,11 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const source = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg'));
     const fixture = await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8');
     const submitted = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+      file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
       detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
     expect(submitted.ok()).toBe(true);
-    const id = (await submitted.json()).id as number;
+    const id = (await submitted.json()).work_id as number;
     execFileSync('uv', ['run', 'python', '-c', seedTimelineJob, String(id)], {
       cwd: process.env.E2E_REPO_ROOT!, input: fixture,
       env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
@@ -639,13 +640,13 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       test.setTimeout(120_000);
       expect(process.env.QUEUE_CONCURRENCY).toBe('0');
       const sourcePath = resolve(process.env.E2E_REPO_ROOT!, 'tests/fixtures/auld-lang-syne-full.ogg');
-      const source = await readFile(sourcePath);
+      const source = Buffer.concat([await readFile(sourcePath), randomBytes(16)]);
       const fixture = JSON.parse(await readFile(resolve(process.env.E2E_REPO_ROOT!, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8'));
       const activate = async (control: Locator) => viewport.width <= 700 ? control.tap() : control.click();
       await page.goto('/');
       await activate(page.getByRole('button', { name: 'Upload audio', exact: true }));
       const analyzed = page.waitForResponse(response => response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
-      await page.getByLabel('Audio file', { exact: true }).setInputFiles(sourcePath);
+      await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source });
       expect((await analyzed).status()).toBe(200);
       if (viewport.width <= 700) await activate(page.getByRole('tab', { name: 'Adjust', exact: true }));
       await page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' }).fill('1.25');
@@ -662,7 +663,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const response = await submitted;
       expect(response.status()).toBe(200);
       const created = await response.json() as SubmitResult;
-      const queuedResponse = await page.request.get(`/api/jobs/${created.id}`);
+      expect(created.work_id).not.toBeNull();
+      const queuedResponse = await page.request.get(`/api/jobs/${created.work_id}`);
       expect(queuedResponse.ok()).toBe(true);
       const queued = await queuedResponse.json() as JobDTO;
       expect(queued.options).toMatchObject({
@@ -716,6 +718,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       const transcript = results.getByRole('region', { name: 'Lyrics transcript', exact: true });
       await expect(pitchedLyrics).toBeVisible();
       await expect(transcript).toBeVisible();
+      for (const label of ['drums', 'bass', 'drums-vocals']) {
+        const link = results.locator(`a[href="/api/jobs/${queued.id}/results/${label}"], a[href^="/api/jobs/${queued.id}/results/${label}?"]`);
+        await link.locator('../..').screenshot({ path: info.outputPath(`output-${label}-${viewport.width}.png`), animations: 'disabled' });
+      }
+      await pitchedLyrics.screenshot({ path: info.outputPath(`pitched-copy-${viewport.width}.png`), animations: 'disabled' });
+      await transcript.screenshot({ path: info.outputPath(`transcript-copy-${viewport.width}.png`), animations: 'disabled' });
       const track = completed.pitched_lyrics![0];
       const linkedNote = completed.pitch!.tracks[0].notes.find(note => note.word_indices.length > 0)!;
       const linkedWord = completed.pitch!.words[linkedNote.word_indices[0]].text;
@@ -808,7 +816,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
       const downloads = [];
       for (const label of labels) {
         const pending = page.waitForEvent('download');
-        await activate(results.locator(`a[href="/api/jobs/${queued.id}/results/${label}"]`));
+        await activate(results.locator(`a[href="/api/jobs/${queued.id}/results/${label}"], a[href^="/api/jobs/${queued.id}/results/${label}?"]`));
         const download = await pending;
         const path = info.outputPath(`public-${label}.mp3`);
         await download.saveAs(path);
@@ -864,6 +872,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       test.setTimeout(120_000);
       expect(process.env.QUEUE_CONCURRENCY).toBe('0');
       let jobId: number | undefined;
+      let songId: number | undefined;
       let ownerId: string | undefined;
       const externalRequests: string[] = [];
       const localOrigin = new URL(process.env.E2E_BASE_URL!).origin;
@@ -887,7 +896,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         await activate(page.getByRole('button', { name: 'Upload audio', exact: true }));
         const analyzed = page.waitForResponse(response =>
           response.url().endsWith('/api/key-analysis') && response.request().method() === 'POST');
-        await page.getByLabel('Audio file', { exact: true }).setInputFiles(sourcePath);
+        await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([await readFile(sourcePath), randomBytes(16)]) });
         expect((await analyzed).status()).toBe(200);
         if (viewport.width <= 700) await activate(page.getByRole('tab', { name: 'Adjust', exact: true }));
         await page.getByRole('spinbutton', { name: 'Pitch shift (semitones)' }).fill('0');
@@ -900,7 +909,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         const response = await submitted;
         expect(response.status()).toBe(200);
         const created = await response.json() as SubmitResult;
-        jobId = created.id;
+        if (created.work_id === null) throw new Error('Expected new physical karaoke work');
+        jobId = created.work_id;
+        songId = created.song_id;
         const queuedResponse = await page.request.get(`/api/jobs/${jobId}`);
         expect(queuedResponse.ok()).toBe(true);
         const queued = await queuedResponse.json() as JobDTO;
@@ -1183,7 +1194,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
               cwd: process.env.E2E_REPO_ROOT!,
               env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
             });
-            const deleted = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+            const deleted = await page.request.delete(`/api/songs/${songId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
             expect(deleted.status()).toBe(204);
           } catch (error) { cleanupError ??= error; }
         }

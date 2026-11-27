@@ -211,7 +211,7 @@ def test_pitch_lifecycle_download_history_retry_and_session_isolation(
         files={"file": ("歌声.wav", b"source", "audio/wav")},
         data={"detect_pitch": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue, "process_source", lambda *args: ProcessingResult({}, pitch_json=encoded)
@@ -229,8 +229,7 @@ def test_pitch_lifecycle_download_history_retry_and_session_isolation(
     assert "application/json" in download.headers["content-type"]
     assert "pitch.json" in download.headers["content-disposition"]
     db.init_db()
-    assert client.get("/api/jobs").json()[0]["pitch"] == payload["pitch"]
-    assert client.get("/api/jobs/current").json()["pitch"] == payload["pitch"]
+    assert client.get(f"/api/jobs/{job_id}").json()["pitch"] == payload["pitch"]
     assert (
         json.loads(
             client.get(f"/api/jobs/{job_id}/events").text.removeprefix("data: ")
@@ -240,8 +239,13 @@ def test_pitch_lifecycle_download_history_retry_and_session_isolation(
     assert other_client.get(f"/api/jobs/{job_id}/pitch").status_code == 404
     assert other_client.get(f"/api/jobs/{job_id}").status_code == 404
     assert client.get(f"/api/jobs/{job_id}/results/vocals").status_code == 404
-    assert client.post(f"/api/jobs/{job_id}/retry").status_code == 200
-    assert client.get("/api/jobs/current").json()["options"]["detect_pitch"] is True
+    retry = client.post(f"/api/jobs/{job_id}/retry")
+    assert retry.status_code == 200
+    retry_work_id = retry.json()["work_id"]
+    assert (
+        client.get(f"/api/jobs/{retry_work_id}").json()["options"]["detect_pitch"]
+        is True
+    )
 
 
 @pytest.mark.skipif(not _NATIVE_TRANSFORM, reason="FFmpeg and Rubber Band required")
@@ -263,7 +267,7 @@ def test_pitch_only_job_serves_its_private_vocal_reference_to_its_owner(
             "tempo_percent": "125",
         },
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue,
@@ -316,7 +320,7 @@ def test_legacy_pitch_vocal_recovery_reuses_only_an_exact_cached_stem(
                 "tempo_percent": "125",
             },
         )
-        job_id = response.json()["id"]
+        job_id = response.json()["work_id"]
         job = db.get_job(job_id)
         assert job is not None
         asyncio.run(queue._run_job(job))
@@ -432,7 +436,7 @@ def test_unreadable_cached_vocal_archives_return_http_unavailable(
         files={"file": ("song.wav", source_bytes, "audio/wav")},
         data={"detect_pitch": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue, "process_source", lambda *args: ProcessingResult({}, pitch_json=encoded)
@@ -478,7 +482,7 @@ def test_missing_analysis_fails_instead_of_fake_success(
 ) -> None:
     job_id = client.post(
         "/api/jobs", data={"url": "https://example.org/song", "detect_pitch": "true"}
-    ).json()["id"]
+    ).json()["work_id"]
     monkeypatch.setattr(
         queue, "_load_source_bytes", lambda *args: (b"source", "song.mp3")
     )

@@ -6,7 +6,7 @@ import { authenticateOutsider, test } from './auth-fixture';
 import { cleanupSongRegenerationFixture, seedSongRegenerationFixture, seedAdditionalSilverArtifact, seedCachedSongs, setSongRegenerationFixtureStatus } from './cache-fixture';
 
 const libraryJobIds = async (request: { get(url: string): Promise<{ ok(): boolean; json(): Promise<unknown> }> }) => {
-  const response = await request.get('/api/jobs');
+  const response = await request.get('/api/songs');
   expect(response.ok()).toBe(true);
   return ((await response.json()) as { id: number }[]).map(job => job.id).sort((a, b) => a - b);
 };
@@ -29,7 +29,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await authenticateOutsider(outsider);
     const other = await outsider.newPage();
     await other.goto(process.env.E2E_BASE_URL!);
-    await expect(other.getByRole('button', { name: 'People', exact: true })).toHaveCount(0);
+    await expect(other.getByRole('button', { name: 'Admin', exact: true })).toHaveCount(0);
     expect((await other.request.get('/api/admin/cache')).status()).toBe(403);
     expect((await other.request.post('/api/admin/cache/clear', { headers, data: { all: true } })).status()).toBe(403);
     await outsider.clearCookies();
@@ -37,12 +37,40 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await outsider.close();
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'People', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    const accountAdmin = page.getByRole('button', { name: 'Admin', exact: true });
+    const workspace = page.getByRole('button', { name: 'Workspace', exact: true });
+    await expect(workspace).toHaveAttribute('aria-pressed', 'true');
+    await page.mouse.move(0, 0);
+    const selectedBackground = await workspace.evaluate(element => getComputedStyle(element).backgroundColor);
+    const unselectedBackground = await accountAdmin.evaluate(element => getComputedStyle(element).backgroundColor);
+    expect(selectedBackground).not.toBe(unselectedBackground);
+    await accountAdmin.click();
+    await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+    const people = page.getByRole('button', { name: 'People', exact: true });
+    const cached = page.getByRole('button', { name: 'Cached songs', exact: true });
+    await page.mouse.move(0, 0);
+    await expect(accountAdmin).toHaveAttribute('aria-pressed', 'true');
+    await expect(workspace).toHaveAttribute('aria-pressed', 'false');
+    await expect.poll(() => accountAdmin.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(selectedBackground);
+    await expect.poll(() => workspace.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(unselectedBackground);
+    await expect(people).toHaveAttribute('aria-pressed', 'true');
+    await expect(cached).toHaveAttribute('aria-pressed', 'false');
+    await expect.poll(() => people.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(selectedBackground);
+    await expect.poll(() => cached.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(unselectedBackground);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: info.outputPath(`admin-people-header-${viewport.width}.png`), animations: 'disabled' });
+    await cached.click();
     const cache = page.getByRole('region', { name: 'Cached songs' });
     await expect(cache.getByText('Silver harbor')).toBeVisible();
     await expect(cache.getByText('Quiet morning')).toBeVisible();
     await expect(cache.getByText('Distant lights')).toBeVisible();
+    await page.mouse.move(0, 0);
+    await expect(cached).toHaveAttribute('aria-pressed', 'true');
+    await expect(people).toHaveAttribute('aria-pressed', 'false');
+    await expect.poll(() => cached.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(selectedBackground);
+    await expect.poll(() => people.evaluate(element => getComputedStyle(element).backgroundColor)).toBe(unselectedBackground);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({ path: info.outputPath(`admin-cache-header-${viewport.width}.png`), animations: 'disabled' });
     await cache.screenshot({ path: info.outputPath(`cache-${viewport.width}.png`) });
     await cache.getByRole('button', { name: 'Clear Silver harbor' }).click();
     let dialog = page.getByRole('alertdialog');
@@ -64,32 +92,69 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     dialog = page.getByRole('alertdialog');
     await expect(dialog).toContainText('2 selected songs');
     const file = await readFile(resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'));
-    const queued = await page.request.post('/api/jobs', { headers, multipart: {
-      file: { name: 'cache-busy-fixture.wav', mimeType: 'audio/wav', buffer: file },
-    } });
-    expect(queued.ok()).toBe(true);
-    const id = (await queued.json()).id as number;
-    await dialog.getByRole('button', { name: 'Confirm clear' }).click();
-    await expect(dialog.getByRole('alert')).toBeVisible();
-    await dialog.getByRole('button', { name: 'Cancel' }).click();
-    await expect(cache.getByRole('checkbox', { name: /Quiet morning/ })).toBeChecked();
-    await expect(cache.getByRole('checkbox', { name: /Distant lights/ })).toBeChecked();
-    execFileSync('uv', ['run', 'python', '-c', 'import sys; from backend import db; db.mark_failed(int(sys.argv[1]), "fixture complete")', String(id)], {
-      cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
-    });
-    await cache.getByRole('button', { name: 'Clear selected (2)' }).click();
-    await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm clear' }).click();
-    await expect(cache.getByText('No cached songs.')).toBeVisible();
-    seedCachedSongs();
-    await cache.getByRole('button', { name: 'Refresh cache' }).click();
-    await expect(cache.getByText('Silver harbor')).toBeVisible();
-    await cache.getByRole('button', { name: 'Clear all cache' }).click();
-    dialog = page.getByRole('alertdialog');
-    await expect(dialog).toContainText('3 listed songs');
-    await dialog.screenshot({ path: info.outputPath(`cache-confirm-${viewport.width}.png`) });
-    await dialog.getByRole('button', { name: 'Confirm clear' }).click();
-    await expect(cache.getByText('No cached songs.')).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    let busySongId: number | undefined;
+    let busyWorkId: number | undefined;
+    try {
+      const queued = await page.request.post('/api/jobs', { headers, multipart: {
+        file: { name: 'cache-busy-fixture.wav', mimeType: 'audio/wav', buffer: Buffer.concat([file, Buffer.from(`cache-${viewport.width}`)]) },
+      } });
+      expect(queued.ok()).toBe(true);
+      const created = await queued.json() as { song_id: number; work_id: number };
+      busySongId = created.song_id;
+      busyWorkId = created.work_id;
+      await dialog.getByRole('button', { name: 'Confirm clear' }).click();
+      await expect(dialog.getByRole('alert')).toBeVisible();
+      await dialog.getByRole('button', { name: 'Cancel' }).click();
+      await expect(cache.getByRole('checkbox', { name: /Quiet morning/ })).toBeChecked();
+      await expect(cache.getByRole('checkbox', { name: /Distant lights/ })).toBeChecked();
+      execFileSync('uv', ['run', 'python', '-c', 'import sys; from backend import db; db.mark_failed(int(sys.argv[1]), "fixture complete")', String(busyWorkId)], {
+        cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+      });
+      await cache.getByRole('button', { name: 'Clear selected (2)' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'Confirm clear' }).click();
+      await expect(cache.getByText('No cached songs.')).toBeVisible();
+      seedCachedSongs();
+      await cache.getByRole('button', { name: 'Refresh cache' }).click();
+      await expect(cache.getByText('Silver harbor')).toBeVisible();
+      await cache.getByRole('button', { name: 'Clear all cache' }).click();
+      dialog = page.getByRole('alertdialog');
+      await expect(dialog).toContainText('3 listed songs');
+      await dialog.screenshot({ path: info.outputPath(`cache-confirm-${viewport.width}.png`) });
+      await dialog.getByRole('button', { name: 'Confirm clear' }).click();
+      await expect(cache.getByText('No cached songs.')).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    } finally {
+      if (busySongId !== undefined && busyWorkId !== undefined) {
+        execFileSync('uv', ['run', 'python', '-c', String.raw`
+import os, sys
+from backend import auth_store, config, db
+from backend.routes.jobs import _remove_job_files
+assert config.QUEUE_CONCURRENCY == 0
+song_id, work_id = map(int, sys.argv[1:])
+owner = auth_store.authenticate(os.environ["E2E_AUTH_SESSION"])
+assert owner is not None and song_id > 0 and work_id > 0
+with db._session() as conn:
+    conn.execute("BEGIN IMMEDIATE")
+    rows = conn.execute(
+        "SELECT j.id,j.session_id,j.source_value,j.internal,j.active_stage_key,j.modal_call_id "
+        "FROM library_song_jobs m JOIN jobs j ON j.id=m.job_id WHERE m.song_id=?", (song_id,),
+    ).fetchall()
+    assert len(rows) == 1
+    job = rows[0]
+    assert job["id"] == work_id and job["session_id"] == owner.id
+    assert job["source_value"] == "cache-busy-fixture.wav" and not job["internal"]
+    assert job["active_stage_key"] is None and job["modal_call_id"] is None
+    _remove_job_files(work_id)
+    conn.execute("DELETE FROM job_source_snapshots WHERE job_id=?", (work_id,))
+    conn.execute("DELETE FROM library_song_sources WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM library_song_jobs WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM library_songs WHERE id=? AND session_id=?", (song_id, owner.id))
+    conn.execute("DELETE FROM jobs WHERE id=? AND session_id=?", (work_id, owner.id))
+`, String(busySongId), String(busyWorkId)], {
+          cwd: process.env.E2E_REPO_ROOT!, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
+        });
+      }
+    }
   });
 }
 
@@ -104,8 +169,8 @@ test('song regeneration preserves both owners’ Library entries and replaces re
     await page.goto('/');
     const adminIdsBefore = await libraryJobIds(page.request);
     const outsiderIdsBefore = await libraryJobIds(otherOwner.request);
-    expect(adminIdsBefore).toContain(fixture.sourceJobIds[0]);
-    expect(outsiderIdsBefore).toContain(fixture.sourceJobIds[1]);
+    expect(adminIdsBefore).toContain(fixture.sourceSongIds[0]);
+    expect(outsiderIdsBefore).toContain(fixture.sourceSongIds[1]);
     expect(await resultText(page.request, fixture.sourceJobIds[0])).toContain('old-result-0');
     expect(await resultText(otherOwner.request, fixture.sourceJobIds[1])).toContain('old-result-1');
 
@@ -128,8 +193,8 @@ test('song regeneration preserves both owners’ Library entries and replaces re
         await route.continue();
       }
     });
-    await page.getByRole('button', { name: 'People', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    await page.getByRole('button', { name: 'Admin', exact: true }).click();
+    await page.getByRole('button', { name: 'Cached songs', exact: true }).click();
     const cache = page.getByRole('region', { name: 'Cached songs' });
     await expect(cache.getByRole('button', { name: `Regenerate ${fixture.title}` })).toBeVisible();
     await expect(cache.getByText('2 saved job variants will be regenerated.')).toBeVisible();
@@ -210,8 +275,8 @@ test('failed song regeneration keeps each existing result available and reports 
     await page.goto('/');
     const adminIdsBefore = await libraryJobIds(page.request);
     const outsiderIdsBefore = await libraryJobIds(otherOwner.request);
-    await page.getByRole('button', { name: 'People', exact: true }).click();
-    await page.getByRole('button', { name: 'Manage cached songs' }).click();
+    await page.getByRole('button', { name: 'Admin', exact: true }).click();
+    await page.getByRole('button', { name: 'Cached songs', exact: true }).click();
     const cache = page.getByRole('region', { name: 'Cached songs' });
     await cache.getByRole('button', { name: `Regenerate ${fixture.title}` }).click();
     const dialog = page.getByRole('alertdialog');

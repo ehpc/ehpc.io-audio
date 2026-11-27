@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Request } from '@playwright/test';
@@ -21,7 +22,7 @@ for (const mobile of [false, true]) {
         '-nostdin', '-v', 'error', '-i', resolve(process.env.E2E_FIXTURE_DIR!, 'tone-fixture.wav'),
         '-c:a', 'libmp3lame', '-q:a', '2', fixture,
       ]);
-      const bytes = await readFile(fixture);
+      const bytes = Buffer.concat([await readFile(fixture), randomBytes(16)]);
       const probe = JSON.parse(execFileSync('ffprobe', [
         '-v', 'error', '-show_entries', 'stream=codec_name,channels:format=duration', '-of', 'json', fixture,
       ], { encoding: 'utf8' }));
@@ -82,7 +83,7 @@ for (const mobile of [false, true]) {
         const result = await response.json();
         proof.submission = { status: response.status(), response: result, multipart: multipart(response.request()) };
         expect(response.status()).toBe(200);
-        const { id } = result;
+        const { work_id: id } = result;
         await expect(page.locator(`a[href='/api/jobs/${id}/original']`).first()).toBeVisible({ timeout: 60_000 });
         const jobResponse = await page.request.get(`/api/jobs/${id}`);
         expect(jobResponse.ok()).toBe(true);

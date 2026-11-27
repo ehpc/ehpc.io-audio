@@ -1,6 +1,6 @@
 import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type Component } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { BooleanOptionKey, JobDTO, SeparationOptions, SongMatch } from "~/api";
+import type { BooleanOptionKey, JobDTO, SeparationOptions, SongMatch, SongSummary } from "~/api";
 import { analyzeKey, audioSettingsError, searchSong, submitJob } from "~/api";
 import { Button } from "~/components/button";
 import KeyNotes from "~/components/KeyNotes";
@@ -66,7 +66,7 @@ const DEFAULT_OPTIONS: SeparationOptions = {
   tempo_percent: 100,
 };
 
-const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) => {
+const SubmitForm: Component<{ onSubmitted: (job: JobDTO | null, songId: number, selectionToken?: number, targetSongId?: number) => void; selectionToken?: () => number; target?: SongSummary | null; onClearTarget?: () => void }> = (props) => {
   const [mode, setMode] = createSignal<SourceMode>("url");
   const [url, setUrl] = createSignal("");
   const [file, setFile] = createSignal<File | null>(null);
@@ -87,6 +87,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     setSelectedSongIndex(0);
   };
   const editQuery = (value: string) => batch(() => {
+    props.onClearTarget?.();
     invalidateSearch();
     setQuery(value.slice(0, 500));
     setVoiceRevision(value => value + 1);
@@ -94,6 +95,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   });
   const changeMode = (value: SourceMode) => {
     if (mode() === value) return;
+    props.onClearTarget?.();
     batch(() => {
       invalidateSearch();
       setMode(value);
@@ -157,13 +159,15 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   };
 
   createEffect(() => {
+    const target = props.target;
     const currentMode = mode();
     const currentUrl = effectiveUrl();
     const currentFile = file();
-    setOriginalKey(null);
-    setAnalyzed(false);
+    setOriginalKey(target?.original_key ?? null);
+    setAnalyzed(Boolean(target));
     setAnalyzing(false);
     setAnalysisError(null);
+    if (target) return;
     if (currentMode !== "file") {
       try {
         const parsed = new URL(currentUrl);
@@ -221,6 +225,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   const outputCount = () => stems().length + Number(options().extract_lyrics) + Number(options().detect_pitch) +
     (options().extract_pitched_lyrics ? expectedPitchStems(options()).length : 0);
   const validationError = (): string | null => {
+    if (props.target) return audioSettingsError(options());
     if (mode() === "search" && !song()) return "Find and select a song before processing audio.";
     const hasUrl = mode() !== "file" && effectiveUrl().length > 0;
     const hasFile = mode() === "file" && file() !== null;
@@ -244,6 +249,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     const usingUrl = mode() !== "file";
     const chosenUrl = effectiveUrl();
     const chosenFile = file();
+    const target = props.target;
+    const selectionToken = props.selectionToken?.();
     // Snapshot including mixes: editing or removing a mix while the POST is
     // pending must never mutate the submitted payload or the optimistic job.
     const submittedOptions: SeparationOptions = {
@@ -252,24 +259,22 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
     };
     try {
       const result = await submitJob({
-        url: usingUrl ? chosenUrl : undefined,
-        file: usingUrl ? undefined : chosenFile ?? undefined,
+        url: !target && usingUrl ? chosenUrl : undefined,
+        file: !target && !usingUrl ? chosenFile ?? undefined : undefined,
         options: submittedOptions,
-      });
-      props.onSubmitted({
-        id: result.id,
+      }, target?.id);
+      props.onSubmitted(result.work_id === null ? null : {
+        id: result.work_id,
+        song_id: result.song_id,
         status: result.status,
         position: result.position,
         progress: result.progress,
-        source_type: usingUrl ? "url" : "upload",
-        source_value: usingUrl ? chosenUrl : chosenFile!.name,
-        // A URL's title is resolved server-side after download; an upload's
-        // filename is its title.
-        title: usingUrl ? null : chosenFile!.name,
+        source_type: (target?.source_type === "upload" ? "upload" : target?.source_type === "url" ? "url" : usingUrl ? "url" : "upload"),
+        source_value: target?.source_value ?? (usingUrl ? chosenUrl : chosenFile!.name),
+        title: target?.title ?? (usingUrl ? null : chosenFile!.name),
         original_key: null,
         output_key: null,
         result_revision: null,
-        open_count: 0,
         options: submittedOptions,
         manifest: null,
         transcript: null,
@@ -279,7 +284,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
         created_at: Math.floor(Date.now() / 1000),
         has_original: false,
         has_pitch_vocals: false,
-      });
+      }, result.song_id, selectionToken, target?.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Submission failed.");
     } finally {
@@ -290,6 +295,8 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
   return (
     <form class="audio-workspace" data-active-tab={tab()} onSubmit={handleSubmit}>
       <section class="source-panel" aria-label="Audio source">
+        <Show when={props.target}>{target => <p>Adding outputs to {target().title ?? target().source_value}. <Button type="button" variant="ghost" onClick={() => props.onClearTarget?.()}>Choose another source</Button></p>}</Show>
+        <fieldset disabled={Boolean(props.target)} hidden={Boolean(props.target)} style={{ border: "0", padding: "0", margin: "0", "min-width": "0" }}>
         <div class="source-line">
           <div class="source-tabs" role="group" aria-label="Source type">
             <For each={["url", "file", "search"] as SourceMode[]}>
@@ -306,12 +313,12 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
               <Label for="file-input">Audio file</Label>
               {/* Providers can omit an audio MIME type; extensions keep those files selectable. */}
               <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac,.opus,.webm"
-                onChange={(e) => { setFile(e.currentTarget.files?.[0] ?? null); setError(null); }} />
+                onChange={(e) => { props.onClearTarget?.(); setFile(e.currentTarget.files?.[0] ?? null); setError(null); }} />
               <Show when={file()}>{(f) => <p class="workspace-helper">Selected: {f().name}</p>}</Show>
             </div>
           </Show>
           <Show when={mode() === "url"}>
-            <TextField value={url()} onChange={setUrl} class="source-field">
+            <TextField value={url()} onChange={value => { props.onClearTarget?.(); setUrl(value); }} class="source-field">
               <Label for="url-input">Track URL</Label>
               <TextFieldInput id="url-input" type="url" placeholder="https://..." autocomplete="off" />
             </TextField>
@@ -345,7 +352,7 @@ const SubmitForm: Component<{ onSubmitted: (job: JobDTO) => void }> = (props) =>
             </div>
           </Show>
         </div>
-        <p class="workspace-helper">{mobile() ? "Default: original only, unchanged." : "Download only by default. Your original always stays unchanged."}</p>
+        </fieldset>
         <Show when={analyzing()}>
           <p role="status" aria-live="polite" class="analysis-status">
             <span aria-hidden="true" class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />

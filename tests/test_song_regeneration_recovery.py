@@ -21,8 +21,9 @@ def test_interrupted_clear_resumes_before_claiming_work(client, monkeypatch):
     owner = client.get("/api/auth/me").json()["id"]
     audio = tone_wav((440,), 0.3)
     job_id, song_id = original(owner, audio, options=SeparationOptions())
-    assert client.post(f"/api/jobs/{job_id}/open").json()["open_count"] == 1
     old = client.get(f"/api/jobs/{job_id}").json()
+    library_song_id = old["song_id"]
+    assert client.post(f"/api/songs/{library_song_id}/open").json()["open_count"] == 1
     operations = regeneration.prepare([song_id])
     status = next(
         s for s in db.regeneration_status() if s["operation_id"] == operations[0]
@@ -50,9 +51,10 @@ def test_interrupted_clear_resumes_before_claiming_work(client, monkeypatch):
     assert status["status"] == "done" and status["completed_jobs"] == 1
     after = client.get(f"/api/jobs/{job_id}").json()
     assert after["id"] == old["id"] and after["created_at"] == old["created_at"]
-    assert after["open_count"] == 1
+    summary = client.get(f"/api/songs/{library_song_id}").json()["summary"]
+    assert summary["open_count"] == 1
     assert after["result_revision"] is not None
-    assert len(client.get("/api/jobs").json()) == 1
+    assert len(client.get("/api/songs").json()) == 1
 
 
 def test_restart_clears_all_reserved_songs_before_activating_any(client):
@@ -158,10 +160,11 @@ def test_killed_snapshot_preparation_cannot_reuse_or_expose_reserved_id(
     job_id, song_id = original(
         owner, audio, source_type="url", source_value="https://example.test/track"
     )
+    library_song_id = client.get(f"/api/jobs/{job_id}").json()["song_id"]
     sidecar_dir = config.DATA_DIR / "source-metadata"
     sidecar_dir.mkdir(parents=True)
     (sidecar_dir / f"{job_id}.json").write_text('{"track":"private title"}')
-    history = client.get("/api/jobs").json()
+    history = client.get("/api/songs").json()
     artifact = next((config.DATA_DIR / "artifacts" / "keys").glob("*.bin"))
     cache_before = (artifact.read_bytes(), artifact.stat().st_ino)
     _kill_during_copy("song", song_id, owner)
@@ -178,7 +181,7 @@ def test_killed_snapshot_preparation_cannot_reuse_or_expose_reserved_id(
     assert (sidecar_dir / f"{reserved_id}.json").exists()
     assert db.claim_oldest_queued() is None
     assert db.regeneration_status()[0]["status"] == "clearing"
-    assert client.delete(f"/api/jobs/{job_id}").status_code == 409
+    assert client.delete(f"/api/songs/{library_song_id}").status_code == 409
     assert (
         client.post("/api/admin/cache/clear", json={"ids": [song_id]}).status_code
         == 409
@@ -186,7 +189,7 @@ def test_killed_snapshot_preparation_cannot_reuse_or_expose_reserved_id(
     assert (artifact.read_bytes(), artifact.stat().st_ino) == cache_before
     admin_cache.recover_song_clears()
     assert db.regeneration_status()[0]["status"] == "failed"
-    assert client.get("/api/jobs").json() == history
+    assert client.get("/api/songs").json() == history
     assert client.get(f"/api/jobs/{job_id}/original").content == audio
     song = next(
         s for s in client.get("/api/admin/cache").json()["songs"] if s["id"] == song_id
@@ -198,7 +201,7 @@ def test_killed_snapshot_preparation_cannot_reuse_or_expose_reserved_id(
         "/api/jobs", files={"file": ("own.wav", b"unrelated input", "audio/wav")}
     )
     assert uploaded.status_code == 200, uploaded.text
-    new_id = uploaded.json()["id"]
+    new_id = uploaded.json()["work_id"]
     assert new_id != reserved_id
     assert (
         other_client.get(f"/api/jobs/{new_id}/original").content == b"unrelated input"
@@ -228,7 +231,7 @@ def test_killed_snapshot_retry_keeps_reserved_id_hidden(client, other_client):
                 hashlib.sha256(audio).hexdigest(),
             ),
         )
-    history = client.get("/api/jobs").json()
+    history = client.get("/api/songs").json()
     _kill_during_copy("retry", job_id, owner)
     with db._session() as conn:
         reserved = conn.execute(
@@ -239,10 +242,10 @@ def test_killed_snapshot_retry_keeps_reserved_id_hidden(client, other_client):
     assert db.claim_oldest_queued() is None
     assert client.get(f"/api/jobs/{reserved['id']}/original").status_code == 404
     admin_cache.recover_song_clears()
-    assert client.get("/api/jobs").json() == history
+    assert client.get("/api/songs").json() == history
     response = other_client.post(
         "/api/jobs", data={"url": "https://example.test/other"}
     )
     assert response.status_code == 200, response.text
-    assert response.json()["id"] != reserved["id"]
-    assert not (sidecars / f"{response.json()['id']}.json").exists()
+    assert response.json()["work_id"] != reserved["id"]
+    assert not (sidecars / f"{response.json()['work_id']}.json").exists()

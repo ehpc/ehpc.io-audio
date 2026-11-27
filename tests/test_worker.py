@@ -38,12 +38,14 @@ def _write_upload(job_id: int, filename: str) -> None:
 def test_run_job_upload_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         "s1",
         "upload",
         "song.wav",
         SeparationOptions(extract_vocals=True, extract_instruments=True),
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     source = tone_wav((440,), 0.6)
     upload = config.UPLOADS_DIR / str(job_id)
     upload.mkdir(parents=True)
@@ -117,12 +119,14 @@ def test_run_job_upload_success(
         assert entry.duration_s == produced[0].audio[entry.label].duration_s
     assert (upload / "song.wav").read_bytes() == source
 
-    cached_id = db.insert_job(
+    cached_work = db.insert_job(
         "s1",
         "upload",
         "song.wav",
         SeparationOptions(extract_vocals=True, extract_instruments=True),
     )
+    assert cached_work.work_id is not None
+    cached_id = cached_work.work_id
     cached_upload = config.UPLOADS_DIR / str(cached_id)
     cached_upload.mkdir(parents=True)
     (cached_upload / "song.wav").write_bytes(source)
@@ -144,9 +148,11 @@ def test_run_job_upload_success(
 def test_phase_publication_does_not_deadlock_single_worker_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         "s1", "upload", "song.wav", SeparationOptions(extract_vocals=True)
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     job = db.claim_oldest_queued()
     assert job is not None and job.id == job_id
     parent, child = multiprocessing.get_context("fork").Pipe(duplex=False)
@@ -193,7 +199,9 @@ def test_phase_publication_does_not_deadlock_single_worker_executor(
 
 
 def test_source_only_job_does_not_wait_for_same_source_model_lock() -> None:
-    job_id = db.insert_job("s1", "upload", "song.wav", SeparationOptions())
+    submitted = db.insert_job("s1", "upload", "song.wav", SeparationOptions())
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     _write_upload(job_id, "song.wav")
     job = db.claim_oldest_queued()
     assert job is not None and job.id == job_id
@@ -209,7 +217,9 @@ def test_source_only_job_does_not_wait_for_same_source_model_lock() -> None:
 
 
 def test_run_job_url_sets_title_from_download(monkeypatch: pytest.MonkeyPatch) -> None:
-    job_id = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
+    submitted = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     queued = db.get_job(job_id)
     assert queued is not None
     assert queued.title is None  # not known until downloaded
@@ -234,7 +244,9 @@ def test_run_job_url_sets_title_from_download(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_run_job_url_persists_original(monkeypatch: pytest.MonkeyPatch) -> None:
-    job_id = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
+    submitted = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
 
     def fake_download(url: str, dest: str, **kw: object) -> tuple[bytes, str]:
         (Path(dest) / "My Song.mp3").write_bytes(b"original-audio")
@@ -256,9 +268,11 @@ def test_run_job_url_persists_original(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_job_marks_failed_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         "s1", "upload", "x.mp3", SeparationOptions(extract_vocals=True)
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     _write_upload(job_id, "x.mp3")
 
     def _boom(*a: object, **k: object) -> object:
@@ -288,7 +302,9 @@ def test_load_options_maps_renamed_and_ignores_unknown() -> None:
 
 
 def test_reap_running_to_queued() -> None:
-    job_id = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
+    submitted = db.insert_job("s1", "url", "https://example.com/x", SeparationOptions())
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     claimed = db.claim_oldest_queued()
     assert claimed is not None and claimed.status is JobStatus.RUNNING
 

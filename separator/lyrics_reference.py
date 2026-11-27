@@ -702,8 +702,27 @@ def plan_reference(
         if split:
             groups.append([])
         groups[-1].append(index)
-    phrases = []
+    # A run with no lexical anchors must not cause an otherwise supported
+    # passage to fail the group-wide gate. Keep passing groups intact so their
+    # unanchored lines can still be challenged in the full acoustic context.
+    candidate_groups = []
     for indices in groups:
+        count = sum(len(tokens(lines[index].text)) for index in indices)
+        anchor_count = sum(len(line_anchors[index]) for index in indices)
+        if anchor_count >= min(3, count) and anchor_count / count >= 0.5:
+            candidate_groups.append(indices)
+            continue
+        run = []
+        for index in indices:
+            if line_anchors[index]:
+                run.append(index)
+            elif run:
+                candidate_groups.append(run)
+                run = []
+        if run:
+            candidate_groups.append(run)
+    phrases = []
+    for indices in candidate_groups:
         anchors = [anchor for index in indices for anchor in line_anchors[index]]
         count = sum(len(tokens(lines[index].text)) for index in indices)
         if len(anchors) < min(3, count) or len(anchors) / count < 0.5:

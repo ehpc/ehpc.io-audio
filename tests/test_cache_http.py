@@ -80,7 +80,7 @@ def server(root, port, prohibit="", key_version="", admin=False):
 
 def finish(client, response):
     response.raise_for_status()
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     deadline = time.monotonic() + 30
     while True:
         result = client.get(f"/api/jobs/{job_id}").json()
@@ -118,7 +118,6 @@ def test_http_cross_session_restart_reuses_native_artifacts(tmp_path):
         )
         original = client.get(f"/api/jobs/{job['id']}/original").content
         assert job["original_key"] == preview.json()["original_key"]
-        first_id = job["id"]
         first = trace(tmp_path)
         assert first == Counter(download=1, decode=1, key=1, stem=2, mix=1)
     mix.update(id="mix-second", name="Second private name")
@@ -136,11 +135,8 @@ def test_http_cross_session_restart_reuses_native_artifacts(tmp_path):
                 data=options,
             ),
         )
-        assert client.get(f"/api/jobs/{first_id}").status_code == 404
-        assert client.get(f"/api/jobs/{first_id}/original").status_code == 404
-        assert [item["id"] for item in client.get("/api/jobs").json()] == [job["id"]]
+        assert len(client.get("/api/songs").json()) == 1
         modified = client.get(f"/api/jobs/{job['id']}/results/mix-second").content
-        second_id = job["id"]
         second = trace(tmp_path)
         assert second - first == Counter(transform=2)
     mix.update(id="mix-third", name="Third private name")
@@ -154,7 +150,7 @@ def test_http_cross_session_restart_reuses_native_artifacts(tmp_path):
                 data=options,
             ),
         )
-        assert client.get(f"/api/jobs/{second_id}").status_code == 404
+        assert len(client.get("/api/songs").json()) == 1
         repeated = client.get(f"/api/jobs/{job['id']}/results/mix-third").content
         assert trace(tmp_path) == second
         assert (

@@ -104,7 +104,7 @@ def test_server_drain_checkpoints_requeues_and_resumes_same_job(tmp_path):
                     data={"extract_vocals": "true", "extract_instruments": "true"},
                 )
                 assert response.status_code == 200, response.text
-                job_id = response.json()["id"]
+                job_id = response.json()["work_id"]
                 wait_until(lambda: (tmp_path / "polling").exists(), server)
                 accepted_path = tmp_path / "accepted.jsonl"
                 accepted = [

@@ -225,6 +225,43 @@ def test_repeated_chorus_uses_distinct_monotonic_occurrences_and_preserves_order
     assert result.reference.original_segments == original.segments
 
 
+def test_unsupported_tail_does_not_discard_supported_phrase_candidates():
+    original = heard("Amber lanterns shine Silver branches sway")
+    canonical = (
+        "Amber lanterns shine\nSilver branches sway\n"
+        "Quiet gardens sleep\nVelvet shadows fall\nGolden rivers flow"
+    )
+    planned, phrases = plan_reference(original, review(canonical), 180)
+
+    assert [line.support for line in planned.lines] == [1, 1, 0, 0, 0]
+    assert [phrase.line_indices for phrase in phrases] == [[0, 1]]
+    assert phrases[0].start_s <= original.words[0].start_s
+    assert phrases[0].end_s >= original.words[-1].end_s
+    # Planning is not acoustic acceptance and publishes no new timings.
+    result = apply_reference(original, planned, {})
+    assert result.segments == []
+    assert result.reference is not None
+    assert all(line.start_s is None for line in result.reference.lines)
+
+
+def test_failed_wrong_reference_subgroups_still_fail_anchor_gate():
+    original = heard("Amber silver")
+    canonical = "Amber lanterns shine\nQuiet gardens sleep\nSilver branches sway"
+    planned, phrases = plan_reference(original, review(canonical), 180)
+
+    assert [line.support for line in planned.lines] == [1 / 3, 0, 1 / 3]
+    assert phrases == []
+
+
+def test_passing_group_keeps_unanchored_line_in_acoustic_context():
+    original = heard("Amber lanterns shine Silver branches sway")
+    canonical = "Amber lanterns shine\nQuiet gardens sleep\nSilver branches sway"
+    planned, phrases = plan_reference(original, review(canonical), 180)
+
+    assert planned.lines[1].support == 0
+    assert [phrase.line_indices for phrase in phrases] == [[0, 1, 2]]
+
+
 def test_omitted_verse_is_untimed_despite_valid_forced_alignment_spans():
     original = heard("Amber lanterns shine Quiet gardens sleep")
     canonical = "Amber lanterns shine\nSilver branches sway\nQuiet gardens sleep"

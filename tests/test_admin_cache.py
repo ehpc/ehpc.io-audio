@@ -55,7 +55,9 @@ def completed_stage(data=b"completed inference"):
             }
         )
     )
-    job = db.insert_job("test", "upload", "audio.mp3", SeparationOptions())
+    submitted = db.insert_job("test", "upload", "audio.mp3", SeparationOptions())
+    assert submitted.work_id is not None
+    job = submitted.work_id
     db.mark_done(job, [])
     db.set_active_stage(job, key, "fc-completed")
     return job, key, path, receipt
@@ -69,7 +71,9 @@ def failed_stage():
     )
     diagnostic.parent.mkdir(parents=True, exist_ok=True)
     diagnostic.write_bytes(b"verified terminal diagnostic")
-    job = db.insert_job("test", "upload", "audio.mp3", SeparationOptions())
+    submitted = db.insert_job("test", "upload", "audio.mp3", SeparationOptions())
+    assert submitted.work_id is not None
+    job = submitted.work_id
     db.set_active_stage(job, key, "fc-failed")
     db.mark_failed(job, "Model failed")
     receipt = config.DATA_DIR / "artifacts" / "inference-requests" / f"{key}.json"
@@ -496,10 +500,12 @@ def test_all_clear_invalidates_actual_song_search_artifact_cache(client):
 
 def test_all_clear_preserves_private_vocal_reference_and_public_results(client):
     owner = client.get("/api/auth/me").json()["id"]
-    job = db.insert_job(owner, "upload", "original.mp3", SeparationOptions())
+    submitted = db.insert_job(owner, "upload", "original.mp3", SeparationOptions())
+    assert submitted.work_id is not None
+    job = submitted.work_id
+    directory = config.RESULTS_DIR / str(job)
     pitch = pitch_to_json(PitchAnalysis(1, 1, [PitchTrack("vocals", [])]))
     db.mark_done(job, [], pitch_json=pitch)
-    directory = config.RESULTS_DIR / str(job)
     directory.mkdir(parents=True, exist_ok=True)
     private = directory / ".pitch-vocals.mp3"
     public = directory / "vocals.mp3"

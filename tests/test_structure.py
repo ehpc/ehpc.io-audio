@@ -114,7 +114,7 @@ def test_canonical_json_controls_txt_without_rewriting_legacy_files(
         files={"file": ("song.wav", b"audio")},
         data={"extract_lyrics": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     directory = config.RESULTS_DIR / str(job_id)
     directory.mkdir(parents=True)
     legacy = directory / "lyrics.txt"
@@ -136,7 +136,7 @@ def test_canonical_json_controls_txt_without_rewriting_legacy_files(
     legacy.unlink()
     db.init_db()
     assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == expected
-    assert client.get("/api/jobs").json()[0]["transcript"] == payload
+    assert client.get(f"/api/jobs/{job_id}").json()["transcript"] == payload
     assert other_client.get(f"/api/jobs/{job_id}/lyrics/download").status_code == 404
 
 

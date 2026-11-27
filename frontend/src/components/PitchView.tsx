@@ -1,6 +1,6 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show, untrack, type Component } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { JobDTO, LearningHint, PitchNoteDTO } from "~/api";
+import type { JobDTO, LearningHint, PitchNoteDTO, SongOutputRef } from "~/api";
 import { originalUrl, pitchDownloadUrl, pitchVocalsUrl, playbackUrl, recoverPitchVocals, resultUrl } from "~/api";
 import { displayOutputLabel } from "~/lib/expectedStems";
 import { NOTE_NAMES, noteName } from "~/lib/pitchNotes";
@@ -14,6 +14,13 @@ import TimelineKaraoke, { LYRIC_FONT } from "./TimelineKaraoke";
 import PianoKeyboard from "./PianoKeyboard";
 import KaraokeFullscreen from "./KaraokeFullscreen";
 import MicrophoneTuner from "./MicrophoneTuner";
+import OutputIcon from "./OutputIcon";
+
+interface PitchViewProps {
+  job: JobDTO;
+  outputs: SongOutputRef[];
+  originalWorkId: number | null;
+}
 
 const ROW_HEIGHT = 24;
 const AXIS_WIDTH = 54;
@@ -60,7 +67,7 @@ interface HoverAnchor {
   y: number;
 }
 
-const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
+const PitchTimeline: Component<PitchViewProps> = (props) => {
   const analysis = () => props.job.pitch!;
   const timingLines = createMemo(() => timingPracticeLines(props.job));
   const [trackLabel, setTrackLabel] = createSignal(analysis().tracks[0]?.label ?? "");
@@ -388,31 +395,34 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       return { seconds, label: step < 1 ? timeLabel(seconds) : timeLabel(seconds).slice(0, -3) };
     });
   });
-  const hasOutput = (label: string) => props.job.manifest?.some(item => item.label === label) ?? false;
-  const hasVocals = () => recoveredVocals() || props.job.has_pitch_vocals;
-  const hasSong = () => hasOutput("song") || props.job.has_original;
-  const otherReferences = () => analysis().tracks.filter(item => item.label !== "vocals"
-    && item.label !== "song" && item.label !== "instruments" && item.label !== "drums" && item.label !== "drums-vocals" && hasOutput(item.label));
+  const output = (key: string) => props.outputs.find(item => item.identity === key)
+    ?? props.outputs.find(item => item.label === key && ["song", "vocals", "instruments", "drums", "drums-vocals"].includes(key));
+  const hasOutput = (label: string) => Boolean(output(label));
+  const hasVocals = () => hasOutput("vocals") || recoveredVocals() || props.job.has_pitch_vocals;
+  const hasSong = () => hasOutput("song") || props.originalWorkId !== null;
+  const otherReferences = () => props.outputs.filter(item =>
+    !["vocals", "song", "instruments", "drums", "drums-vocals"].some(role => output(role) === item));
   const initialTrack = track()?.label;
   const [reference, setReference] = createSignal(
     hasSong() ? "song"
       : initialTrack && hasOutput(initialTrack) && (initialTrack !== "vocals" || hasVocals())
         ? initialTrack : hasVocals() ? "vocals"
           : hasOutput("drums-vocals") ? "drums-vocals" : hasOutput("instruments") ? "instruments"
-            : hasOutput("drums") ? "drums" : otherReferences()[0]?.label ?? "song",
+            : hasOutput("drums") ? "drums" : otherReferences()[0]?.identity ?? "song",
   );
   const sourceClock = (label = reference()) => label === "song" && !hasOutput("song");
   const referenceUrl = (label = reference()) => {
-    const url = label === "song"
-      ? hasOutput("song") ? resultUrl(props.job.id, "song", props.job.result_revision) : props.job.has_original ? originalUrl(props.job.id) : undefined
-      : label === "vocals" ? pitchVocalsUrl(props.job.id, props.job.result_revision)
-        : resultUrl(props.job.id, label, props.job.result_revision);
+    const ref = output(label);
+    const url = ref ? resultUrl(ref.work_id, ref.label, ref.revision)
+      : label === "song" && props.originalWorkId !== null ? originalUrl(props.originalWorkId)
+        : label === "vocals" && (recoveredVocals() || props.job.has_pitch_vocals)
+          ? pitchVocalsUrl(props.job.id, props.job.result_revision) : undefined;
     return url ? playbackUrl(url) : undefined;
   };
   const referenceLabel = () => reference() === "song"
     ? hasOutput("song") ? "Transformed full song (not isolated vocals)" : "Original full song (unchanged, not isolated vocals)"
     : reference() === "vocals" ? `Just vocals (all vocal parts) · ${displayOutputLabel("vocals", props.job.options)}`
-      : displayOutputLabel(reference() === "instruments" ? "Instruments" : reference() === "drums" ? "Drums only" : reference() === "drums-vocals" ? "Drums + Vocals" : reference(), props.job.options);
+      : output(reference())?.display_name ?? displayOutputLabel(reference(), props.job.options);
   const recoverVocals = async () => {
     setRecoveringVocals(true);
     setRecoveryError("");
@@ -426,8 +436,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
       setRecoveringVocals(false);
     }
   };
-  const toAudioTime = (seconds: number, label = reference()) => sourceClock(label) ? seconds * analysis().tempo_percent / 100 : seconds;
-  const fromAudioTime = (seconds: number, label = reference()) => sourceClock(label) ? seconds / (analysis().tempo_percent / 100) : seconds;
+  const [activeSourceClock, setActiveSourceClock] = createSignal(sourceClock());
+  const toAudioTime = (seconds: number, label?: string) => (label === undefined ? activeSourceClock() : sourceClock(label)) ? seconds * analysis().tempo_percent / 100 : seconds;
+  const fromAudioTime = (seconds: number) => activeSourceClock() ? seconds / (analysis().tempo_percent / 100) : seconds;
   const [mediaDuration, setMediaDuration] = createSignal(0);
   const syncMediaDuration = () => setMediaDuration(audio && Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0);
   const [activeSlot, setActiveSlot] = createSignal(0);
@@ -473,6 +484,8 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     pending = undefined;
     playAttempt++;
     trace.break();
+    loadedReferenceUrl = referenceUrl(candidate.label);
+    setActiveSourceClock(sourceClock(candidate.label));
     stopPlaybackClock();
     previous.pause();
     audio = slots[candidate.slot];
@@ -533,10 +546,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     candidate.wasPlaying = true;
     void target.play().then(() => promoteReference(candidate), error => referenceFailed(candidate, error));
   };
-  const changeReference = (label: string, learningIntent?: boolean, timingEntry = false) => {
+  const changeReference = (label: string, learningIntent?: boolean, timingEntry = false, force = false) => {
     if ((karaokeFullscreen() === "learning" || karaokeFullscreen() === "timing") && label !== "instruments") return;
     cancelReference();
-    if (label === reference()) return;
+    if (label === reference() && !force) return;
     const url = referenceUrl(label);
     if (!url) return;
     const slot = 1 - activeSlot();
@@ -546,6 +559,39 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
     sources[slot][1]({ url });
     slots[slot].load();
   };
+  let loadedReferenceUrl = referenceUrl();
+  let loadedVocalUrl = referenceUrl("vocals");
+  createEffect(() => {
+    const currentUrl = referenceUrl(untrack(reference));
+    const vocalUrl = referenceUrl("vocals");
+    const changed = currentUrl !== loadedReferenceUrl;
+    const practiceChanged = (changed || vocalUrl !== loadedVocalUrl) && untrack(karaokeFullscreen) === "timing";
+    loadedVocalUrl = vocalUrl;
+    if (practiceChanged) {
+      cancelReference(false);
+      audio?.pause();
+      stopTiming();
+      setKaraokeFullscreen(null);
+    }
+    if (!changed) {
+      if (practiceChanged) setReferenceError("Timing practice stopped because its audio changed. Open it again to use the updated tracks.");
+      return;
+    }
+    loadedReferenceUrl = currentUrl;
+    if (currentUrl) changeReference(reference(), undefined, false, true);
+    else {
+      const fallback = hasSong() ? "song" : hasVocals() ? "vocals"
+        : hasOutput("instruments") ? "instruments" : hasOutput("drums-vocals") ? "drums-vocals"
+          : hasOutput("drums") ? "drums" : otherReferences()[0]?.identity;
+      if (fallback) changeReference(fallback);
+      else {
+        cancelReference(false);
+        audio?.pause();
+        sources[activeSlot()][1]({ url: undefined });
+      }
+    }
+    if (practiceChanged) setReferenceError("Timing practice stopped because its audio changed. Open it again to use the updated tracks.");
+  });
   function stopTiming() {
     timingAudio?.dispose();
     timingAudio = undefined;
@@ -555,10 +601,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   function startTimingCompanion() {
     const session = timingAudio;
     if (!session || karaokeFullscreen() !== "timing") return;
-    const vocal = hasOutput("vocals")
-      ? resultUrl(props.job.id, "vocals", props.job.result_revision)
-      : pitchVocalsUrl(props.job.id, props.job.result_revision);
-    const preparation = session.prepare(audio, playbackUrl(vocal));
+    const vocal = referenceUrl("vocals");
+    if (!vocal) return;
+    const preparation = session.prepare(audio, vocal);
     if (audio.readyState < 1) { audio.preload = "auto"; audio.load(); }
     void preparation.then(() => {
       if (session !== timingAudio || karaokeFullscreen() !== "timing") return;
@@ -785,7 +830,7 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
           <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "instruments" ? "secondary" : "outline"} aria-pressed={reference() === "instruments"} disabled={!hasOutput("instruments")} onClick={() => changeReference("instruments")}>{displayOutputLabel("Instruments", props.job.options)}</Button>
           <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums" ? "secondary" : "outline"} aria-pressed={reference() === "drums"} disabled={!hasOutput("drums")} onClick={() => changeReference("drums")}>{displayOutputLabel("Drums only", props.job.options)}</Button>
           <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === "drums-vocals" ? "secondary" : "outline"} aria-pressed={reference() === "drums-vocals"} disabled={!hasOutput("drums-vocals")} onClick={() => changeReference("drums-vocals")}>{displayOutputLabel("Drums + Vocals", props.job.options)}</Button>
-          <For each={otherReferences()}>{item => <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === item.label ? "secondary" : "outline"} aria-pressed={reference() === item.label} onClick={() => changeReference(item.label)}>{displayOutputLabel(item.label, props.job.options)}</Button>}</For>
+          <For each={otherReferences()}>{item => <Button type="button" class="h-auto min-h-11 max-w-full whitespace-normal" variant={reference() === item.identity ? "secondary" : "outline"} aria-pressed={reference() === item.identity} onClick={() => changeReference(item.identity)}>{item.display_name}</Button>}</For>
         </div>
   );
   const changeReferencePitch = (delta: number) => {
@@ -848,13 +893,13 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
   );
 
   return (
-    <section class="pitch-view" aria-label="Karaoke with pitches" inert={Boolean(karaokeFullscreen())}>
+    <section id="karaoke" class="pitch-view" aria-label="Karaoke with pitches" tabIndex={-1} inert={Boolean(karaokeFullscreen())}
+      onKeyDown={event => { if (event.target === event.currentTarget) togglePlaybackKey(event); }}>
       <div class="pitch-heading">
-        <h3 class="text-base font-semibold">Karaoke with pitches</h3>
+        <h3 class="text-base font-semibold"><OutputIcon label="Karaoke with pitches" identity="karaoke" /> Karaoke with pitches</h3>
         <a href={pitchDownloadUrl(props.job.id, props.job.result_revision)} download="" class="text-sm font-medium text-primary hover:underline">Download pitch JSON</a>
       </div>
-      <p class="text-sm text-muted-foreground">Time → · musical pitch ↑ · output audio clock and pitch. Notes are detected on original vocal stems, then projected by {analysis().pitch_shift_semitones >= 0 ? "+" : ""}{analysis().pitch_shift_semitones} semitones and {analysis().tempo_percent}% tempo; not re-measured after processing.</p>
-      <p class="text-xs text-muted-foreground">CREPE full · monophonic melody estimate, not a score. Harmonies, bleed and octave errors can be wrong; silence and low-confidence frames are omitted.</p>
+      <p class="text-sm text-muted-foreground">Pitch: {analysis().pitch_shift_semitones >= 0 ? "+" : ""}{analysis().pitch_shift_semitones} semitones · Tempo: {analysis().tempo_percent}%</p>
       <div class="pitch-controls">
         <label>Vocal stem
           <select aria-label="Pitch vocal stem" value={track()?.label} onChange={event => setTrackLabel(event.currentTarget.value)}>
@@ -874,11 +919,20 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         <label class="pitch-follow"><input type="checkbox" checked={follow()} onChange={event => setFollow(event.currentTarget.checked)} /> Follow playback</label>
       </div>
       <p class="text-sm">Reference audio: <strong>{referenceLabel()}</strong>.</p>
-      <Show when={!hasOutput("instruments") || !hasOutput("drums") || !hasOutput("drums-vocals")}>
-        <p id={backgroundHelpId} class="text-xs text-muted-foreground">Only generated audio is available in this job. Select “Extract instruments” for instruments or “Split drums, bass &amp; other instruments” together with pitch analysis for drums and the drums-and-vocals mix.</p>
-      </Show>
+      <details>
+        <summary>Playback details</summary>
+        <Show when={!hasOutput("instruments") || !hasOutput("drums") || !hasOutput("drums-vocals")}>
+          <p id={backgroundHelpId} class="text-xs text-muted-foreground">Only generated audio is available in this job. Select “Extract instruments” for instruments or “Split drums, bass &amp; other instruments” together with pitch analysis for drums and the drums-and-vocals mix.</p>
+        </Show>
+        <Show when={!hasVocals()}>
+          <p class="text-xs text-muted-foreground">This stored job has no vocal listening reference. Recover its already-computed vocals from the cache without rerunning analysis.</p>
+        </Show>
+        <Show when={activeSourceClock() && analysis().tempo_percent !== 100}>
+          <p class="text-xs text-muted-foreground">Original-speed playback uses its original clock, mapped to the output timeline. Select Just vocals for matching transformed playback when available.</p>
+        </Show>
+        <p class="text-xs text-muted-foreground">Microphone capture and analysis add a small delay.</p>
+      </details>
       <Show when={!hasVocals()}>
-        <p class="text-xs text-muted-foreground">This stored job has no vocal listening reference. Recover its already-computed vocals from the cache without rerunning analysis.</p>
         <Show when={props.job.has_original} fallback={<p class="text-xs text-muted-foreground">The original audio is unavailable, so cached vocals cannot be recovered.</p>}>
           <Button type="button" variant="outline" disabled={recoveringVocals()} onClick={recoverVocals}>
             {recoveringVocals() ? "Recovering cached vocals…" : "Recover cached vocals"}
@@ -886,17 +940,10 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
         </Show>
         <Show when={recoveryError()}><p role="alert" class="text-sm text-destructive">{recoveryError()}</p></Show>
       </Show>
-      <Show when={sourceClock() && analysis().tempo_percent !== 100}>
-        <p class="text-xs text-muted-foreground">Original-speed playback uses its original clock, mapped to the output timeline. Select Just vocals for matching transformed playback when available.</p>
-      </Show>
-      <p class="text-xs text-muted-foreground">Swipe or scroll horizontally; zoom for short notes. Tap the time ruler to seek, or tap a note to seek and inspect it. Focus the ruler and use arrow keys (1 second), Page Up/Down (10 seconds), or Home/End. Playback position: {timeLabel(position())} (output time).</p>
       <MicrophoneTuner onSample={sampleVoice} />
-      <p class="pitch-voice-legend text-xs text-muted-foreground">Your voice · live microphone pitch while playback advances; capture and analysis add a small delay.</p>
+      <p class="pitch-voice-legend text-xs text-muted-foreground">Your voice</p>
       <Show when={analysis().word_alignment && analysis().words.length === 0}>
         <p class="text-sm text-muted-foreground">No sung words were recognized; pitch notes remain available.</p>
-      </Show>
-      <Show when={!analysis().word_alignment && analysis().words.length === 0}>
-        <p class="text-xs text-muted-foreground">Request lyrics together with pitch to add approximate sung-word associations.</p>
       </Show>
       <Show when={notes().length > 0} fallback={<p role="status" class="text-sm text-muted-foreground">No confident voiced notes detected in this stem.</p>}>
         <div ref={viewport} class="pitch-viewport" tabIndex={0} role="region" aria-label="Scrollable vocal melody timeline" aria-keyshortcuts="Space"
@@ -1101,9 +1148,9 @@ const PitchTimeline: Component<{ job: JobDTO }> = (props) => {
 
 // History/current-job navigation reuses the parent view. Keep every playback,
 // recovery and inspection state local to one job, not one component lifetime.
-const PitchView: Component<{ job: JobDTO }> = (props) => (
+const PitchView: Component<PitchViewProps> = (props) => (
   <For each={[`${props.job.id}:${props.job.result_revision ?? "legacy"}`]}>
-    {() => <PitchTimeline job={props.job} />}
+    {() => <PitchTimeline job={props.job} outputs={props.outputs} originalWorkId={props.originalWorkId} />}
   </For>
 );
 

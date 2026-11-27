@@ -292,7 +292,9 @@ def test_plural_api_and_query_cache_preserve_metadata_and_private_handles(
     assert other_client.get(cached_path).json() == result.json()
     assert not asyncio.run(song_search_worker.run_next_search())
     assert local_versions["calls"] == 1
-    assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []
+    assert (
+        client.get("/api/songs").json() == other_client.get("/api/songs").json() == []
+    )
 
 
 @pytest.mark.parametrize(

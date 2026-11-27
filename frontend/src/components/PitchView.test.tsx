@@ -2,8 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/te
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { JobDTO, PitchAnalysisDTO } from "~/api";
-import PitchView from "./PitchView";
+import type { JobDTO, PitchAnalysisDTO, SongOutputRef } from "~/api";
+import KaraokePitchView from "./PitchView";
 import TranscriptView from "./TranscriptView";
 
 const pitch: PitchAnalysisDTO = {
@@ -19,9 +19,9 @@ const pitch: PitchAnalysisDTO = {
 };
 function job(): JobDTO {
   return {
-    id: 7, status: "done", position: null, source_type: "upload", source_value: "voice.ogg", title: "voice.ogg",
+    id: 7, song_id: 7, status: "done", position: null, source_type: "upload", source_value: "voice.ogg", title: "voice.ogg",
     progress: { steps: ["source", "analysis", "separation", "lyrics", "pitch", "export"], current: null },
-    original_key: null, output_key: null, result_revision: null, transcript: null, error_message: null, open_count: 0, created_at: 1, has_original: true,
+    original_key: null, output_key: null, result_revision: null, transcript: null, error_message: null, created_at: 1, has_original: true,
     lyric_pitch_lines: null,
     has_pitch_vocals: true,
     options: { detect_pitch: true, extract_lyrics: true, extract_vocals: true, extract_instruments: false,
@@ -33,6 +33,15 @@ function job(): JobDTO {
     pitch,
   };
 }
+// Historical fixtures describe one physical work; production receives library refs.
+function fixtureOutputs(source: JobDTO): SongOutputRef[] {
+  return (source.manifest ?? []).map(manifest => ({
+    identity: manifest.label, label: manifest.label, display_name: manifest.display_name ?? manifest.label,
+    work_id: source.id, revision: source.result_revision, manifest,
+  }));
+}
+const PitchView = (props: { job: JobDTO }) => <KaraokePitchView job={props.job}
+  outputs={fixtureOutputs(props.job)} originalWorkId={props.job.has_original ? props.job.id : null} />;
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
@@ -205,6 +214,58 @@ function chooseBackground(name: RegExp | string) {
   fireEvent.canPlay(candidate);
   return candidate;
 }
+it("switches between compatible physical works and maps the original source clock", () => {
+  const source = job();
+  const instruments = { label: "instruments", filename: "i.mp3", download_name: "i.mp3", duration_s: 70, size_bytes: 1 };
+  const refs: SongOutputRef[] = [
+    { identity: "vocals", label: "vocals", display_name: "Vocals", work_id: 21, revision: "v1", manifest: source.manifest![0] },
+    { identity: "instruments", label: "instruments", display_name: "Instruments", work_id: 22, revision: "i1", manifest: instruments },
+  ];
+  render(() => <KaraokePitchView job={source} outputs={refs} originalWorkId={99} />);
+  const original = document.querySelector<HTMLAudioElement>("audio:not([hidden])")!;
+  expect(original.getAttribute("src")).toContain("/jobs/99/original");
+  original.currentTime = 12.5;
+  const backing = chooseBackground(/Instruments/);
+  expect(backing.getAttribute("src")).toContain("/jobs/22/results/instruments?revision=i1");
+  expect(backing.currentTime).toBe(10);
+  const vocal = chooseBackground("Just vocals");
+  expect(vocal.getAttribute("src")).toContain("/jobs/21/results/vocals?revision=v1");
+  expect(vocal.currentTime).toBe(10);
+  expect(chooseBackground("Full song").currentTime).toBe(12.5);
+});
+it("keeps same-label outputs with different resolved identities available", () => {
+  const source = job();
+  const manifest = { label: "drums", filename: "d.mp3", download_name: "d.mp3", duration_s: 70, size_bytes: 1 };
+  const refs: SongOutputRef[] = [
+    { identity: "drums", label: "drums", display_name: "Drums", work_id: 21, revision: "plain", manifest },
+    { identity: "drums:decrowded", label: "drums", display_name: "Decrowded drums", work_id: 22, revision: "clean", manifest },
+  ];
+  render(() => <KaraokePitchView job={source} outputs={refs} originalWorkId={99} />);
+  const clean = chooseBackground("Decrowded drums");
+  expect(clean.getAttribute("src")).toContain("/jobs/22/results/drums?revision=clean");
+  const plain = chooseBackground(/Drums only/);
+  expect(plain.getAttribute("src")).toContain("/jobs/21/results/drums?revision=plain");
+});
+
+
+it("reloads the selected physical backing when its revision changes without changing analysis", () => {
+  const source = job();
+  const manifest = { label: "instruments", filename: "i.mp3", download_name: "i.mp3", duration_s: 70, size_bytes: 1 };
+  const [refs, setRefs] = createSignal<SongOutputRef[]>([{ identity: "instruments", label: "instruments", display_name: "Instruments", work_id: 22, revision: "old", manifest }]);
+  render(() => <KaraokePitchView job={source} outputs={refs()} originalWorkId={99} />);
+  const old = chooseBackground(/Instruments/);
+  old.currentTime = 8;
+  setRefs([{ ...refs()[0], revision: "new" }]);
+  const candidate = document.querySelector<HTMLAudioElement>("audio[hidden]")!;
+  expect(candidate.getAttribute("src")).toContain("/jobs/22/results/instruments?revision=new");
+  Object.defineProperty(candidate, "readyState", { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(candidate);
+  fireEvent.seeked(candidate);
+  fireEvent.canPlay(candidate);
+  expect(candidate.currentTime).toBe(8);
+  expect(screen.getByRole("button", { name: /Instruments/ })).toHaveAttribute("aria-pressed", "true");
+});
+
 
 function withTimedLyrics(source: JobDTO): JobDTO {
   return { ...source, transcript: {
@@ -214,6 +275,30 @@ function withTimedLyrics(source: JobDTO): JobDTO {
       onset_s: 1.25, end_s: 3.75, onset_source: "acoustic", words: [{ word_index: 0, token_index: 0 }] }],
   } };
 }
+it("pairs the selected compatible instrument and vocal works for timing practice at 75 percent gain", async () => {
+  const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+  const node = { connect: () => gain, disconnect: vi.fn() };
+  vi.stubGlobal("AudioContext", vi.fn(() => ({
+    createGain: () => gain, createMediaElementSource: () => node, destination: {},
+    resume: () => Promise.resolve(), close: () => Promise.resolve(),
+  })));
+  const source = withTimedLyrics(job());
+  const manifest = { label: "instruments", filename: "i.mp3", download_name: "i.mp3", duration_s: 70, size_bytes: 1 };
+  const refs: SongOutputRef[] = [
+    { identity: "vocals", label: "vocals", display_name: "Vocals", work_id: 21, revision: "v1", manifest: source.manifest![0] },
+    { identity: "instruments", label: "instruments", display_name: "Instruments", work_id: 22, revision: "i1", manifest },
+  ];
+  render(() => <KaraokePitchView job={source} outputs={refs} originalWorkId={99} />);
+  fireEvent.click(screen.getByRole("button", { name: "Learn timings" }));
+  const instruments = document.querySelector<HTMLAudioElement>(".pitch-view audio[hidden]")!;
+  expect(instruments.getAttribute("src")).toContain("/jobs/22/results/instruments?revision=i1");
+  Object.defineProperty(instruments, "readyState", { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(instruments);
+  fireEvent.seeked(instruments);
+  const vocal = document.querySelector<HTMLAudioElement>("body > audio[hidden]")!;
+  expect(vocal.getAttribute("src")).toContain("/jobs/21/results/vocals?revision=v1");
+  expect(gain.gain.value).toBe(0.75);
+});
 
 it.each(["public", "private"] as const)("keeps lyrics visible and disposes %s vocal practice on exit", async (availability) => {
   const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
@@ -1018,18 +1103,10 @@ it("keeps lyrics visible while online alignment and raw recognition are keyboard
   expect(document.querySelector("img")).toBeNull();
 });
 
-it("retains unversioned word timing interactions without inventing a recognizer", () => {
+it("keeps word timing interactions when alignment provenance is absent", () => {
   const source = job();
   source.pitch = { ...pitch, word_alignment: null };
-  source.transcript = {
-    status: "recognized", language: "English", timestamp_reference: "original",
-    sections: [], structure_model: null, presentation_lines: [], segments: [{ start_s: 1, end_s: 3, text: "world" }],
-    timestamped_text: "[00:01] world\n", reference: null, asr_model: null, word_alignment: null,
-  };
-  render(() => <><PitchView job={source} /><TranscriptView job={source} /></>);
-  expect(screen.queryByText(/Whisper/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Recognition model unspecified/)).toBeVisible();
-  expect(screen.getByRole("button", { name: "Start microphone pitch detection" })).toHaveAttribute("aria-pressed", "false");
+  render(() => <PitchView job={source} />);
   fireEvent.click(screen.getByRole("button", { name: /^world,/ }));
   expect(document.querySelector("audio")!.currentTime).toBe(1.25);
   expect(document.querySelectorAll(".pitch-note-selected")).toHaveLength(2);

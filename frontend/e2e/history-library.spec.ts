@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { test } from './auth-fixture';
-import { jobLabel, type JobDTO } from '../src/api';
+import { jobLabel, type JobDTO, type SongSummary } from '../src/api';
 
 const seedLibraryTrack = String.raw`
 import json,sys
@@ -14,7 +14,8 @@ job=db.get_job(int(sys.argv[1]))
 assert job is not None and job.status == 'queued' and job.modal_call_id is None
 db.mark_done(job.id,[],None,pitch_to_json(pitch_from_json(json.dumps(value['pitch']))))
 with db._session() as connection:
- connection.execute('UPDATE jobs SET title=?,created_at=?,finished_at=?,open_count=? WHERE id=?',(value['title'],4102444800,4102444801,value.get('open_count',0),job.id))
+ connection.execute('UPDATE jobs SET title=?,created_at=?,finished_at=? WHERE id=?',(value['title'],4102444800,4102444801,job.id))
+ connection.execute('UPDATE library_songs SET open_count=? WHERE id=(SELECT song_id FROM library_song_jobs WHERE job_id=?)',(value.get('open_count',0),job.id))
 `;
 
 const viewports = [
@@ -30,19 +31,19 @@ async function createSeededTrack(page: Page, source: Buffer, fixture: { pitch: u
   const response = await page.request.post('/api/jobs', {
     headers: { Origin: process.env.E2E_BASE_URL! },
     multipart: {
-      file: { name: `${title}.ogg`, mimeType: 'audio/ogg', buffer: source },
+      file: { name: `${title}.ogg`, mimeType: 'audio/ogg', buffer: Buffer.concat([source, Buffer.from(title)]) },
       detect_pitch: 'true', pitch_semitones: '0', tempo_percent: '100',
     },
   });
-  const created = await response.json() as { id: number };
-  createdIds.push(created.id);
+  const created = await response.json() as { song_id: number; work_id: number };
+  createdIds.push(created.song_id);
   expect(response.status()).toBe(200);
-  execFileSync('uv', ['run', 'python', '-c', seedLibraryTrack, String(created.id)], {
+  execFileSync('uv', ['run', 'python', '-c', seedLibraryTrack, String(created.work_id)], {
     cwd: process.env.E2E_REPO_ROOT!,
     input: JSON.stringify({ pitch: fixture.pitch, title, open_count: openCount }),
     env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
   });
-  const completedResponse = await page.request.get(`/api/jobs/${created.id}`);
+  const completedResponse = await page.request.get(`/api/jobs/${created.work_id}`);
   expect(completedResponse.ok()).toBe(true);
   const completed = await completedResponse.json() as JobDTO;
   expect(completed.status).toBe('done');
@@ -102,7 +103,7 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         });
         await viewportContext.addCookies(cookies);
         const viewportPage = await viewportContext.newPage();
-        const before = await (await viewportPage.request.get('/api/jobs?sort=usage')).json() as JobDTO[];
+        const before = await (await viewportPage.request.get('/api/songs?sort=usage')).json() as SongSummary[];
         await viewportPage.goto('/');
         const trigger = viewportPage.getByRole('button', { name: 'Library', exact: true });
         const rail = viewportPage.getByRole('complementary', { name: 'Library', exact: true });
@@ -118,9 +119,9 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
           await expect(rail).toBeVisible();
           await expect(trigger).toHaveCount(0);
         }
-        const initialCounts = await viewportPage.request.get('/api/jobs?sort=usage');
+        const initialCounts = await viewportPage.request.get('/api/songs?sort=usage');
         expect(initialCounts.ok()).toBe(true);
-        const initialJobs = await initialCounts.json() as JobDTO[];
+        const initialJobs = await initialCounts.json() as SongSummary[];
         expect(new Map(initialJobs.map(job => [job.id, job.open_count]))).toEqual(new Map(before.map(job => [job.id, job.open_count])));
 
         const openLibrary = async () => {
@@ -165,7 +166,7 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         }
         const addedListResponse = viewportPage.waitForResponse(response =>
           response.request().method() === 'GET'
-          && new URL(response.url()).pathname === '/api/jobs'
+          && new URL(response.url()).pathname === '/api/songs'
           && new URL(response.url()).searchParams.get('sort') === 'added');
         await sortPopup.getByRole('radio', { name: 'Most used' }).focus();
         await viewportPage.keyboard.press('ArrowDown');
@@ -179,7 +180,7 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         await viewportPage.keyboard.press('Enter');
         const usageListResponse = viewportPage.waitForResponse(response =>
           response.request().method() === 'GET'
-          && new URL(response.url()).pathname === '/api/jobs'
+          && new URL(response.url()).pathname === '/api/songs'
           && new URL(response.url()).searchParams.get('sort') === 'usage');
         await sortPopup.getByRole('radio', { name: 'Date added (newest first)' }).focus();
         await viewportPage.keyboard.press('ArrowUp');
@@ -207,11 +208,11 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         const alphaHistory = await openLibrary();
         const alphaOpenResponse = viewportPage.waitForResponse(response =>
           response.request().method() === 'POST'
-          && new URL(response.url()).pathname === `/api/jobs/${jobs[0].id}/open`);
+          && new URL(response.url()).pathname === `/api/songs/${jobs[0].song_id}/open`);
         await alphaHistory.getByRole('button', { name: titles[0], exact: true }).click();
         const alphaOpen = await alphaOpenResponse;
         expect(alphaOpen.ok()).toBe(true);
-        expect(await alphaOpen.json()).toEqual({ id: jobs[0].id, open_count: before.find(job => job.id === jobs[0].id)!.open_count + 1 });
+        expect(await alphaOpen.json()).toEqual({ id: jobs[0].song_id, open_count: before.find(song => song.id === jobs[0].song_id)!.open_count + 1 });
         if (viewport.isMobile) {
           await expect(viewportPage.getByRole('dialog', { name: 'Library', exact: true })).toBeHidden();
           await expect(trigger).toBeFocused();
@@ -253,7 +254,7 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
         const repeatedHistory = await openLibrary();
         const betaReopenResponse = viewportPage.waitForResponse(response =>
           response.request().method() === 'POST'
-          && new URL(response.url()).pathname === `/api/jobs/${jobs[1].id}/open`);
+          && new URL(response.url()).pathname === `/api/songs/${jobs[1].song_id}/open`);
         await repeatedHistory.getByRole('button', { name: titles[1], exact: true }).click();
         expect((await betaReopenResponse).ok()).toBe(true);
         if (viewport.isMobile) {
@@ -323,7 +324,7 @@ test('Library rail and drawer preserve selection, focus, playback, and responsiv
     await viewportContext?.close();
     await page.goto('about:blank');
     for (const id of createdIds) {
-      await expect.poll(async () => (await page.request.delete(`/api/jobs/${id}`, {
+      await expect.poll(async () => (await page.request.delete(`/api/songs/${id}`, {
         headers: { Origin: process.env.E2E_BASE_URL! },
       })).status()).toBe(204);
     }

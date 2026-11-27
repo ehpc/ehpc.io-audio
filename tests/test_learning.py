@@ -52,7 +52,9 @@ def job(
     client: TestClient, *, source: bytes = SOURCE, document: Transcript | None = None
 ) -> int:
     owner = client.get("/api/auth/me").json()["id"]
-    jid = db.insert_job(owner, "upload", "song.wav", SeparationOptions())
+    submitted = db.insert_job(owner, "upload", "song.wav", SeparationOptions())
+    assert submitted.work_id is not None
+    jid = submitted.work_id
     directory = config.UPLOADS_DIR / str(jid)
     directory.mkdir(parents=True)
     (directory / "song.wav").write_bytes(source)
@@ -159,7 +161,8 @@ def test_same_source_is_private_and_survives_job_deletion_and_reupload(
         ).status_code
         == 404
     )
-    assert client.delete(f"/api/jobs/{first}").status_code == 204
+    song_id = client.get(f"/api/jobs/{first}").json()["song_id"]
+    assert client.delete(f"/api/songs/{song_id}").status_code == 204
     assert client.get(url(first)).status_code == 404
     assert get(client, job(client))["progress"] == saved["progress"]
 
@@ -282,7 +285,8 @@ def test_additive_migration_preserves_jobs_and_auth_and_retains_progress(client)
     saved = patch(client, jid, document, hint_level="partial")
     db.init_db()
     assert get(client, jid)["progress"] == saved["progress"]
-    assert client.delete(f"/api/jobs/{jid}").status_code == 204
+    song_id = client.get(f"/api/jobs/{jid}").json()["song_id"]
+    assert client.delete(f"/api/songs/{song_id}").status_code == 204
     assert get(client, job(client))["progress"] == saved["progress"]
 
 
@@ -723,6 +727,7 @@ def test_learning_write_races_with_regeneration_or_deletion(
     client, monkeypatch, operation
 ):
     jid = job(client)
+    song_id = client.get(f"/api/jobs/{jid}").json()["song_id"]
     original = get(client, jid)
     source_identity.clear_cache()
     started, finish = threading.Event(), threading.Event()
@@ -753,7 +758,7 @@ def test_learning_write_races_with_regeneration_or_deletion(
         if operation == "regenerate":
             db.mark_done(jid, [], transcript(changed=True))
         else:
-            assert client.delete(f"/api/jobs/{jid}").status_code == 409
+            assert client.delete(f"/api/songs/{song_id}").status_code == 409
     finally:
         finish.set()
         worker.join(timeout=5)
@@ -769,7 +774,7 @@ def test_learning_write_races_with_regeneration_or_deletion(
             )
     else:
         assert responses[0].status_code == 200
-        assert client.delete(f"/api/jobs/{jid}").status_code == 204
+        assert client.delete(f"/api/songs/{song_id}").status_code == 204
         assert client.get(url(jid)).status_code == 404
 
 

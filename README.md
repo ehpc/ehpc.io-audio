@@ -45,8 +45,8 @@ Browser → FastAPI / SQLite / single audio worker on the VPS
   assets at image-build time and served by the backend from the same origin,
   so there's exactly one port to expose.
 - Access is invite-only, using email verification codes and an HTTP-only
-  session cookie; jobs are scoped to the signed-in account. State survives a
-  page reload because the frontend retrieves the current job from the backend.
+  session cookie. Library songs and their physical processing work belong to the
+  signed-in account; reloading restores the current song and its active work.
 - **SSE job updates** send comment heartbeats every 15 seconds, with
   `Cache-Control: no-cache` and `X-Accel-Buffering: no`, so quiet, long-running
   jobs keep their live status stream open through proxies. The stream subscribes
@@ -100,7 +100,7 @@ Completed cache artifacts win before any such claim or GPU lookup.
 
 Caches remain private implementation details, not public routes or shared
 history. Ordinary upgrades preserve existing job files and opaque historical cache.
-Administrators can open **People → Manage cached songs** to inspect indexed
+Administrators can open **Admin → Cached songs** to inspect indexed
 reusable audio work and, after confirmation, clear one song, selected songs or
 all reusable cache. A selective clear can also evict artifacts shared with other
 recordings. Older unattributed cache cannot safely be cleared by song: selective
@@ -117,12 +117,12 @@ quiescence and attribution checks used by selective clearing, their reusable
 cache is evicted and every safely matched completed job is reprocessed using
 its saved options. Identical model stages are shared across those jobs; clearing
 can also remove shared artifacts and renewed processing may incur GPU charges.
-Each owner's existing Library entry, job ID, title, options and timestamps stay
-the same. Its previous results remain available until the replacement for that
-job is ready; a failed variant keeps its previous results even when other
-variants succeeded. Preview-only songs cannot be regenerated, and completed
-jobs whose original cannot be safely identified are counted separately rather
-than matched by title. The admin view shows durable progress and the latest 50
+Each owner's existing Library song and the matched work IDs, titles, options and
+timestamps stay the same. Previous results remain available until each
+replacement is ready; a failed variant keeps its previous results even when
+other variants succeeded. Preview-only songs cannot be regenerated, and
+completed jobs whose original cannot be safely identified are counted separately
+instead of matched by title. The admin view shows durable progress and the latest 50
 operations. Legacy snapshot-backed jobs from earlier releases retain their
 original audio and metadata for ordinary manual retries.
 If source preparation is interrupted before its private copies are durable, the
@@ -267,11 +267,33 @@ discovery artifacts during the CPU-worker cutover instead of paying for them aga
 
 The original source remains downloadable and unchanged by processing, preserving
 the uploaded file's extension. URL downloads retain the existing yt-dlp MP3
-workflow. A completed job with no generated audio has an empty result manifest;
-its original download remains available in Results when the job is open. Lyrics
-are a separate optional text output and do not create an audio stem. Selecting
-**Karaoke with pitches** also includes and locks **Lyrics with pitches** (TXT and
-ODT); disabling it restores the previous independent preference.
+workflow. A source-only song can have no generated audio; its original download
+remains available. Lyrics are a separate optional text output and do not create
+an audio stem. Selecting **Karaoke with pitches** also includes and locks
+**Lyrics with pitches** (TXT and ODT); disabling it restores the previous
+independent preference.
+
+The Library keeps one song per account and known source identity. YouTube
+aliases use the existing video ID, other URLs keep their full identity, and
+uploads and downloaded originals can converge after their SHA-256 content is
+verified. Different recordings or remixes are never joined by fuzzy title or
+artist, and another account's songs are never joined to yours. Historical work,
+originals, open counts and learning progress are retained when known identities
+converge; an original that cannot be verified is not guessed from its filename.
+Choose **Add outputs** on an existing song to use its private original without
+reattaching or redownloading it. Choosing a new source starts a new submission.
+
+Each song can contain outputs from multiple successful processing attempts.
+The application reuses producer-identified artifacts and queues missing work;
+an equivalent in-flight request is shared, while a failed addition leaves
+previous results accessible. Unknown historical provenance is processed through
+the existing cache graph rather than assumed current. Pitch/tempo versions are
+grouped by their exact settings and output identity, including custom mix
+composition and cleanup; each stem has its own variant selector. Karaoke has
+its own setting selector and uses coherent pitch/word timing with compatible
+backgrounds from that setting. Playback and downloads use the selected output's
+physical work ID and result revision. The unmodified original remains on the
+source clock; the player converts timing when it is used as a reference.
 
 Expanded results show **Karaoke with pitches**, **Lyrics with pitches**, then
 **Lyrics**, with the track title as the Results heading. The Library rail keeps
@@ -291,9 +313,31 @@ initially collapsed in the **Online alignment and raw recognition details**
 disclosure.
 
 Open counts belong to the authenticated account and persist across sessions and
-devices. The API exposes them as `open_count` on jobs; `POST /api/jobs/{id}/open`
-records an explicit open, while `GET /api/jobs?sort=usage|added` sorts before the
-50-entry history limit.
+devices. `POST /api/songs/{song_id}/open` records an explicit open;
+`GET /api/songs?sort=usage|added` sorts the lightweight song summaries before
+the 50-entry limit. `GET /api/songs/current` identifies the song containing the
+latest owned work independently of library sorting.
+
+`POST /api/jobs` submits a new URL or upload, and
+`POST /api/songs/{song_id}/work` adds options to an existing private source.
+Both return `song_id`, `work_id`, `status`, `position` and `progress`.
+When all requested results are already present with current, verified producer
+identities, `work_id` and `progress` are `null` and `status` is `done`.
+`GET /api/songs/{song_id}` returns lightweight grouped variant references;
+`GET /api/jobs/{work_id}` and `/api/jobs/{work_id}/events` fetch the selected
+work's analysis and live status. A work DTO's `song_id` resolves its current
+canonical song if a later verified content identity joins two entries. Media,
+lyrics, pitch and retry endpoints under `/api/jobs/{work_id}/...` remain private
+to the owner. Analysis payloads are fetched for selected work, not embedded in
+every history summary.
+
+The workspace's compact output shortcuts lead to the available Karaoke,
+Lyrics with pitches, Lyrics and Audio sections. They remain above the status
+dock, account for the mobile safe area and are hidden outside the workspace
+or while fullscreen karaoke is open. Decorative output icons use the output
+kind rather than its title. The copy control on each lyrics box copies exactly
+the displayed timestamped text or the selected pitched-lyrics track's plain
+text; it does not copy diagnostic details.
 
 A fixed status dock follows the latest accepted job independently of which
 History entry is open. It distinguishes waiting in the queue from actual
@@ -306,21 +350,19 @@ recovers the latest state without requiring a page reload. The fixed dock and
 mobile action reserve measured end and scroll space; during intermediate
 scrolling the dock can temporarily overlay content. It does not play a chime.
 
-Each signed-in user can delete their own completed History entries after a
-confirmation. Deletion permanently removes that job's history, original upload
-or download, saved outputs, and private karaoke vocal reference; it does not
-remove shared reusable cache or another user's jobs. Active transfers or
-unresolved inference ownership can block deletion. Stop an active transfer and
-retry; unresolved or unsafe data may require operator investigation. If file
-deletion encounters an I/O error, the job remains in History for retry, but some
-of its files may already have been removed. Queued, running, and failed jobs
-cannot be deleted.
-Deletion also reclaims completed maintenance copies and failed private staging
-when their dispatch is resolved. Unresolved dispatch ownership and its files
-remain available for reconciliation.
-The owner-protected `DELETE /api/jobs/{id}` returns **204** on success, **404**
-for a missing or other user's job, **409** for an ineligible or unsafe deletion,
-and **503** if file removal fails.
+Each signed-in user can delete their own completed Library songs after a
+confirmation. Deletion removes all of that song's work, original copies,
+saved outputs and private karaoke vocal references; it does not remove shared
+reusable cache or another user's songs. A song must have completed work and
+all its attempts must be terminal. A later failed addition does not by itself
+prevent deletion, but active transfers, regeneration or unresolved inference
+ownership can block it. If file deletion encounters an I/O error, the song
+remains in the Library for retry, but some files may already have been removed.
+Resolved completed maintenance copies and failed private staging are reclaimed;
+unresolved dispatch ownership and its files remain available for reconciliation.
+The owner-protected `DELETE /api/songs/{song_id}` returns **204** on success,
+**404** for a missing or other user's song, **409** for an ineligible or unsafe
+deletion, and **503** if file removal fails.
 
 Existing completed karaoke jobs with both saved transcript and pitch data expose
 their derived TXT and ODT downloads in Results without reprocessing. Pitch-only
@@ -680,9 +722,9 @@ Each pitched export starts with the same `Artist — Track` identity line, follo
 `Tonality: <key>` — the detected source key transposed by the requested shift
 (fractional shifts append residual cents), omitted when the source key is unknown.
 
-`JobDTO.pitched_lyrics` supplies the canonical per-stem text to both Results and
-History. The session-protected download endpoint is
-`/api/jobs/{id}/pitched-lyrics/{label}/download`; `format=txt` is the default,
+`JobDTO.pitched_lyrics` supplies the canonical per-stem text to Results.
+The session-protected download endpoint is
+`/api/jobs/{work_id}/pitched-lyrics/{label}/download`; `format=txt` is the default,
 and `?format=odt` selects OpenDocument. Other formats are rejected.
 Both formats use the same owner/stem authorization and shared word-cell renderer,
 with filenames such as
@@ -998,9 +1040,10 @@ Reference reconciliation happens before these links are made. Provider-only,
 uncorroborated words do not acquire word links, and the complete unprompted
 recognition remains in provenance. Empty voiced tracks stay honestly empty.
 
-**Download pitch JSON** is available from Results and, when available, History
-through the session-protected `/api/jobs/{id}/pitch` endpoint. The same canonical
-payload appears as `pitch` in job detail/history/SSE. Version 1 includes model,
+**Download pitch JSON** is available in the selected song's Karaoke section
+through the session-protected `/api/jobs/{work_id}/pitch` endpoint. The same
+canonical payload appears as `pitch` in selected work detail and SSE. Version 1
+includes model,
 source/output durations, requested pitch/tempo, explicit output timestamp/pitch
 references, and per-stem `tracks`. Each note has `start_s`, `end_s`, fractional
 `midi`, `frequency_hz`, `note`, residual `cents`, `confidence`, and `word_indices`
@@ -2132,6 +2175,10 @@ alone, recognition anchors locate candidate phrases. With LRC, ordered text and
 bounds must match the canonical lines, and multiple distributed independent
 audio anchors must support the provider's clock before it supplies search
 priors. Empty LRC rows delimit gaps; they never become lyrics.
+If an entire candidate group fails its recognition-support threshold, anchored
+passages separated by unsupported lines are considered independently under the
+same threshold; already-supported groups retain their full context. This only
+recovers candidates for acoustic alignment, not verified word timings.
 
 **Provider line onsets are candidate search bounds, not measured word times.**
 The full-context acoustic model produces phone-frame positions inside a
@@ -2159,7 +2206,7 @@ onset. Automatic recognition, metadata and forced alignment cannot establish
 
 ### One canonical result and original provenance
 
-Results, History, SSE, TXT, JSON and pitch-word links consume the same saved
+Results, work SSE, TXT, JSON and pitch-word links consume the same saved
 transcript. SongFormer still analyzes the unchanged original mix for musical
 sections. Its estimated `[Verse]`, `[Chorus]` and other headings remain inline
 where actual aligned reference anchors locate them, with blank lines between
@@ -2189,9 +2236,9 @@ The browser exposes ordered canonical support, explicit unconfirmed text and
 word uncertainty, raw input-window recognition, and original ASR. TXT opens with
 the `Artist — Track` identity and marks undetectable onsets with the `[??:??]`
 token; `?` inside pitch cells means unknown alignment or no detected pitch.
-`/api/jobs/{id}/lyrics/download.json` retains full provenance, while the canonical
-TXT is `/api/jobs/{id}/lyrics/download`; both are session-protected, as are
-History and pitch downloads. The metadata sidecar stays outside original-audio
+`/api/jobs/{work_id}/lyrics/download.json` retains full provenance, while the
+canonical TXT is `/api/jobs/{work_id}/lyrics/download`; both and pitch
+downloads are session-protected. The metadata sidecar stays outside original-audio
 folders and cannot become an original download.
 
 The previous one-character spelling policy and global 90% gate are retired.

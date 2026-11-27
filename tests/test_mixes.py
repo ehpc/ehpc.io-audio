@@ -130,7 +130,7 @@ def test_karaoke_backing_is_real_cached_mix_on_output_clock(
         },
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     db.set_original_key(job_id, "C major")
     job = db.get_job(job_id)
     assert job is not None
@@ -355,7 +355,7 @@ def test_duplicate_unsafe_names_keep_independent_downloads_metadata_and_retry(
         files={"file": ("Source.wav", original)},
         data={"mixes": json.dumps(selected)},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     job = db.get_job(job_id)
     assert job is not None
     inputs = [
@@ -385,7 +385,7 @@ def test_duplicate_unsafe_names_keep_independent_downloads_metadata_and_retry(
         )
     assert client.get(f"/api/jobs/{job_id}/original").content == original
     assert other_client.post(f"/api/jobs/{job_id}/retry").status_code == 404
-    retried = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
+    retried = client.post(f"/api/jobs/{job_id}/retry").json()["work_id"]
     assert client.get(f"/api/jobs/{retried}").json()["options"] == dto["options"]
     db.reap_running_to_queued()
     db.init_db()
@@ -396,7 +396,7 @@ def test_legacy_migration_is_persisted_once_and_keeps_audio_files(
     client: TestClient,
 ) -> None:
     job_id = client.post("/api/jobs", data={"url": "https://example.com/song"}).json()[
-        "id"
+        "work_id"
     ]
     old = {
         "extract_vocals": False,
@@ -456,7 +456,7 @@ def test_legacy_migration_is_persisted_once_and_keeps_audio_files(
         )
     assert not any(key.startswith("mix_") for key in stored)
     assert len(stored["mixes"]) == 4
-    retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
+    retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["work_id"]
     assert client.get(f"/api/jobs/{retry_id}").json()["options"] == once["options"]
 
 
@@ -476,7 +476,7 @@ def test_interrupted_mix_job_requeues_same_identities(client: TestClient) -> Non
     job_id = client.post(
         "/api/jobs",
         data={"url": "https://example.com/song", "mixes": json.dumps([mix])},
-    ).json()["id"]
+    ).json()["work_id"]
     claimed = db.claim_oldest_queued()
     assert claimed is not None and claimed.id == job_id
     db.set_active_stage(job_id, "owned-separation-stage", "cancelled-test-call")

@@ -2,78 +2,46 @@ import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal, Show } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthHttpError, deleteJob, type JobDTO } from "~/api";
+import { AuthHttpError, deleteSong, getJob, type JobDTO, type SongSummary, type SongDetail } from "~/api";
 import HistoryView from "./HistoryView";
 import ResultsView from "./ResultsView";
 
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-  vi.mocked(deleteJob).mockClear();
+  vi.mocked(deleteSong).mockClear();
+  vi.mocked(getJob).mockReset().mockResolvedValue({ id: 101, song_id: 1, result_revision: null, original_key: null } as JobDTO);
 });
 
 vi.mock("~/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/api")>()),
-  deleteJob: vi.fn(),
+  deleteSong: vi.fn(),
+  getJob: vi.fn(),
 }));
 
-function urlJob(overrides: Partial<JobDTO> = {}): JobDTO {
+function urlJob(overrides: Partial<SongSummary> = {}): SongSummary {
   return {
-    id: 1,
-    status: "done",
-    position: null,
-    progress: { steps: [], current: null },
-    source_type: "url",
-    source_value: "https://example.com/song",
-    title: "Great Song",
-    options: {
-      extract_vocals: false,
-      extract_instruments: false,
-      extract_lyrics: false,
-      detect_pitch: false,
-      extract_pitched_lyrics: false,
-      mixes: [],
-      decrowd: false,
-      decrowd_vocals: false,
-      dereverb: false,
-      genders: false,
-      lead_backing: false,
-      drums: false,
-      pitch_semitones: 0,
-      tempo_percent: 100,
-    },
-    original_key: "C major",
-    output_key: "C major",
-    result_revision: null,
-    manifest: [],
-    transcript: null,
-    lyric_pitch_lines: null,
-    error_message: null,
-    open_count: 0,
-    created_at: 1700000000,
-    has_original: true,
-    has_pitch_vocals: false,
+    id: 1, status: "done", source_type: "url", source_value: "https://example.com/song",
+    title: "Great Song", open_count: 0, created_at: 1700000000, has_original: true, original_key: null,
+    original_work_id: 101, latest_work_id: 101, active_work_id: null, active_work_ids: [],
+    availability: { audio: true, karaoke: false, lyrics: false, pitched_lyrics: false },
     ...overrides,
   };
+}
+
+function detail(summary: SongSummary): SongDetail {
+  return { summary, variants: [] };
 }
 
 describe("HistoryView compact sidebar", () => {
   it("shows only the title, date and delete action without conflating selection with deletion", async () => {
     const title = "A Long Song Title That Must Stay Inside Its Library Item";
-    const job = urlJob({
-      title,
-      options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
-      output_key: "D major",
-      manifest: [
-        { label: "song", display_name: "song", filename: "song.mp3", download_name: "song.mp3", size_bytes: 1, duration_s: 1 },
-        { label: "vocals", display_name: "vocals", filename: "vocals.mp3", download_name: "vocals.mp3", size_bytes: 1, duration_s: 1 },
-      ],
-    });
+    const job = urlJob({ title });
     const [jobs, setJobs] = createSignal([job]);
     const [selectedId, setSelectedId] = createSignal<number | null>(null);
-    const onSelect = vi.fn((item: JobDTO) => setSelectedId(item.id));
+    const onSelect = vi.fn((item: SongSummary) => setSelectedId(item.id));
     const onDeleted = vi.fn((id: number) => setJobs(current => current.filter(item => item.id !== id)));
-    vi.mocked(deleteJob).mockReset().mockResolvedValue(undefined);
+    vi.mocked(deleteSong).mockReset().mockResolvedValue(undefined);
     render(() => <HistoryView jobs={jobs()} selectedId={selectedId()} sort="usage" onSortChange={vi.fn()} onSelect={onSelect} onDeleted={onDeleted} />);
 
     const history = screen.getByRole("region", { name: "History" });
@@ -96,14 +64,14 @@ describe("HistoryView compact sidebar", () => {
     let dialog = screen.getByRole("alertdialog");
     expect(dialog).toHaveTextContent(`Delete ${title}?`);
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(deleteJob).not.toHaveBeenCalled();
+    expect(deleteSong).not.toHaveBeenCalled();
     expect(within(history).getByRole("button", { name: title, exact: true })).toBeVisible();
 
     await userEvent.click(within(history).getByRole("button", { name: `Delete ${title}` }));
     dialog = screen.getByRole("alertdialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete track" }));
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(job.id));
-    expect(deleteJob).toHaveBeenCalledWith(job.id);
+    expect(deleteSong).toHaveBeenCalledWith(job.id);
     expect(within(history).queryByRole("listitem")).not.toBeInTheDocument();
   });
 });
@@ -159,38 +127,25 @@ describe("HistoryView results", () => {
     expect(added).toBeChecked();
   });
 
-  it("keeps the summary compact while preserving all downloads in opened results", async () => {
-    const job = urlJob({
-      options: { ...urlJob().options, pitch_semitones: 2, tempo_percent: 120 },
-      output_key: "D major",
-      manifest: [
-        { label: "song", display_name: "song", filename: "song.mp3", download_name: "Great Song - song - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 0 },
-        { label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
-        { label: "instruments", filename: "instruments.mp3", download_name: "Great Song - instruments - source-key-C-major - pitch+2st - tempo120pct.mp3", size_bytes: 1, duration_s: 1 },
-      ],
-    });
-    const [selected, setSelected] = createSignal<JobDTO | null>(null);
+  it("keeps the summary compact while preserving the original download in opened results", async () => {
+    const song = urlJob();
+    const [selected, setSelected] = createSignal<SongSummary | null>(null);
     render(() => <>
-      <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-      <HistoryView jobs={[job]} sort="usage" onSortChange={vi.fn()} onSelect={setSelected} onDeleted={vi.fn()} />
+      <Show when={selected()}>{item => <ResultsView detail={detail(item())} onReset={() => setSelected(null)} refreshToken={0} onStaleDetail={vi.fn()} />}</Show>
+      <HistoryView jobs={[song]} sort="usage" onSortChange={vi.fn()} onSelect={setSelected} onDeleted={vi.fn()} />
     </>);
     const history = screen.getByRole("region", { name: "History" });
     expect(within(history).queryByRole("link")).not.toBeInTheDocument();
     await userEvent.click(within(history).getByRole("button", { name: "Great Song", exact: true }));
-    expect(screen.getByRole("link", { name: "Download original" })).toBeInTheDocument();
-    for (const stem of job.manifest!) {
-      expect(screen.getByRole("link", { name: `Download ${stem.download_name}` })).toBeInTheDocument();
-    }
-    expect(screen.getAllByText("Source key: C major")).toHaveLength(3);
-    expect(screen.queryByText("Source key: D major")).toBeNull();
+    expect(screen.getByRole("link", { name: "Download original" })).toHaveAttribute("href", "/api/jobs/101/original");
   });
 
   it("selects a history track from its title and updates the result heading once", async () => {
-    const [selected, setSelected] = createSignal<JobDTO | null>(null);
-    const onSelect = vi.fn((item: JobDTO) => setSelected(item));
+    const [selected, setSelected] = createSignal<SongSummary | null>(null);
+    const onSelect = vi.fn((item: SongSummary) => setSelected(item));
     const jobs = [urlJob({ id: 11, title: "First Song" }), urlJob({ id: 12, title: "Second Song" })];
     render(() => <>
-      <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
+      <Show when={selected()}>{item => <ResultsView detail={detail(item())} onReset={() => setSelected(null)} refreshToken={0} onStaleDetail={vi.fn()} />}</Show>
       <HistoryView jobs={jobs} sort="usage" onSortChange={vi.fn()} onSelect={onSelect} onDeleted={vi.fn()} />
     </>);
 
@@ -212,20 +167,13 @@ describe("HistoryView results", () => {
   });
 
   it("omits the original download when no original is available", () => {
-    const job = urlJob({
-      has_original: false,
-      original_key: null,
-      output_key: null,
-      manifest: [{ label: "vocals", filename: "vocals.mp3", download_name: "Great Song - vocals.mp3", size_bytes: 1, duration_s: 1 }],
-    });
-    render(() => <ResultsView job={job} onReset={vi.fn()} />);
+    const song = urlJob({ has_original: false, original_work_id: null });
+    render(() => <ResultsView detail={detail(song)} onReset={vi.fn()} refreshToken={0} onStaleDetail={vi.fn()} />);
     expect(screen.queryByRole("link", { name: "Download original" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download Great Song - vocals.mp3" })).toBeInTheDocument();
-    expect(screen.queryByText(/Source key:/)).toBeNull();
   });
 
   it("keeps queued history to its title and date without delete", () => {
-    const job = urlJob({ status: "queued", manifest: null });
+    const job = urlJob({ status: "queued", active_work_id: 101, active_work_ids: [101] });
     render(() => <HistoryView jobs={[job]} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
     const item = screen.getByRole("listitem");
     expect(within(item).getByRole("button", { name: "Great Song", exact: true })).toBeVisible();
@@ -236,33 +184,35 @@ describe("HistoryView results", () => {
     expect(within(item).getAllByRole("button")).toHaveLength(1);
   });
   it("keeps lyrics out of the compact history summary", () => {
-    const transcript = {
-      status: "recognized" as const, language: "en", timestamp_reference: "original" as const,
-      segments: [], sections: [], presentation_lines: [], timestamped_text: "A long lyric that belongs in the expanded result",
-    };
-    render(() => <HistoryView jobs={[urlJob({ transcript, options: { ...urlJob().options, extract_lyrics: true } })]}
+    render(() => <HistoryView jobs={[urlJob({ availability: { audio: true, karaoke: false, lyrics: true, pitched_lyrics: false } })]}
       sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);
-    expect(screen.queryByText(transcript.timestamped_text)).not.toBeInTheDocument();
+    expect(screen.queryByText("A long lyric that belongs in the expanded result")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Lyrics transcript" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Great Song", exact: true })).toBeVisible();
   });
 
-  it("retains empty transcript details when a history result is opened", async () => {
-    const job = urlJob({ options: { ...urlJob().options, extract_lyrics: true }, transcript: {
+  it("loads empty transcript details from the physical lyrics work after opening a song", async () => {
+    const song = urlJob({ availability: { audio: true, karaoke: false, lyrics: true, pitched_lyrics: false } });
+    const lyricsWork = { id: 207, result_revision: "lyrics-r1", transcript: {
       status: "empty", language: null, timestamp_reference: "original", segments: [],
-      sections: [{ start_s: 0, end_s: 2, label: "chorus" }], structure_model: "SongFormer", presentation_lines: [],
-      timestamped_text: "[00:00]\n[Chorus]\n",
-    } });
-    const [selected, setSelected] = createSignal<JobDTO | null>(null);
+      sections: [{ start_s: 0, end_s: 2, label: "chorus" }], structure_model: "SongFormer",
+      presentation_lines: [], timestamped_text: "[00:00]\n[Chorus]\n",
+    } } as JobDTO;
+    vi.mocked(getJob).mockResolvedValueOnce(lyricsWork);
+    const [selected, setSelected] = createSignal<SongSummary | null>(null);
     render(() => <>
-      <Show when={selected()}>{item => <ResultsView job={item()} onReset={() => setSelected(null)} />}</Show>
-      <HistoryView jobs={[job]} sort="usage" onSortChange={vi.fn()} onSelect={setSelected} onDeleted={vi.fn()} />
+      <Show when={selected()}>{item => <ResultsView detail={{ summary: item(), variants: [{
+        pitch_semitones: 0, tempo_percent: 100, outputs: [], karaoke_work_id: null, karaoke_revision: null,
+        lyrics_work_id: 207, lyrics_revision: "lyrics-r1", pitched_lyrics_work_id: null, pitched_lyrics_revision: null,
+      }] }} onReset={() => setSelected(null)} refreshToken={0} onStaleDetail={vi.fn()} />}</Show>
+      <HistoryView jobs={[song]} sort="usage" onSortChange={vi.fn()} onSelect={setSelected} onDeleted={vi.fn()} />
     </>);
     await userEvent.click(screen.getByRole("button", { name: "Great Song", exact: true }));
-    expect(screen.getByText("No speech was recognized.")).toBeInTheDocument();
+    expect(await screen.findByText("No speech was recognized.")).toBeInTheDocument();
     expect(screen.getByLabelText("Lyrics transcript").querySelector("pre")).toHaveTextContent("[00:00] [Chorus]");
-    expect(screen.getByRole("link", { name: "Download timestamped TXT" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Download timestamped TXT" })).toHaveAttribute("href", "/api/jobs/207/lyrics/download?revision=lyrics-r1");
   });
+
 
 });
 describe("HistoryView deletion", () => {
@@ -273,13 +223,13 @@ describe("HistoryView deletion", () => {
     expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText(/permanently deletes this track's history/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(deleteJob).not.toHaveBeenCalled();
+    expect(deleteSong).not.toHaveBeenCalled();
     expect(onSelect).not.toHaveBeenCalled();
     expect(screen.getByText("Great Song")).toBeVisible();
   });
 
   it("confirms once, removes only the target job, and exposes retryable errors", async () => {
-    const deletion = vi.mocked(deleteJob);
+    const deletion = vi.mocked(deleteSong);
     const onDeleted = vi.fn();
     const [jobs, setJobs] = createSignal([urlJob(), urlJob({ id: 2, title: "Other Song" })]);
     deletion.mockRejectedValueOnce(new Error("Track is temporarily unavailable."));
@@ -299,7 +249,7 @@ describe("HistoryView deletion", () => {
     expect(screen.queryByText("Great Song")).not.toBeInTheDocument();
   });
   it("preserves non-playback 409 reasons and adds stop-playback guidance only for active files", async () => {
-    const deletion = vi.mocked(deleteJob);
+    const deletion = vi.mocked(deleteSong);
     deletion.mockRejectedValueOnce(new AuthHttpError(409, "A job file is currently in use"));
     deletion.mockRejectedValueOnce(new AuthHttpError(409, "Inference ownership is unresolved"));
     render(() => <HistoryView jobs={[urlJob()]} sort="usage" onSortChange={vi.fn()} onSelect={vi.fn()} onDeleted={vi.fn()} />);

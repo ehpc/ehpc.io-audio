@@ -100,7 +100,7 @@ def _job(
         },
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     directory = config.RESULTS_DIR / str(job_id)
     directory.mkdir(parents=True)
     shutil.copyfile(source, directory / "vocals.mp3")
@@ -597,7 +597,7 @@ def test_uploaded_playlist_cannot_make_listening_probe_fetch_remote_audio(
             "/api/jobs",
             files={"file": ("source.m3u8", playlist, "application/vnd.apple.mpegurl")},
         )
-        job_id = submitted.json()["id"]
+        job_id = submitted.json()["work_id"]
         response = client.get(f"/api/jobs/{job_id}/original?playback=1")
         assert response.status_code == 503
         assert not requested

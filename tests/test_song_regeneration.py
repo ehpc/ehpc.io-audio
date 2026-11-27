@@ -87,7 +87,7 @@ def test_selection_preserves_two_owners_history_and_outputs_while_queued(
     outputs = [
         (config.RESULTS_DIR / str(job_id) / "vocals.mp3").read_bytes() for job_id in ids
     ]
-    before = [c.get("/api/jobs").json() for c in clients]
+    before = [c.get("/api/songs").json() for c in clients]
     listing = client.get("/api/admin/cache").json()
     song = next(s for s in listing["songs"] if s["id"] == song_id)
     assert song["regenerable"] is True
@@ -110,7 +110,7 @@ def test_selection_preserves_two_owners_history_and_outputs_while_queued(
     assert operation["error_message"] is None
     assert _operation(client, operation["operation_id"]) == operation
     for c, job_id, history, old in zip(clients, ids, before, outputs, strict=True):
-        assert c.get("/api/jobs").json() == history
+        assert c.get("/api/songs").json() == history
         assert c.get(f"/api/jobs/{job_id}").json()["status"] == "done"
         assert c.get(f"/api/jobs/{job_id}/results/vocals").content == old
         assert c.get(f"/api/jobs/{job_id}/original").content == audio
@@ -213,7 +213,9 @@ def test_real_http_worker_reuses_computation_and_replaces_in_place(tmp_path):
                 data={"extract_vocals": "true"},
             ),
         )
-        history = client.get("/api/jobs").json()
+        history = [
+            client.get(f"/api/jobs/{job['id']}").json() for job in [*jobs, other]
+        ]
         before_trace = trace(tmp_path)
         songs = client.get("/api/admin/cache").json()["songs"]
         song = next(s for s in songs if s["matched_jobs"] == 2)
@@ -255,7 +257,7 @@ def test_real_http_worker_reuses_computation_and_replaces_in_place(tmp_path):
             assert 0 <= status["completed_jobs"] <= 2
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        after = client.get("/api/jobs").json()
+        after = [client.get(f"/api/jobs/{job['id']}").json() for job in [*jobs, other]]
         assert [j["id"] for j in after] == [j["id"] for j in history]
         assert [_identity(j) for j in after] == [_identity(j) for j in history]
         assert all(j["status"] == "done" for j in after)

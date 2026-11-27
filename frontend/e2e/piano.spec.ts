@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect } from '@playwright/test';
@@ -66,10 +67,10 @@ for (const width of [390, 1440]) {
     ];
     fixture.pitch.tracks = [fixture.pitch.tracks[0]];
     const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-      file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: source }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
+      file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
     } });
     expect(response.ok()).toBe(true);
-    const id = (await response.json()).id as number;
+    const id = (await response.json()).work_id as number;
     execFileSync('uv', ['run', 'python', '-c', seed, String(id)], { cwd: root, input: JSON.stringify(fixture), env: { ...process.env, UV_NO_SYNC: '1', DATA_DIR: process.env.E2E_DATA_DIR! } });
     await page.reload();
     const piano = page.getByRole('region', { name: 'Piano keyboard' });
@@ -193,10 +194,10 @@ test('short song fills viewport and resizing preserves a held key', async ({ pag
   ];
   fixture.pitch.tracks = [fixture.pitch.tracks[0]];
   const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-    file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: source }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
+    file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
   } });
   expect(response.ok()).toBe(true);
-  execFileSync('uv', ['run', 'python', '-c', seed, String((await response.json()).id)], { cwd: root, input: JSON.stringify(fixture), env: { ...process.env, UV_NO_SYNC: '1', DATA_DIR: process.env.E2E_DATA_DIR! } });
+  execFileSync('uv', ['run', 'python', '-c', seed, String((await response.json()).work_id)], { cwd: root, input: JSON.stringify(fixture), env: { ...process.env, UV_NO_SYNC: '1', DATA_DIR: process.env.E2E_DATA_DIR! } });
   await page.reload();
   const piano = page.getByRole('region', { name: 'Piano keyboard' });
   const keys = piano.locator('.piano-keys');

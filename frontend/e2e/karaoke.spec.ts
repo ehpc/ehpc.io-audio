@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
 import { test } from './auth-fixture';
-import type { AlignedWordDTO, JobDTO, ReferenceLineDTO } from '../src/api';
+import type { AlignedWordDTO, JobDTO, ReferenceLineDTO, SongDetail, SongOutputRef, SongVariant } from '../src/api';
 
 interface NativePlaybackState {
   time: number;
@@ -65,7 +65,8 @@ function karaokeJob(): JobDTO {
     'vocals-male-dry', 'vocals-female', 'vocals-female-dry', 'lead', 'lead-dry', 'backing', 'backing-dry',
     'instruments', 'instruments-decrowded', 'drums', 'bass', 'other-instruments'];
   return {
-    id: 9401, status: 'done', position: null, source_type: 'upload', source_value: 'karaoke-ui.ogg',
+    id: 9401, song_id: 9401, status: 'done', position: null, source_type: 'upload', source_value: 'karaoke-ui.ogg',
+    progress: { steps: ['source', 'analysis', 'separation', 'lyrics', 'pitch', 'export'], current: null },
     title: 'Karaoke native-media UI fixture', original_key: 'C major', output_key: 'C# major', result_revision: null,
     error_message: null, created_at: 1, has_original: true, has_pitch_vocals: true,
     lyric_pitch_lines: null,
@@ -119,8 +120,23 @@ interface InstrumentGate {
   gate: Promise<void>;
   requested: () => void;
 }
+interface LibraryFixture {
+  variants?: SongVariant[];
+  works?: JobDTO[];
+  originalWorkId?: number;
+}
 
-async function mountFixture(page: Page, job = karaokeJob(), instruments?: InstrumentGate, tones?: { instruments: Buffer; vocals: Buffer }, vocals?: InstrumentGate) {
+function variantFor(job: JobDTO, workIds: Record<string, number> = {}): SongVariant {
+  const outputs: SongOutputRef[] = (job.manifest ?? []).map(manifest => ({
+    identity: manifest.label, label: manifest.label, display_name: manifest.display_name ?? manifest.label,
+    work_id: workIds[manifest.label] ?? job.id, revision: job.result_revision, manifest,
+  }));
+  return { pitch_semitones: job.options.pitch_semitones, tempo_percent: job.options.tempo_percent, outputs,
+    karaoke_work_id: job.id, karaoke_revision: job.result_revision, lyrics_work_id: job.id,
+    lyrics_revision: job.result_revision, pitched_lyrics_work_id: null, pitched_lyrics_revision: null };
+}
+
+async function mountFixture(page: Page, job = karaokeJob(), instruments?: InstrumentGate, tones?: { instruments: Buffer; vocals: Buffer }, vocals?: InstrumentGate, library: LibraryFixture = {}) {
   // Use the same read-time projection as real API jobs, including modified fixtures.
   job.lyric_pitch_lines = JSON.parse(execFileSync('uv', ['run', 'python', '-c', String.raw`
 import json,sys
@@ -133,22 +149,42 @@ print(json.dumps([asdict(line) for line in lyric_pitch_lines(
     transcript_from_json(json.dumps(value['transcript'])),
     pitch_from_json(json.dumps(value['pitch'])))]))
 `,], { cwd: process.env.E2E_REPO_ROOT!, input: JSON.stringify({ transcript: job.transcript, pitch: job.pitch }), encoding: 'utf8' }));
+  const originalWorkId = library.originalWorkId ?? job.id;
+  const variants = library.variants ?? [variantFor(job)];
+  const works = [job, ...(library.works ?? [])];
+  const outputPaths = new Set(variants.flatMap(variant => variant.outputs.map(ref => `/api/jobs/${ref.work_id}/results/${ref.label}`)));
+  const privateVocalPaths = new Set(works.map(work => `/api/jobs/${work.id}/pitch-reference/vocals`));
+  const detail: SongDetail = {
+    summary: { id: job.id, title: job.title, source_type: job.source_type, source_value: job.source_value,
+      created_at: job.created_at, open_count: 0, original_key: job.original_key, has_original: job.has_original,
+      original_work_id: job.has_original ? originalWorkId : null, status: job.status, latest_work_id: job.id, active_work_id: null,
+      active_work_ids: [], availability: { audio: true, karaoke: true, lyrics: true, pitched_lyrics: false } },
+    variants,
+  };
+  await page.route('**/api/songs**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    expect(route.request().method(), 'this UI fixture must never submit an analysis job').toBe('GET');
+    if (path === '/api/songs/current') return route.fulfill({ json: detail.summary });
+    if (path === '/api/songs') return route.fulfill({ json: [detail.summary] });
+    if (path === `/api/songs/${job.id}`) return route.fulfill({ json: detail });
+    return route.fulfill({ status: 404 });
+  });
   await page.route('**/api/jobs**', async route => {
     const url = new URL(route.request().url());
     const path = url.pathname;
     expect(route.request().method(), 'this UI fixture must never submit an analysis job').toBe('GET');
-    if (path === '/api/jobs/current' || path === `/api/jobs/${job.id}`) return route.fulfill({ json: job });
-    if (path === '/api/jobs') return route.fulfill({ json: [] });
-    const isOriginal = path === `/api/jobs/${job.id}/original`;
-    if (instruments && path === `/api/jobs/${job.id}/results/instruments`) {
+    const work = works.find(item => path === `/api/jobs/${item.id}`);
+    if (work) return route.fulfill({ json: work });
+    const isOriginal = path === `/api/jobs/${originalWorkId}/original`;
+    if (instruments && path.endsWith('/results/instruments') && outputPaths.has(path)) {
       instruments.requested();
       await instruments.gate;
     }
-    if (vocals && (path === `/api/jobs/${job.id}/results/vocals` || path === `/api/jobs/${job.id}/pitch-reference/vocals`)) {
+    if (vocals && (path.endsWith('/results/vocals') || privateVocalPaths.has(path))) {
       vocals.requested();
       await vocals.gate;
     }
-    if (isOriginal || path.startsWith(`/api/jobs/${job.id}/results/`) || path === `/api/jobs/${job.id}/pitch-reference/vocals`) {
+    if (isOriginal || outputPaths.has(path) || privateVocalPaths.has(path)) {
       const listening = !isOriginal && url.searchParams.get('playback') === '1';
       const tone = path.endsWith('/results/instruments') ? tones?.instruments
         : path.endsWith('/results/vocals') || path.endsWith('/pitch-reference/vocals') ? tones?.vocals : undefined;
@@ -276,6 +312,52 @@ async function largerThanFitOverflows(reader: Locator) {
     return overflows;
   });
 }
+test('native playback follows cross-work backgrounds and never carries them into another karaoke version', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const first = karaokeJob();
+  first.result_revision = 'analysis-a';
+  const second: JobDTO = { ...first, id: 9501, result_revision: 'analysis-b',
+    options: { ...first.options, pitch_semitones: 2 },
+    pitch: { ...first.pitch!, pitch_shift_semitones: 2 } };
+  const firstVariant = variantFor(first, { instruments: 9403, vocals: 9402 });
+  const secondVariant = variantFor(second, { instruments: 9503, vocals: 9502 });
+  const { view, player } = await mountFixture(page, first, undefined, undefined, undefined, {
+    variants: [firstVariant, secondVariant], works: [second], originalWorkId: 9404,
+  });
+  expect(await player.getAttribute('src')).toContain('/jobs/9404/original');
+  await page.getByRole('link', { name: 'Go to Karaoke' }).click();
+  await expect(view).toBeFocused();
+  const top = await view.evaluate(element => element.getBoundingClientRect().top);
+  expect(top).toBeGreaterThanOrEqual(0);
+  expect(top).toBeLessThan(await page.evaluate(() => innerHeight));
+  const scroll = await page.evaluate(() => scrollY);
+  await page.keyboard.press('Space');
+  await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(false);
+  expect(await page.evaluate(() => scrollY)).toBe(scroll);
+  await page.keyboard.press('Space');
+  await expect.poll(() => player.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  expect(await page.evaluate(() => scrollY)).toBe(scroll);
+  await seekNative(player, 12.5);
+  await player.evaluate((audio: HTMLAudioElement) => audio.play());
+  const controls = view.getByRole('group', { name: 'Pitch background audio' });
+  await controls.getByRole('button', { name: /^Instruments/ }).click();
+  await expect(controls.getByRole('button', { name: /^Instruments/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(player).toHaveAttribute('src', /\/jobs\/9403\/results\/instruments\?revision=analysis-a/);
+  const switched = await player.evaluate((audio: HTMLAudioElement) => ({ time: audio.currentTime, paused: audio.paused, ready: audio.readyState }));
+  expect(switched.paused).toBe(false);
+  expect(switched.ready).toBeGreaterThanOrEqual(2);
+  expect(switched.time).toBeGreaterThanOrEqual(9.8);
+  expect(switched.time).toBeLessThan(12);
+  const previous = await player.elementHandle();
+  await page.getByLabel('Karaoke version').selectOption('2:125');
+  await expect(view).toContainText('Pitch: +2 semitones');
+  expect(await previous!.evaluate((audio: HTMLAudioElement) => audio.paused)).toBe(true);
+  await expect(player).not.toHaveAttribute('src', /\/jobs\/9403\//);
+  await controls.getByRole('button', { name: /^Instruments/ }).click();
+  await expect(player).toHaveAttribute('src', /\/jobs\/9503\/results\/instruments\?revision=analysis-b/);
+  await expect(player).not.toHaveAttribute('src', /\/jobs\/9403\//);
+});
+
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
   test.describe(`karaoke native-media reader ${viewport.width}px`, () => {
@@ -1041,6 +1123,12 @@ sys.stdout.buffer.write(result.read_bytes())
     });
     test('keeps native playback, source, seeking and lyric sizing across fullscreen', async ({ page }, info) => {
       const { view, player, reader: inlineReader } = await mountFixture(page);
+      await view.evaluate(element => element.scrollIntoView({ block: 'start', behavior: 'instant' }));
+      await page.screenshot({ path: info.outputPath(`karaoke-compact-${viewport.width}.png`), animations: 'disabled' });
+      const details = view.getByText('Playback details', { exact: true });
+      await details.click();
+      await page.screenshot({ path: info.outputPath(`karaoke-details-${viewport.width}.png`), animations: 'disabled' });
+      await details.click();
       expect(await inlineReader.evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBe(viewport.width === 390 ? 32 : 40);
       await seekNative(player, 5.625);
       const inlinePitches = view.getByRole('button', { name: 'Pitches', exact: true });
@@ -1209,10 +1297,10 @@ sys.stdout.buffer.write(result.read_bytes())
       await expect.poll(() => player.evaluate(audio => audio.currentTime)).toBeGreaterThan(atExit + 0.15);
       await expect(view.getByRole('button', { name: 'Just vocals' })).toHaveAttribute('aria-pressed', 'true');
       if (viewport.width === 390) {
-        await view.getByRole('button', { name: /^backing \(pitch/ }).click();
-        await expect(view.getByRole('button', { name: /^backing \(pitch/ })).toHaveAttribute('aria-pressed', 'true');
+        await view.getByRole('button', { name: 'backing', exact: true }).click();
+        await expect(view.getByRole('button', { name: 'backing', exact: true })).toHaveAttribute('aria-pressed', 'true');
         await open.click();
-        const activeButton = dialog.getByRole('button', { name: /^backing \(pitch/ });
+        const activeButton = dialog.getByRole('button', { name: 'backing', exact: true });
         await expect(activeButton).toHaveAttribute('aria-pressed', 'true');
         await expect.poll(() => activeButton.evaluate(button => {
           const item = button.getBoundingClientRect(), row = button.parentElement!.getBoundingClientRect();

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, type Locator, type Page } from '@playwright/test';
@@ -29,12 +30,12 @@ async function createSeededPitchJob(page: Page, rememberJob: (id: number) => voi
     ...fixture.pitch.tracks[0].notes.slice(1).filter((note: { start_s: number }) => note.start_s >= 20),
   ];
   const submitted = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-    file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: source },
+    file: { name: 'auld-lang-syne-full.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([source, randomBytes(16)]) },
     detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
   } });
   expect(submitted.ok()).toBe(true);
-  const jobId = (await submitted.json()).id as number;
-  rememberJob(jobId);
+  const { work_id: jobId, song_id: songId } = await submitted.json() as { work_id: number; song_id: number };
+  rememberJob(songId);
   execFileSync('uv', ['run', 'python', '-c', seedPitchJob, String(jobId)], {
     cwd: root, input: JSON.stringify(fixture),
     env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR! },
@@ -116,7 +117,7 @@ for (const viewport of [
     test.afterEach(async ({ page }) => {
       if (jobId === undefined) return;
       await page.goto('about:blank');
-      const response = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      const response = await page.request.delete(`/api/songs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
       expect(response.status()).toBe(204);
       jobId = undefined;
     });
@@ -336,7 +337,7 @@ for (const viewport of [
     test.afterEach(async ({ page }) => {
       if (jobId === undefined) return;
       await page.goto('about:blank');
-      const response = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      const response = await page.request.delete(`/api/songs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
       expect(response.status()).toBe(204);
       jobId = undefined;
     });
@@ -484,7 +485,7 @@ for (const viewport of [
     test.afterEach(async ({ page }) => {
       if (jobId === undefined) return;
       await page.goto('about:blank');
-      const response = await page.request.delete(`/api/jobs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
+      const response = await page.request.delete(`/api/songs/${jobId}`, { headers: { Origin: process.env.E2E_BASE_URL! } });
       expect(response.status()).toBe(204);
       jobId = undefined;
     });

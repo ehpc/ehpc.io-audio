@@ -20,7 +20,7 @@ function fixture(): LearningDocument {
     progress: { hint_level: "full", section_id: null, line_id: "one", difficulties: {} },
   };
 }
-const job = { id: 3, has_original: true } as JobDTO;
+const job = { id: 3, song_id: null, has_original: true } as JobDTO;
 let state: LearningDocument;
 
 beforeEach(() => {

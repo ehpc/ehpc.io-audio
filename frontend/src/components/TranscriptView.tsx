@@ -2,36 +2,26 @@ import { For, Show, type Component } from "solid-js";
 import type { JobDTO } from "~/api";
 import { lyricsDownloadUrl, lyricsJsonDownloadUrl } from "~/api";
 import LearnLyricsDialog from "~/components/LearnLyricsDialog";
+import OutputIcon from "~/components/OutputIcon";
+import CopyLyricsButton from "~/components/CopyLyricsButton";
 
 const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) => {
   const transcript = () => props.job.transcript;
   const content = () => (
     <>
-      <p class="text-xs text-muted-foreground">Original audio timestamps · approximate segment timing. Automatic transcription may contain errors; review the text.</p>
-      <Show when={transcript()?.presentation_lines.some(line => line.onset_source === "provider-synced")}>
-        <p class="text-xs text-muted-foreground">Line timing: provider-synced. Individual word timings remain independently estimated.</p>
-      </Show>
-      <Show when={transcript()?.asr_model === "Qwen/Qwen3-ASR-1.7B"}>
-        <p class="text-xs text-muted-foreground">Reference-first lyrics · unprompted Qwen singing recognition + multilingual MMS acoustic alignment. Reference-aligned text is not verified lyrics. Unconfirmed text has no word timestamps; acoustic scores are not calibrated correctness probabilities.</p>
-      </Show>
-      <Show when={!transcript()?.asr_model}>
-        <p class="text-xs text-muted-foreground">Recognition model unspecified in this stored result; model provenance cannot be recovered.</p>
-      </Show>
-      <Show when={transcript()?.language}>
-        {(language) => <p class="text-xs text-muted-foreground">Language: {language()}</p>}
-      </Show>
-      <Show when={(transcript()?.sections.length ?? 0) > 0}>
-        <p class="text-xs text-muted-foreground">Musical section labels are automatic estimates and may be inaccurate.</p>
-      </Show>
+      <p class="text-xs text-muted-foreground">Original audio timestamps</p>
       <Show when={transcript()?.status === "empty"}>
         <p class="text-sm text-muted-foreground">No speech was recognized.</p>
       </Show>
       <Show when={transcript()?.timestamped_text}>
         {(text) => <pre aria-label="Timestamped lyrics" class="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-sm leading-relaxed">{text()}</pre>}
       </Show>
-      <Show when={transcript()?.reference || (transcript()?.recognition_chunks?.length ?? 0) > 0}>
+      <Show when={transcript()}>
         <details>
           <summary class="flex min-h-11 cursor-pointer items-center text-sm font-medium text-primary">Online alignment and raw recognition details</summary>
+          <p class="text-xs text-muted-foreground">Timing and section labels are estimates; automatic transcription may contain errors.</p>
+          <Show when={transcript()?.language}>{language => <p class="text-xs text-muted-foreground">Language: {language()}</p>}</Show>
+          <Show when={transcript()?.asr_model}>{model => <p class="text-xs text-muted-foreground">Recognition model: {model()}</p>}</Show>
       <Show when={transcript()?.reference}>{review => (
         <div class="space-y-2 rounded-md border border-border p-3" aria-label="Lyrics reference comparison">
           <p class="text-sm font-medium">Online lyrics {review().lines?.length ? "alignment" : "comparison"}: {review().status}</p>
@@ -120,14 +110,15 @@ const TranscriptView: Component<{ job: JobDTO; compact?: boolean }> = (props) =>
       onClick={(event) => { if (props.compact) event.stopPropagation(); }}
     >
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="text-base font-semibold">Lyrics</h3>
-        <div class="flex min-w-0 flex-wrap items-center gap-2">
-          <Show when={!props.compact}><LearnLyricsDialog job={props.job} /></Show>
-          <a href={lyricsDownloadUrl(props.job.id, props.job.result_revision)} download=""
-            class="inline-flex min-h-11 items-center text-sm font-medium text-primary underline-offset-4 hover:underline">
-            Download timestamped TXT
-          </a>
-        </div>
+        <h3 class="flex items-center gap-2 text-base font-semibold"><OutputIcon kind="lyrics" label="lyrics" /> Lyrics</h3>
+        <CopyLyricsButton text={transcript()?.timestamped_text ?? ""} />
+      </div>
+      <div class="flex min-w-0 flex-wrap items-center gap-2">
+        <Show when={!props.compact}><LearnLyricsDialog job={props.job} /></Show>
+        <a href={lyricsDownloadUrl(props.job.id, props.job.result_revision)} download=""
+          class="inline-flex min-h-11 items-center text-sm font-medium text-primary underline-offset-4 hover:underline">
+          Download timestamped TXT
+        </a>
       </div>
       <Show when={props.compact}>
         <details>

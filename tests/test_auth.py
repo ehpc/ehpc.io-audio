@@ -99,7 +99,7 @@ def test_idle_origin_private_and_disabled(client, other_client, monkeypatch):
     monkeypatch.setattr(auth_store.time, "time", lambda: now)
     anonymous = browser()
     for path in [
-        "/api/jobs",
+        "/api/songs",
         "/api/status",
         "/api/jobs/1/original",
         "/api/jobs/1/events",
@@ -117,9 +117,9 @@ def test_idle_origin_private_and_disabled(client, other_client, monkeypatch):
     monkeypatch.setattr(
         auth_store.time, "time", lambda: now + auth_store.SESSION_IDLE - 1
     )
-    assert client.get("/api/jobs").status_code == 200
+    assert client.get("/api/songs").status_code == 200
     monkeypatch.setattr(auth_store.time, "time", lambda: now + auth_store.SESSION_IDLE)
-    assert client.get("/api/jobs").status_code == 401
+    assert client.get("/api/songs").status_code == 401
     monkeypatch.setattr(auth_store.time, "time", lambda: now)
     other_id = other_client.get("/api/auth/me").json()["id"]
     assert (
@@ -128,14 +128,16 @@ def test_idle_origin_private_and_disabled(client, other_client, monkeypatch):
         ).status_code
         == 200
     )
-    assert other_client.get("/api/jobs").status_code == 401
+    assert other_client.get("/api/songs").status_code == 401
 
 
 def test_legacy_binding_and_account_quota(client):
     owner = client.get("/api/auth/me").json()["id"]
-    old = db.insert_job(
+    submitted = db.insert_job(
         "legacy-owner-evidence", "url", "https://example.org", SeparationOptions()
     )
+    assert submitted.work_id is not None
+    old = submitted.work_id
     directory = config.UPLOADS_DIR / str(old)
     directory.mkdir(parents=True)
     original = directory / "original.wav"

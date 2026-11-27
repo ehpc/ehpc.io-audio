@@ -4,9 +4,10 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import asdict, fields
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NamedTuple, TypedDict
 
-from backend import auth_store, config
+from backend import auth_store, config, coverage, library, source_cache, source_identity
 from backend.models import JobRecord, JobStatus, ResultManifestEntry
 from separator.lyrics import Transcript, transcript_from_json
 from separator.options import SeparationOptions
@@ -28,6 +29,18 @@ type StageOwner = tuple[int, str | None, str | None]
 class InferenceStageClaim(NamedTuple):
     owner: JobRecord
     newly_claimed: bool
+
+
+class SubmittedWork(NamedTuple):
+    song_id: int
+    work_id: int | None
+
+
+class InputSnapshot(NamedTuple):
+    source_job_id: int
+    song_identity: str
+    filename: str
+    sha256: str
 
 
 class UncompletedInferenceStage(ValueError):
@@ -83,6 +96,25 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_status_id ON jobs(status, id);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id, id DESC);
 {_SEARCH_SCHEMA}
+CREATE TABLE IF NOT EXISTS library_songs (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    open_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS library_song_jobs (
+    job_id INTEGER PRIMARY KEY,
+    song_id INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_song_jobs_song ON library_song_jobs(song_id);
+CREATE TABLE IF NOT EXISTS library_song_sources (
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    identity TEXT NOT NULL,
+    song_id INTEGER NOT NULL,
+    PRIMARY KEY(session_id, kind, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_library_song_sources_song
+    ON library_song_sources(song_id);
 CREATE TABLE IF NOT EXISTS learning_progress (
     principal_id TEXT NOT NULL,
     source_digest TEXT NOT NULL,
@@ -131,6 +163,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE jobs ADD COLUMN pitch_json TEXT")
     if "result_generation" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN result_generation TEXT")
+    if "coverage_json" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN coverage_json TEXT")
+    if "requested_options_json" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN requested_options_json TEXT")
     if "internal" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN internal INTEGER NOT NULL DEFAULT 0")
     if "open_count" not in columns:
@@ -229,6 +265,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 "UPDATE jobs SET options_json = ? WHERE id = ?",
                 (json.dumps(options), row["id"]),
             )
+    library.migrate_jobs(conn)
 
 
 @contextmanager
@@ -427,22 +464,147 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
     )
 
 
+def _missing_coverage(
+    conn: sqlite3.Connection,
+    song_id: int,
+    options: SeparationOptions,
+    required: dict[str, str],
+) -> set[str]:
+    missing = dict(required)
+    for row in conn.execute(
+        "SELECT j.id,j.options_json,j.coverage_json,j.result_manifest_json,"
+        "j.result_generation,j.transcript_json IS NOT NULL AS has_transcript,"
+        "j.pitch_json IS NOT NULL AS has_pitch FROM jobs j "
+        "JOIN library_song_jobs m ON m.job_id=j.id "
+        "WHERE m.song_id=? AND j.status='done' AND j.coverage_json IS NOT NULL "
+        "ORDER BY j.id DESC",
+        (song_id,),
+    ):
+        previous = _load_options(row["options_json"])
+        if (previous.pitch_semitones, previous.tempo_percent) != (
+            options.pitch_semitones,
+            options.tempo_percent,
+        ):
+            continue
+        try:
+            known = json.loads(row["coverage_json"])
+            entries = json.loads(row["result_manifest_json"] or "[]")
+        except (TypeError, ValueError):
+            continue
+        directory = config.RESULTS_DIR / str(row["id"])
+        if row["result_generation"] is not None:
+            directory = directory / "generations" / row["result_generation"]
+        for key, signature in list(missing.items()):
+            if known.get(key) != signature:
+                continue
+            if key.startswith("audio:"):
+                for entry in entries:
+                    filename = entry.get("filename", "")
+                    if (
+                        isinstance(filename, str)
+                        and Path(filename).name == filename
+                        and coverage.output_identity(entry["label"], previous)
+                        == key[6:]
+                        and (directory / filename).is_file()
+                    ):
+                        del missing[key]
+                        break
+            elif key == "lyrics" and row["has_transcript"]:
+                del missing[key]
+            elif key == "pitch" and row["has_pitch"]:
+                vocals = any(
+                    entry.get("label") == "vocals"
+                    and isinstance(entry.get("filename"), str)
+                    and Path(entry["filename"]).name == entry["filename"]
+                    and (directory / entry["filename"]).is_file()
+                    for entry in entries
+                )
+                if (
+                    not options.detect_pitch
+                    or vocals
+                    or (directory / ".pitch-vocals.mp3").is_file()
+                ):
+                    del missing[key]
+            elif key == "pitched_lyrics" and row["has_pitch"] and row["has_transcript"]:
+                del missing[key]
+        if not missing:
+            break
+    return set(missing)
+
+
 def insert_job(
-    session_id: str, source_type: str, source_value: str, options: SeparationOptions
-) -> int:
-    # An upload's filename is already a usable title; a URL's title is only known
-    # once the worker downloads it (see set_title), so it starts NULL.
+    session_id: str,
+    source_type: str,
+    source_value: str,
+    options: SeparationOptions,
+    *,
+    source_digest: str | None = None,
+    song_id: int | None = None,
+    deduplicate: bool = False,
+    install: Callable[[int], None] | None = None,
+    snapshot: InputSnapshot | None = None,
+    required_coverage: dict[str, str] | None = None,
+) -> SubmittedWork:
     title = source_value if source_type == "upload" else None
+    requested = options
+    aliases = []
+    if source_type == "url":
+        aliases.append(("url", source_cache.source_identity(source_value)))
+    if source_digest is not None:
+        aliases.append(("sha256", source_digest))
     with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if song_id is not None:
+            row = conn.execute(
+                "SELECT id FROM library_songs WHERE id=? AND session_id=?",
+                (song_id, session_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Song not found")
+        else:
+            for kind, identity in aliases:
+                row = conn.execute(
+                    "SELECT song_id FROM library_song_sources "
+                    "WHERE session_id=? AND kind=? AND identity=?",
+                    (session_id, kind, identity),
+                ).fetchone()
+                if row is not None:
+                    song_id = row["song_id"]
+                    break
+        if deduplicate and song_id is not None:
+            rows = conn.execute(
+                "SELECT j.id,COALESCE(j.requested_options_json,j.options_json) "
+                "AS options_json FROM jobs j "
+                "JOIN library_song_jobs m ON m.job_id=j.id "
+                "WHERE m.song_id=? AND j.status IN ('queued','running') "
+                "ORDER BY j.id DESC",
+                (song_id,),
+            ).fetchall()
+            for row in rows:
+                if _load_options(row["options_json"]) == options:
+                    return SubmittedWork(song_id, row["id"])
+            if required_coverage:
+                missing = _missing_coverage(conn, song_id, options, required_coverage)
+                if not missing:
+                    return SubmittedWork(song_id, None)
+                options = coverage.missing_options(options, missing)
+            elif required_coverage == {}:
+                for member in conn.execute(
+                    "SELECT job_id FROM library_song_jobs "
+                    "WHERE song_id=? ORDER BY job_id",
+                    (song_id,),
+                ):
+                    with source_identity.open_source(member["job_id"]) as source:
+                        if source is not None:
+                            return SubmittedWork(song_id, None)
         if session_id.startswith("acct:"):
-            conn.execute("BEGIN IMMEDIATE")
             _check_queue_capacity(conn, session_id)
         cursor = conn.execute(
             """
             INSERT INTO jobs
                 (session_id, status, source_type, source_value, title,
-                 options_json, created_at)
-            VALUES (?, 'queued', ?, ?, ?, ?, ?)
+                 options_json, requested_options_json, created_at)
+            VALUES (?, 'queued', ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -450,11 +612,35 @@ def insert_job(
                 source_value,
                 title,
                 json.dumps(asdict(options)),
+                json.dumps(asdict(requested)),
                 int(time.time()),
             ),
         )
         assert cursor.lastrowid is not None
-        return cursor.lastrowid
+        job_id = cursor.lastrowid
+        if song_id is None:
+            song_id = job_id
+            conn.execute(
+                "INSERT INTO library_songs(id,session_id) VALUES (?,?)",
+                (song_id, session_id),
+            )
+        conn.execute(
+            "INSERT INTO library_song_jobs(job_id,song_id) VALUES (?,?)",
+            (job_id, song_id),
+        )
+        for kind, identity in aliases:
+            song_id = library.attach_source(conn, song_id, session_id, kind, identity)
+        if install is not None:
+            install(job_id)
+        if snapshot is not None:
+            source_id, snapshot_song_id, filename, sha256 = snapshot
+            conn.execute(
+                "INSERT INTO job_source_snapshots "
+                "(job_id,source_job_id,song_id,filename,source_sha256) "
+                "VALUES (?,?,?,?,?)",
+                (job_id, source_id, snapshot_song_id, filename, sha256),
+            )
+        return SubmittedWork(song_id, job_id)
 
 
 class SourceJob(NamedTuple):
@@ -635,6 +821,16 @@ def enqueue_snapshot_retry(
             for new_id, item in zip(ids, items, strict=True):
                 conn.execute(
                     "UPDATE job_source_snapshots SET ready=1 WHERE job_id=?", (new_id,)
+                )
+                membership = conn.execute(
+                    "SELECT song_id FROM library_song_jobs WHERE job_id=?",
+                    (item.job.id,),
+                ).fetchone()
+                if membership is None:
+                    raise ValueError("Original song no longer exists")
+                conn.execute(
+                    "INSERT INTO library_song_jobs(job_id,song_id) VALUES (?,?)",
+                    (new_id, membership["song_id"]),
                 )
                 conn.execute(
                     "UPDATE jobs SET internal=0,session_id=? WHERE id=?",
@@ -906,12 +1102,13 @@ def publish_regeneration(
     transcript: Transcript | None,
     pitch_json: str | None,
     original_key: str | None,
+    provenance: dict[str, str] | None = None,
 ) -> None:
     with _session() as conn:
         conn.execute("BEGIN IMMEDIATE")
         changed = conn.execute(
             "UPDATE jobs SET result_generation=?,result_manifest_json=?,"
-            "transcript_json=?,pitch_json=?,original_key=? "
+            "transcript_json=?,pitch_json=?,original_key=?,coverage_json=? "
             "WHERE id=? AND status='done' AND internal=0 AND EXISTS ("
             "SELECT 1 FROM song_regeneration_items WHERE work_job_id=? "
             "AND original_job_id=jobs.id AND state='running')",
@@ -923,6 +1120,7 @@ def publish_regeneration(
                 else None,
                 pitch_json,
                 original_key,
+                json.dumps(provenance) if provenance is not None else None,
                 original_id,
                 work_id,
             ),
@@ -934,6 +1132,26 @@ def publish_regeneration(
             (int(time.time()), work_id),
         )
         _finish_regeneration_work(conn, work_id, None)
+
+
+def enrich_running_options(
+    job_id: int, before: SeparationOptions, after: SeparationOptions
+) -> bool:
+    """Add companion analysis only before this attempt owns any dispatch."""
+    with _session() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT options_json FROM jobs WHERE id=? AND status='running' "
+            "AND active_stage_key IS NULL AND modal_call_id IS NULL",
+            (job_id,),
+        ).fetchone()
+        if row is None or _load_options(row["options_json"]) != before:
+            return False
+        conn.execute(
+            "UPDATE jobs SET options_json=? WHERE id=?",
+            (json.dumps(asdict(after)), job_id),
+        )
+        return True
 
 
 def set_title(job_id: int, title: str) -> None:
@@ -954,35 +1172,48 @@ def get_job(job_id: int) -> JobRecord | None:
         return _row_to_job(row) if row else None
 
 
-def delete_completed_job(
-    job_id: int,
+def delete_song(
+    song_id: int,
     session_id: str,
-    expected_stage: tuple[str | None, str | None],
-    remove_files: Callable[[list[StageOwner]], list[int]],
+    expected: list[StageOwner],
+    remove_files: Callable[[list[StageOwner], list[int]], list[int]],
 ) -> bool:
-    """Delete a finished owned job only if its dispatch ownership is unchanged."""
+    """Delete all work only while membership and dispatch ownership are unchanged."""
     with _session() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT session_id, status, active_stage_key, modal_call_id "
-            "FROM jobs WHERE id = ?",
-            (job_id,),
+        song = conn.execute(
+            "SELECT 1 FROM library_songs WHERE id=? AND session_id=?",
+            (song_id, session_id),
         ).fetchone()
-        if row is None or row["session_id"] != session_id:
+        if song is None:
             return False
+        rows = conn.execute(
+            "SELECT j.id,j.status,j.active_stage_key,j.modal_call_id "
+            "FROM library_song_jobs m JOIN jobs j ON j.id=m.job_id "
+            "WHERE m.song_id=? ORDER BY j.id",
+            (song_id,),
+        ).fetchall()
+        actual = [
+            (row["id"], row["active_stage_key"], row["modal_call_id"]) for row in rows
+        ]
         if (
-            row["status"] != JobStatus.DONE
-            or (row["active_stage_key"], row["modal_call_id"]) != expected_stage
+            actual != expected
+            or not any(row["status"] == "done" for row in rows)
+            or any(row["status"] not in ("done", "failed") for row in rows)
         ):
-            raise ValueError("Job is not ready for deletion")
+            raise ValueError("Song work is not ready for deletion")
+        ids = [row["id"] for row in rows]
+        placeholders = ",".join("?" for _ in ids)
+        if not ids:
+            raise ValueError("Song has no work")
         if conn.execute(
             "SELECT 1 FROM song_regeneration_items i "
             "JOIN song_regeneration_operations o ON o.id=i.operation_id "
-            "WHERE i.original_job_id=? "
+            f"WHERE i.original_job_id IN ({placeholders}) "
             "AND o.status IN ('preparing','queued','clearing','running')",
-            (job_id,),
+            ids,
         ).fetchone():
-            raise ValueError("Job is being regenerated")
+            raise ValueError("Song is being regenerated")
         work = [
             tuple(row)
             for row in conn.execute(
@@ -990,58 +1221,32 @@ def delete_completed_job(
                 "FROM song_regeneration_items i JOIN jobs j ON j.id=i.work_job_id "
                 "JOIN job_source_snapshots s ON s.job_id=j.id "
                 "AND s.source_job_id=i.original_job_id "
-                "WHERE i.original_job_id=? AND j.internal=1 "
+                f"WHERE i.original_job_id IN ({placeholders}) AND j.internal=1 "
                 "AND j.session_id='internal:song-regeneration' "
                 "AND j.status IN ('done','failed')",
-                (job_id,),
+                ids,
             )
         ]
-        removed_work = remove_files(work)
+        removed_work = remove_files(work, ids)
         conn.executemany(
             "DELETE FROM job_source_snapshots WHERE job_id=?",
-            ((work_id,) for work_id in removed_work),
+            ((work_id,) for work_id in [*removed_work, *ids]),
         )
-        conn.execute("DELETE FROM job_source_snapshots WHERE job_id = ?", (job_id,))
-        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.execute("DELETE FROM library_song_sources WHERE song_id=?", (song_id,))
+        conn.execute("DELETE FROM library_song_jobs WHERE song_id=?", (song_id,))
+        conn.executemany("DELETE FROM jobs WHERE id=?", ((job_id,) for job_id in ids))
+        conn.execute("DELETE FROM library_songs WHERE id=?", (song_id,))
         return True
 
 
-def record_job_open(job_id: int, session_id: str) -> int | None:
+def record_song_open(song_id: int, session_id: str) -> int | None:
     with _session() as conn:
         row = conn.execute(
-            "UPDATE jobs SET open_count = open_count + 1 "
-            "WHERE id = ? AND session_id = ? AND internal = 0 "
-            "RETURNING open_count",
-            (job_id, session_id),
+            "UPDATE library_songs SET open_count=open_count+1 "
+            "WHERE id=? AND session_id=? RETURNING open_count",
+            (song_id, session_id),
         ).fetchone()
         return row["open_count"] if row is not None else None
-
-
-def list_jobs_for_session(
-    session_id: str, limit: int = 50, *, sort: JobSort = "usage"
-) -> list[JobRecord]:
-    order = (
-        "open_count DESC, created_at DESC, id DESC"
-        if sort == "usage"
-        else "created_at DESC, id DESC"
-    )
-    with _session() as conn:
-        rows = conn.execute(
-            "SELECT * FROM jobs WHERE session_id = ? AND internal=0 "
-            f"ORDER BY {order} LIMIT ?",
-            (session_id, limit),
-        ).fetchall()
-        return [_row_to_job(row) for row in rows]
-
-
-def get_latest_job_for_session(session_id: str) -> JobRecord | None:
-    with _session() as conn:
-        row = conn.execute(
-            "SELECT * FROM jobs WHERE session_id = ? AND internal=0 "
-            "ORDER BY id DESC LIMIT 1",
-            (session_id,),
-        ).fetchone()
-        return _row_to_job(row) if row else None
 
 
 def list_recent_jobs(limit: int = 50) -> list[JobRecord]:
@@ -1241,17 +1446,20 @@ def mark_done(
     manifest: list[ResultManifestEntry],
     transcript: Transcript | None = None,
     pitch_json: str | None = None,
+    provenance: dict[str, str] | None = None,
 ) -> None:
     with _session() as conn:
         conn.execute(
             "UPDATE jobs SET status = 'done', result_manifest_json = ?, "
-            "transcript_json = ?, pitch_json = ?, finished_at = ? WHERE id = ?",
+            "transcript_json = ?, pitch_json = ?, coverage_json = ?, "
+            "finished_at = ? WHERE id = ?",
             (
                 json.dumps([entry.model_dump() for entry in manifest]),
                 json.dumps(asdict(transcript), ensure_ascii=False)
                 if transcript
                 else None,
                 pitch_json,
+                json.dumps(provenance) if provenance is not None else None,
                 int(time.time()),
                 job_id,
             ),

@@ -1,9 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { expect, type Page } from '@playwright/test';
 import { authenticateOutsider, test } from './auth-fixture';
-import { jobLabel, type JobDTO } from '../src/api';
+import { jobLabel, type JobDTO, type SubmitResult } from '../src/api';
 import { transposeKey } from '../src/lib/music';
 import { hash, pcm } from './audio';
 const fixtureURL = process.env.E2E_FIXTURE_URL!;
@@ -28,7 +29,7 @@ async function submit(page: Page) {
   const response = await responsePending;
   expect(response.status()).toBe(200);
   await expect(page.locator('form button[type=submit]')).toBeEnabled();
-  return (await response.json()).id as number;
+  return await response.json() as SubmitResult;
 }
 
 async function complete(page: Page, id: number) {
@@ -80,7 +81,8 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
   test(`retains ${scenario} form across same-source renamed-mix submissions`, async ({ page, browser }, info) => {
     const mobile = scenario === 'mobile-upload';
     await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1440, height: 1000 });
-    const fixture = await readFile(fixturePath);
+    const fixture = Buffer.concat([await readFile(fixturePath), randomBytes(16)]);
+    const sourceUrl = `${fixtureURL}/tone-fixture.wav`;
     await page.goto('/');
     const openHistory = async () => {
       if (mobile) await page.getByRole('button', { name: /^Library/ }).click();
@@ -94,7 +96,7 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       await page.getByRole('button', { name: 'Upload audio', exact: true }).click();
       await page.getByLabel('Audio file', { exact: true }).setInputFiles({ name: 'tone-fixture.wav', mimeType: 'audio/wav', buffer: fixture });
     } else {
-      await page.getByLabel('Track URL', { exact: true }).fill(`${fixtureURL}/tone-fixture.wav`);
+      await page.getByLabel('Track URL', { exact: true }).fill(sourceUrl);
     }
     const analysis = await keyResponse;
     expect(analysis.status()).toBe(200);
@@ -119,7 +121,7 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       expect(files).toHaveLength(1);
       expect(files[0]).toEqual(expect.objectContaining({ name: 'tone-fixture.wav', size: fixture.length }));
     } else {
-      await expect(page.getByLabel('Track URL', { exact: true })).toHaveValue(`${fixtureURL}/tone-fixture.wav`);
+      await expect(page.getByLabel('Track URL', { exact: true })).toHaveValue(sourceUrl);
     }
 
     const proofs: Array<{
@@ -135,6 +137,8 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       afterPost: typeof initialForm;
       afterDone: typeof initialForm;
     }> = [];
+    let songId: number | undefined;
+    let firstTitle = '';
     for (let attempt = 0; attempt < 2; attempt++) {
       const mixName = attempt === 0 ? 'Karaoke A' : 'Karaoke B';
       if (attempt === 1) {
@@ -145,24 +149,36 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
         if (mobile) await page.getByRole('tab', { name: 'Review', exact: true }).click();
       }
       const beforeSubmit = await formState(page);
-      const id = await submit(page);
+      const submitted = await submit(page);
       const afterPost = await formState(page);
       expect(afterPost).toEqual(beforeSubmit);
+      if (attempt === 1) {
+        expect(submitted).toMatchObject({ song_id: songId, work_id: null, status: 'done', position: null, progress: null });
+        const history = await openHistory();
+        await expect(history.getByRole('button', { name: firstTitle, exact: true })).toHaveCount(1);
+        const retained = await outputProof(page, proofs[0]!.id, 'mix-1', info.outputPath(`${scenario}-retained-A.mp3`));
+        expect(retained).toEqual(proofs[0]!.outputs.mix);
+        break;
+      }
+      songId = submitted.song_id;
+      if (submitted.work_id === null) throw new Error('Expected new physical work for the first request');
+      const id = submitted.work_id;
       const job = await complete(page, id);
-      const resultSong = page.locator(`a[href='/api/jobs/${id}/results/song']`).first().locator('../..');
-      const resultMix = page.locator(`a[href='/api/jobs/${id}/results/mix-1']`).first().locator('../..');
-      await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
-      await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();
+      firstTitle = jobLabel(job);
+      const resultSong = page.locator(`a[href^='/api/jobs/${id}/results/song']`).first();
+      const resultMix = page.locator(`a[href^='/api/jobs/${id}/results/mix-1']`).first();
+      await expect(resultSong).toBeVisible();
+      await expect(resultMix).toBeVisible();
       const history = await openHistory();
-      await expect(history.locator(`a[href='/api/jobs/${id}/results/song']`)).toHaveCount(0);
-      await expect(history.locator(`a[href='/api/jobs/${id}/results/mix-1']`)).toHaveCount(0);
+      await expect(history.locator(`a[href^='/api/jobs/${id}/results/song']`)).toHaveCount(0);
+      await expect(history.locator(`a[href^='/api/jobs/${id}/results/mix-1']`)).toHaveCount(0);
       const historyDateTime = await page.evaluate(createdAt => new Date(createdAt * 1000).toISOString(), job.created_at);
       const historyCard = history.locator('.rounded-lg')
         .filter({ has: page.getByRole('button', { name: `Delete ${jobLabel(job)}`, exact: true }) })
         .filter({ has: page.locator(`time[datetime="${historyDateTime}"]`) });
       await historyCard.getByRole('button', { name: jobLabel(job), exact: true }).click();
-      await expect(resultSong.getByText('Full song (pitch -1.25 st, tempo 119.5%)', { exact: true })).toBeVisible();
-      await expect(resultMix.getByText(`${mixName} (pitch -1.25 st, tempo 119.5%)`, { exact: true })).toBeVisible();
+      await expect(resultSong).toBeVisible();
+      await expect(resultMix).toBeVisible();
       const afterDone = await formState(page);
       expect(afterDone).toEqual(beforeSubmit);
       expect(job.options.pitch_semitones).toBe(-1.25);
@@ -175,7 +191,7 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       expect(mix?.display_name).toBe(mixName);
       expect(mix?.download_name).toContain(`${mixName} [mix-1]`);
       expect(job.source_type).toBe(mobile ? 'upload' : 'url');
-      expect(job.source_value).toBe(mobile ? 'tone-fixture.wav' : `${fixtureURL}/tone-fixture.wav`);
+      expect(job.source_value).toBe(mobile ? 'tone-fixture.wav' : sourceUrl);
       const original = await originalProof(page, id, mobile ? fixture : undefined);
       const songDownloadName = song!.download_name;
       const mixDownloadName = mix!.download_name;
@@ -185,32 +201,19 @@ for (const scenario of ['desktop-url', 'mobile-upload'] as const) {
       };
       expect(outputs.song.title).toBe(songDownloadName.replace(/\.mp3$/, ''));
       expect(outputs.mix.title).toBe(mixDownloadName.replace(/\.mp3$/, ''));
-      if (proofs.length) {
-        expect(outputs.song.rawSha256).toBe(proofs[0]!.outputs.song.rawSha256);
-        expect(outputs.mix.audioEssenceSha256).toBe(proofs[0]!.outputs.mix.audioEssenceSha256);
-        expect(outputs.mix.rawSha256).not.toBe(proofs[0]!.outputs.mix.rawSha256);
-        expect(outputs.mix.title).not.toBe(proofs[0]!.outputs.mix.title);
-        expect(original.sha256).toBe(proofs[0]!.original.sha256);
-      }
       proofs.push({ id, mixName, options: job.options, source: job.source_value, original, outputs, songDownloadName, mixDownloadName, beforeSubmit, afterPost, afterDone });
       await page.screenshot({ path: info.outputPath(`${scenario}-${attempt + 1}-done.png`), fullPage: false });
     }
-    expect(proofs[0]!.id).not.toBe(proofs[1]!.id);
+    expect(proofs).toHaveLength(1);
     const firstJobResponse = await page.request.get(`/api/jobs/${proofs[0]!.id}`);
-    const secondJobResponse = await page.request.get(`/api/jobs/${proofs[1]!.id}`);
     expect(firstJobResponse.ok()).toBe(true);
-    expect(secondJobResponse.ok()).toBe(true);
     const firstJob = await firstJobResponse.json() as JobDTO;
-    const secondJob = await secondJobResponse.json() as JobDTO;
     const firstMix = firstJob.manifest?.find(stem => stem.label === 'mix-1');
-    const secondMix = secondJob.manifest?.find(stem => stem.label === 'mix-1');
     expect(firstMix?.display_name).toBe(proofs[0]!.mixName);
     expect(firstMix?.download_name).toBe(proofs[0]!.mixDownloadName);
-    expect(secondMix?.display_name).toBe(proofs[1]!.mixName);
-    expect(secondMix?.download_name).toBe(proofs[1]!.mixDownloadName);
     const retainedFirstAudio = await outputProof(page, proofs[0]!.id, 'mix-1', info.outputPath(`${scenario}-retained-A.mp3`));
     expect(retainedFirstAudio.title).toBe(proofs[0]!.mixDownloadName.replace(/\.mp3$/, ''));
-    expect(retainedFirstAudio.title).not.toBe(proofs[1]!.outputs.mix.title);
+    expect(retainedFirstAudio.title).toBe(proofs[0]!.outputs.mix.title);
     expect(retainedFirstAudio.rawSha256).toBe(proofs[0]!.outputs.mix.rawSha256);
     expect(retainedFirstAudio.audioEssenceSha256).toBe(proofs[0]!.outputs.mix.audioEssenceSha256);
     const foreign = await browser.newContext();

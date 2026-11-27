@@ -361,19 +361,19 @@ def test_review_provenance_json_download_and_history_preserve_original_asr(
         ],
         reference=review,
     )
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs",
         files={"file": ("song.wav", b"source", "audio/wav")},
         data={"extract_lyrics": "true"},
-    ).json()["id"]
+    ).json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue, "process_source", lambda *args: ProcessingResult({}, transcript)
     )
-    job = db.get_job(job_id)
+    job = db.get_job(work_id)
     assert job is not None
     asyncio.run(queue._run_job(job))
-    payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
+    payload = client.get(f"/api/jobs/{work_id}/lyrics").json()
     assert payload["timestamped_text"] == (
         "Artist — Track\n[00:01] Good morning to you\n"
     )
@@ -383,18 +383,17 @@ def test_review_provenance_json_download_and_history_preserve_original_asr(
         payload["words"][1]["start_s"]
         == payload["reference"]["original_words"][1]["start_s"]
     )
-    download = client.get(f"/api/jobs/{job_id}/lyrics/download.json")
+    download = client.get(f"/api/jobs/{work_id}/lyrics/download.json")
     assert download.json() == payload
     assert "lyrics.json" in download.headers["content-disposition"]
     assert (
-        client.get(f"/api/jobs/{job_id}/lyrics/download").text
+        client.get(f"/api/jobs/{work_id}/lyrics/download").text
         == payload["timestamped_text"]
     )
     db.init_db()
-    assert client.get("/api/jobs").json()[0]["transcript"] == payload
-    assert client.get("/api/jobs").json()[0]["transcript"]["reference"][
-        "corrections"
-    ] == [
+    stored_payload = client.get(f"/api/jobs/{work_id}").json()["transcript"]
+    assert stored_payload == payload
+    assert stored_payload["reference"]["corrections"] == [
         {
             "word_index": 1,
             "original": "morninx",
@@ -404,7 +403,7 @@ def test_review_provenance_json_download_and_history_preserve_original_asr(
         }
     ]
     assert (
-        other_client.get(f"/api/jobs/{job_id}/lyrics/download.json").status_code == 404
+        other_client.get(f"/api/jobs/{work_id}/lyrics/download.json").status_code == 404
     )
 
 
@@ -412,10 +411,10 @@ def test_historical_review_survives_history_and_download_without_row_rewrite(
     client: TestClient,
     other_client: TestClient,
 ) -> None:
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs",
         files={"file": ("historical.wav", b"historical-source", "audio/wav")},
-    ).json()["id"]
+    ).json()["work_id"]
     # Persist the previous release's actual field shape, not today's dataclass
     # with defaults. Legacy correction provenance is historical evidence.
     legacy = {
@@ -457,10 +456,10 @@ def test_historical_review_survives_history_and_download_without_row_rewrite(
         connection.execute(
             "UPDATE jobs SET status='done', transcript_json=?, "
             "result_manifest_json='[]' WHERE id=?",
-            (stored, job_id),
+            (stored, work_id),
         )
     db.init_db()
-    payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
+    payload = client.get(f"/api/jobs/{work_id}/lyrics").json()
     assert payload["reference"]["status"] == "corrected"
     assert payload["reference"]["corrections"] == legacy["reference"]["corrections"]
     assert payload["reference"]["original_words"][0]["text"] == "morninx"
@@ -478,18 +477,18 @@ def test_historical_review_survives_history_and_download_without_row_rewrite(
         }
     ]
     assert (
-        client.get(f"/api/jobs/{job_id}/lyrics/download").text
+        client.get(f"/api/jobs/{work_id}/lyrics/download").text
         == "Artist — Track\n[00:01] Good morning\n"
     )
-    assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == payload
-    assert client.get("/api/jobs").json()[0]["transcript"] == payload
-    assert other_client.get(f"/api/jobs/{job_id}/lyrics").status_code == 404
-    assert client.get(f"/api/jobs/{job_id}/original").content == b"historical-source"
+    assert client.get(f"/api/jobs/{work_id}/lyrics/download.json").json() == payload
+    assert client.get(f"/api/jobs/{work_id}").json()["transcript"] == payload
+    assert other_client.get(f"/api/jobs/{work_id}/lyrics").status_code == 404
+    assert client.get(f"/api/jobs/{work_id}/original").content == b"historical-source"
     with sqlite3.connect(config.DB_PATH) as connection:
         assert (
             connection.execute(
                 "SELECT transcript_json FROM jobs WHERE id=?",
-                (job_id,),
+                (work_id,),
             ).fetchone()[0]
             == stored
         )
@@ -535,19 +534,19 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
         ),
         {0: canonical},
     )
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs",
         files={"file": ("source.wav", b"unaltered-source", "audio/wav")},
         data={"extract_lyrics": "true"},
-    ).json()["id"]
+    ).json()["work_id"]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
     monkeypatch.setattr(
         queue, "process_source", lambda *args: ProcessingResult({}, result)
     )
-    job = db.get_job(job_id)
+    job = db.get_job(work_id)
     assert job is not None
     asyncio.run(queue._run_job(job))
-    payload = client.get(f"/api/jobs/{job_id}/lyrics").json()
+    payload = client.get(f"/api/jobs/{work_id}/lyrics").json()
     assert payload["reference"]["status"] == "partial"
     assert payload["reference"]["lines"][0]["unconfirmed_words"] == ["softly"]
     assert payload["reference"]["lines"][1]["start_s"] is None
@@ -556,7 +555,7 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
     assert payload["recognition_chunks"][0]["text"] == "Amber lanterns shine hmm"
     assert payload["reference"]["original_untimed"][0]["text"] == "hmm"
     assert payload["untimed"] == []
-    text = client.get(f"/api/jobs/{job_id}/lyrics/download").text
+    text = client.get(f"/api/jobs/{work_id}/lyrics/download").text
     assert text == payload["timestamped_text"]
     assert text.startswith("source\n")
     assert "[00:01] Amber lanterns softly shine" in text
@@ -566,13 +565,13 @@ def test_reference_first_json_txt_history_and_privacy_keep_raw_and_untimed_prove
     assert "NO WORD TIMESTAMPS" not in text
     assert "Reference source" not in text
     assert "hmm" in payload["original_timestamped_text"]
-    assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == payload
+    assert client.get(f"/api/jobs/{work_id}/lyrics/download.json").json() == payload
     db.init_db()
-    assert client.get("/api/jobs").json()[0]["transcript"] == payload
-    assert client.get(f"/api/jobs/{job_id}/original").content == b"unaltered-source"
-    assert other_client.get(f"/api/jobs/{job_id}/lyrics/download").status_code == 404
+    assert client.get(f"/api/jobs/{work_id}").json()["transcript"] == payload
+    assert client.get(f"/api/jobs/{work_id}/original").content == b"unaltered-source"
+    assert other_client.get(f"/api/jobs/{work_id}/lyrics/download").status_code == 404
     assert (
-        other_client.get(f"/api/jobs/{job_id}/lyrics/download.json").status_code == 404
+        other_client.get(f"/api/jobs/{work_id}/lyrics/download.json").status_code == 404
     )
 
 
@@ -599,27 +598,27 @@ def test_historical_persistence_cannot_invent_model_identity_in_new_history(
     )
     full = asdict(source)
     stored = json.dumps({key: full[key] for key in old_fields})
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs",
         files={"file": ("transition.wav", b"immutable-source", "audio/wav")},
-    ).json()["id"]
+    ).json()["work_id"]
     with sqlite3.connect(config.DB_PATH) as connection:
         connection.execute(
             "UPDATE jobs SET status='done', transcript_json=?, "
             "result_manifest_json='[]' WHERE id=?",
-            (stored, job_id),
+            (stored, work_id),
         )
-    history = client.get("/api/jobs").json()[0]["transcript"]
+    history = client.get(f"/api/jobs/{work_id}").json()["transcript"]
     assert history["asr_model"] is None and history["word_alignment"] is None
     assert history["timestamped_text"] == "transition\n[00:02] Amber lanterns\n"
-    assert client.get(f"/api/jobs/{job_id}/lyrics/download.json").json() == history
-    assert client.get(f"/api/jobs/{job_id}/lyrics/download").text == (
+    assert client.get(f"/api/jobs/{work_id}/lyrics/download.json").json() == history
+    assert client.get(f"/api/jobs/{work_id}/lyrics/download").text == (
         "transition\n[00:02] Amber lanterns\n"
     )
     with sqlite3.connect(config.DB_PATH) as connection:
         assert (
             connection.execute(
-                "SELECT transcript_json FROM jobs WHERE id=?", (job_id,)
+                "SELECT transcript_json FROM jobs WHERE id=?", (work_id,)
             ).fetchone()[0]
             == stored
         )

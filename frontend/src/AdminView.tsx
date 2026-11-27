@@ -215,7 +215,7 @@ const AdminView: Component = () => {
   const [users, setUsers] = createSignal<AdminUser[] | null>(null);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
-  const [showCache, setShowCache] = createSignal(false);
+  const [section, setSection] = createSignal<"people" | "cached-songs">("people");
 
   const load = async () => {
     setLoading(true);
@@ -233,27 +233,31 @@ const AdminView: Component = () => {
 
   return (
     <main class="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-10">
-      <header class="flex items-center justify-between gap-4">
-        <h1 class="text-2xl font-semibold tracking-tight">People</h1>
-        <Button type="button" variant="outline" size="sm" class="min-h-11" disabled={loading()} onClick={load}>
-          {loading() ? "Loading..." : "Refresh"}
-        </Button>
+      <header class="flex flex-wrap items-center justify-between gap-4">
+        <h1 class="text-2xl font-semibold tracking-tight">Admin</h1>
       </header>
-      <div class="border-b border-border pb-4">
-        <Button type="button" variant="outline" class="min-h-11" aria-expanded={showCache()} onClick={() => setShowCache(!showCache())}>
-          {showCache() ? "Hide cached songs" : "Manage cached songs"}
-        </Button>
-        <Show when={showCache()}><div class="pt-4"><AdminCacheView /></div></Show>
-      </div>
-      <Show when={loading()}><p class="text-sm text-muted-foreground" role="status">Loading people...</p></Show>
-      <Show when={error()}><p class="text-sm text-destructive" role="alert">{error()}</p></Show>
-      <Show when={users()} keyed>
-        {(people) => (
-          <Show when={people.length > 0} fallback={<p class="text-sm text-muted-foreground">No people found.</p>}>
-            <div class="space-y-3"><For each={people}>{(user) => <UserCard user={user} />}</For></div>
-          </Show>
-        )}
+      <nav class="admin-sections flex flex-wrap gap-2 border-b border-border pb-4" aria-label="Admin sections">
+        <Button type="button" variant={section() === "people" ? "secondary" : "ghost"} aria-pressed={section() === "people"} onClick={() => setSection("people")}>People</Button>
+        <Button type="button" variant={section() === "cached-songs" ? "secondary" : "ghost"} aria-pressed={section() === "cached-songs"} onClick={() => setSection("cached-songs")}>Cached songs</Button>
+      </nav>
+      <Show when={section() === "people"}>
+        <header class="flex items-center justify-between gap-4">
+          <h2 class="text-xl font-semibold tracking-tight">People</h2>
+          <Button type="button" variant="outline" size="sm" class="min-h-11" disabled={loading()} onClick={load}>
+            {loading() ? "Loading..." : "Refresh"}
+          </Button>
+        </header>
+        <Show when={loading()}><p class="text-sm text-muted-foreground" role="status">Loading people...</p></Show>
+        <Show when={error()}><p class="text-sm text-destructive" role="alert">{error()}</p></Show>
+        <Show when={users()} keyed>
+          {(people) => (
+            <Show when={people.length > 0} fallback={<p class="text-sm text-muted-foreground">No people found.</p>}>
+              <div class="space-y-3"><For each={people}>{(user) => <UserCard user={user} />}</For></div>
+            </Show>
+          )}
+        </Show>
       </Show>
+      <Show when={section() === "cached-songs"}><AdminCacheView /></Show>
     </main>
   );
 };

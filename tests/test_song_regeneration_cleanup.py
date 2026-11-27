@@ -61,9 +61,11 @@ def test_delete_reclaims_resolved_work_but_keeps_uncertain_and_visible_snapshot(
     resolved, failed, unresolved = work_ids
     artifact, receipt = stage(resolved)
     db.set_active_stage(unresolved, "c" * 64, None)
-    clone = db.insert_job(
+    clone_work = db.insert_job(
         other, "url", "https://example.test/legacy-clone", SeparationOptions()
     )
+    assert clone_work.work_id is not None
+    clone = clone_work.work_id
     clone_dir = config.UPLOADS_DIR / str(clone)
     clone_dir.mkdir(parents=True)
     (clone_dir / "original.wav").write_bytes(b"independent legacy snapshot")
@@ -81,7 +83,8 @@ def test_delete_reclaims_resolved_work_but_keeps_uncertain_and_visible_snapshot(
                 hashlib.sha256(b"independent legacy snapshot").hexdigest(),
             ),
         )
-    assert client.delete(f"/api/jobs/{job_id}").status_code == 204
+    library_song_id = client.get(f"/api/jobs/{job_id}").json()["song_id"]
+    assert client.delete(f"/api/songs/{library_song_id}").status_code == 204
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
     for cleaned in (resolved, failed):
         assert not (config.UPLOADS_DIR / str(cleaned)).exists()

@@ -36,6 +36,8 @@ def _fresh_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[No
         "DELETE FROM auth_users; DELETE FROM auth_settings; "
         "DELETE FROM song_searches; DELETE FROM song_regeneration_items; "
         "DELETE FROM song_regeneration_operations; DELETE FROM job_source_snapshots; "
+        "DELETE FROM library_song_sources; DELETE FROM library_song_jobs; "
+        "DELETE FROM library_songs; "
         "DELETE FROM jobs; DELETE FROM sqlite_sequence WHERE name = 'jobs';"
     )
     conn.commit()

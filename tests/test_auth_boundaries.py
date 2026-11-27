@@ -37,8 +37,8 @@ def test_all_private_routes_reject_anonymous_before_upload_processing(monkeypatc
         app, base_url="https://testserver", headers={"origin": "https://testserver"}
     )
     paths = [
-        "/api/jobs",
-        "/api/jobs/current",
+        "/api/songs",
+        "/api/songs/current",
         "/api/jobs/1",
         "/api/jobs/1/events",
         "/api/jobs/1/original",
@@ -94,10 +94,10 @@ def test_polling_does_not_extend_idle_session(client, monkeypatch):
     monkeypatch.setattr(
         auth_store.time, "time", lambda: now + auth_store.SESSION_IDLE - 1
     )
-    for path in ["/api/auth/me", "/api/jobs", "/api/jobs/current", "/api/status"]:
+    for path in ["/api/auth/me", "/api/songs", "/api/songs/current", "/api/status"]:
         assert client.get(path).status_code == 200
     monkeypatch.setattr(auth_store.time, "time", lambda: now + auth_store.SESSION_IDLE)
-    assert client.get("/api/jobs").status_code == 401
+    assert client.get("/api/songs").status_code == 401
 
 
 def test_operator_can_reenable_self_disabled_admin(client, monkeypatch):

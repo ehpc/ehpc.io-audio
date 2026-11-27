@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect } from '@playwright/test';
@@ -25,23 +26,6 @@ if sys.argv[2] == 'backing':
 db.mark_done(job.id,manifest,None,pitch_to_json(pitch_from_json(json.dumps(json.load(sys.stdin)['pitch']))))
 `;
 
-const cleanup = String.raw`
-import os,sys
-from pathlib import Path
-from backend import config,db
-from backend.routes.jobs import _remove_job_files
-assert config.QUEUE_CONCURRENCY == 0
-assert config.DATA_DIR.resolve() == Path(os.environ['E2E_DATA_DIR']).resolve()
-job_id=int(sys.argv[1])
-assert job_id > 0
-with db._session() as c:
-    row=c.execute("SELECT session_id FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if row:
-        assert row[0] == sys.argv[2]
-        c.execute("DELETE FROM jobs WHERE id=? AND session_id=?", (job_id,sys.argv[2]))
-if row:
-    _remove_job_files(job_id)
-`;
 
 export async function writeMicrophoneWave() {
   const rate = 48000, seconds = 3, frequencies = [329.6275569, 329.6275569 * 2 ** (10 / 1200), 329.6275569 * 2 ** (35 / 1200), 0, 220 * 2 ** (-30 / 1200), 277.1826309];
@@ -60,24 +44,26 @@ export async function writeMicrophoneWave() {
 
 export const test = base.extend<{ openPitchJob: (backing?: boolean) => Promise<void> }>({
   openPitchJob: async ({ page }, use) => {
-    const jobIds: number[] = [];
-    let owner: string | undefined;
+    const songIds: number[] = [];
     const root = process.env.E2E_REPO_ROOT!;
     const env = { ...process.env, UV_NO_SYNC: '1', DATA_DIR: process.env.E2E_DATA_DIR! };
     await use(async (backing = false) => {
       await page.goto('/');
-      owner = (await (await page.request.get('/api/auth/me')).json()).id;
+      expect((await page.request.get('/api/auth/me')).ok()).toBe(true);
       const audio = await readFile(resolve(root, 'tests/fixtures/auld-lang-syne-full.ogg'));
       const fixture = await readFile(resolve(root, 'frontend/e2e/fixtures/pitch-visual-window.json'), 'utf8');
       const response = await page.request.post('/api/jobs', { headers: { Origin: process.env.E2E_BASE_URL! }, multipart: {
-        file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: audio }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
+        file: { name: 'voice.ogg', mimeType: 'audio/ogg', buffer: Buffer.concat([audio, randomBytes(16)]) }, detect_pitch: 'true', pitch_semitones: '1.25', tempo_percent: '125',
       } });
       expect(response.ok()).toBe(true);
-      const jobId: number = (await response.json()).id;
-      jobIds.push(jobId);
+      const { work_id: jobId, song_id: songId } = await response.json() as { work_id: number; song_id: number };
+      songIds.push(songId);
       execFileSync('uv', ['run', 'python', '-c', seed, String(jobId), backing ? 'backing' : 'none'], { cwd: root, input: fixture, env });
       await page.reload();
     });
-    for (const jobId of jobIds) execFileSync('uv', ['run', 'python', '-c', cleanup, String(jobId), owner!], { cwd: root, env });
+    await page.goto('about:blank');
+    for (const songId of songIds) {
+      expect((await page.request.delete(`/api/songs/${songId}`, { headers: { Origin: process.env.E2E_BASE_URL! } })).status()).toBe(204);
+    }
   },
 });

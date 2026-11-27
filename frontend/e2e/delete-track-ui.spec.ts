@@ -4,8 +4,9 @@ import { writeFile } from 'node:fs/promises';
 import { test } from './auth-fixture';
 
 const seedCompletedTrack = String.raw`
-import json, sys, wave
+import hashlib, io, json, sys, wave
 from backend import config, db
+from separator.options import SeparationOptions
 session_id, title = sys.argv[1:3]
 manifest = [
     {"label": f"stem-{i}", "filename": f"stem-{i}.mp3", "download_name": f"Track stem-{i}.mp3", "display_name": f"stem-{i}", "size_bytes": 1, "duration_s": 1}
@@ -21,20 +22,25 @@ transcript = {
     }],
     "untimed": [], "asr_extras": [], "canonical_word_positions": [],
 }
-with db._session() as connection:
-    cursor = connection.execute(
-        "INSERT INTO jobs (session_id,status,source_type,source_value,title,options_json,result_manifest_json,transcript_json,created_at,finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (session_id, "done", "upload", "fixture.wav", title, json.dumps({"extract_lyrics": True}), json.dumps(manifest), json.dumps(transcript), 1767268800, 1767268801),
-    )
-    job_id = cursor.lastrowid
-print(job_id, flush=True)
-upload_dir = config.UPLOADS_DIR / str(job_id)
-upload_dir.mkdir(parents=True)
-with wave.open(str(upload_dir / "fixture.wav"), "wb") as audio:
+source = io.BytesIO()
+with wave.open(source, "wb") as audio:
     audio.setnchannels(1)
     audio.setsampwidth(2)
     audio.setframerate(8000)
-    audio.writeframes(bytes(1600))
+    audio.writeframes(hashlib.sha256(title.encode()).digest() * 50)
+source_bytes = source.getvalue()
+song_id, job_id = db.insert_job(session_id, 'upload', 'fixture.wav', SeparationOptions(extract_lyrics=True),
+                                source_digest=hashlib.sha256(source_bytes).hexdigest())
+assert job_id is not None
+with db._session() as connection:
+    connection.execute(
+        "UPDATE jobs SET status=?,title=?,result_manifest_json=?,transcript_json=?,created_at=?,finished_at=? WHERE id=?",
+        ("done",title,json.dumps(manifest),json.dumps(transcript),1767268800,1767268801,job_id),
+    )
+print(json.dumps({"songId": song_id, "workId": job_id}), flush=True)
+upload_dir = config.UPLOADS_DIR / str(job_id)
+upload_dir.mkdir(parents=True)
+(upload_dir / "fixture.wav").write_bytes(source_bytes)
 result_dir = config.RESULTS_DIR / str(job_id)
 result_dir.mkdir(parents=True)
 for entry in manifest:
@@ -46,13 +52,13 @@ for (const viewport of [
   { name: 'iphone', ...devices['iPhone 13'] },
 ]) {
   test(`workspace gap and delete confirmation (${viewport.name})`, async ({ browser, context, page }, info) => {
-    const createdJobIds: number[] = [];
+    const createdJobs: { songId: number; workId: number }[] = [];
     let browserContext: BrowserContext | undefined;
     const runTest = async () => {
       const identity = await (await page.request.get('/api/auth/me')).json() as { id: string };
       const cancelledTitle = `Cancelled UI fixture ${viewport.name}`;
       const confirmedTitle = `Confirmed UI fixture ${viewport.name}`;
-      const seedJob = (title: string): number => {
+      const seedJob = (title: string): { songId: number; workId: number } => {
         let output: string;
         try {
           output = execFileSync('uv', ['run', 'python', '-c', seedCompletedTrack, identity.id, title], {
@@ -66,17 +72,20 @@ for (const viewport of [
             const stdout = error.stdout;
             if (typeof stdout === 'string' || Buffer.isBuffer(stdout)) partialOutput = stdout.toString().trim();
           }
-          const partialId = Number(partialOutput);
-          if (Number.isSafeInteger(partialId) && partialId > 0) createdJobIds.push(partialId);
+          try {
+            const partial = JSON.parse(partialOutput) as { songId: number; workId: number };
+            if (Number.isSafeInteger(partial.songId) && partial.songId > 0) createdJobs.push(partial);
+          } catch { /* No complete fixture identity was published. */ }
           throw error;
         }
-        const jobId = Number(output.trim());
-        expect(Number.isSafeInteger(jobId) && jobId > 0).toBe(true);
-        createdJobIds.push(jobId);
-        return jobId;
+        const fixture = JSON.parse(output.trim()) as { songId: number; workId: number };
+        expect(Number.isSafeInteger(fixture.songId) && fixture.songId > 0).toBe(true);
+        expect(Number.isSafeInteger(fixture.workId) && fixture.workId > 0).toBe(true);
+        createdJobs.push(fixture);
+        return fixture;
       };
-      const cancelledId = seedJob(cancelledTitle);
-      const confirmedId = seedJob(confirmedTitle);
+      const cancelled = seedJob(cancelledTitle);
+      const confirmed = seedJob(confirmedTitle);
 
     const testContext = await browser.newContext({
       ...viewport,
@@ -118,8 +127,8 @@ for (const viewport of [
     await form.screenshot({ path: info.outputPath(`workspace-${viewport.name}.png`), animations: 'disabled' });
     await processing.screenshot({ path: info.outputPath(`processing-${viewport.name}.png`), animations: 'disabled' });
 
-    expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/original`)).status()).toBe(200);
-    expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/results/stem-1`)).status()).toBe(200);
+    expect((await mobilePage.request.get(`/api/jobs/${cancelled.workId}/original`)).status()).toBe(200);
+    expect((await mobilePage.request.get(`/api/jobs/${cancelled.workId}/results/stem-1`)).status()).toBe(200);
     historyRegion = await openHistory();
     await historyRegion.getByRole('button', { name: `Delete ${cancelledTitle}` }).click();
     const dialog = mobilePage.getByRole('alertdialog');
@@ -128,8 +137,8 @@ for (const viewport of [
     await dialog.screenshot({ path: info.outputPath(`delete-confirmation-${viewport.name}.png`), animations: 'disabled' });
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(historyRegion.getByRole('button', { name: cancelledTitle, exact: true })).toBeVisible();
-    expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/original`)).status()).toBe(200);
-    expect((await mobilePage.request.get(`/api/jobs/${cancelledId}/results/stem-1`)).status()).toBe(200);
+    expect((await mobilePage.request.get(`/api/jobs/${cancelled.workId}/original`)).status()).toBe(200);
+    expect((await mobilePage.request.get(`/api/jobs/${cancelled.workId}/results/stem-1`)).status()).toBe(200);
 
     await historyRegion.getByRole('button', { name: cancelledTitle, exact: true }).click();
     await expect(mobilePage.getByLabel('Timestamped lyrics')).toContainText('Visible fixture lyric');
@@ -143,18 +152,18 @@ for (const viewport of [
     historyRegion = await openHistory();
     await historyRegion.getByRole('button', { name: `Delete ${confirmedTitle}` }).click();
     const deleteResponsePromise = mobilePage.waitForResponse(response =>
-      response.request().method() === 'DELETE' && response.url().endsWith(`/api/jobs/${confirmedId}`));
+      response.request().method() === 'DELETE' && response.url().endsWith(`/api/songs/${confirmed.songId}`));
     await mobilePage.getByRole('alertdialog').getByRole('button', { name: 'Delete track' }).click();
     const deleteStatus = (await deleteResponsePromise).status();
     expect(deleteStatus).toBe(204);
     await expect(mobilePage.getByText(confirmedTitle)).toHaveCount(0);
-    expect((await mobilePage.request.get(`/api/jobs/${confirmedId}/original`)).status()).toBe(404);
+    expect((await mobilePage.request.get(`/api/jobs/${confirmed.workId}/original`)).status()).toBe(404);
     for (let output = 1; output <= 6; output++) {
-      expect((await mobilePage.request.get(`/api/jobs/${confirmedId}/results/stem-${output}`)).status()).toBe(404);
+      expect((await mobilePage.request.get(`/api/jobs/${confirmed.workId}/results/stem-${output}`)).status()).toBe(404);
     }
-    await expect.poll(async () => (await (await mobilePage.request.get('/api/jobs')).json() as { title: string }[])
+    await expect.poll(async () => (await (await mobilePage.request.get('/api/songs')).json() as { title: string }[])
       .some(job => job.title === confirmedTitle)).toBe(false);
-    await expect.poll(async () => (await (await mobilePage.request.get('/api/jobs')).json() as { title: string }[])
+    await expect.poll(async () => (await (await mobilePage.request.get('/api/songs')).json() as { title: string }[])
       .some(job => job.title === cancelledTitle)).toBe(true);
     await writeFile(info.outputPath(`smoke-${viewport.name}.json`), JSON.stringify({
       viewport: viewport.name,
@@ -178,7 +187,7 @@ for (const viewport of [
       try {
         await browserContext?.close();
       } finally {
-        const cleanupResponses = await Promise.all(createdJobIds.map(id => page.request.delete(`/api/jobs/${id}`, {
+        const cleanupResponses = await Promise.all(createdJobs.map(item => page.request.delete(`/api/songs/${item.songId}`, {
           headers: { Origin: process.env.E2E_BASE_URL! },
         })));
         for (const response of cleanupResponses) expect([204, 404]).toContain(response.status());

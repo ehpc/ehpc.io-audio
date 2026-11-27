@@ -20,8 +20,8 @@ from separator.options import SeparationOptions
 def test_drain_closes_work_admission_but_keeps_reads_and_liveness(client, monkeypatch):
     created = client.post("/api/jobs", data={"url": "https://example.com/song"})
     assert created.status_code == 200
-    job_id = created.json()["id"]
-    before = client.get("/api/jobs").json()
+    work_id = created.json()["work_id"]
+    before = client.get("/api/songs").json()
     assert client.get("/ready").status_code == 200
     assert client.get("/health").status_code == 200
 
@@ -35,11 +35,11 @@ def test_drain_closes_work_admission_but_keeps_reads_and_liveness(client, monkey
         ("/api/jobs", {"data": {"url": "https://example.com/other"}}),
         ("/api/song-search", {"json": {"query": "a song"}}),
         ("/api/key-analysis", {"data": {"url": "https://example.com/song"}}),
-        (f"/api/jobs/{job_id}/retry", {}),
-        (f"/api/jobs/{job_id}/pitch-reference/vocals", {}),
+        (f"/api/jobs/{work_id}/retry", {}),
+        (f"/api/jobs/{work_id}/pitch-reference/vocals", {}),
     ]:
         assert client.post(path, **kwargs).status_code == 503
-    assert client.get("/api/jobs").json() == before
+    assert client.get("/api/songs").json() == before
     assert client.get("/ready").status_code == 503
     assert client.get("/health").status_code == 200
 
@@ -60,7 +60,7 @@ def test_deferred_job_keeps_one_quota_reservation_and_rejection_adds_none(
         files={"file": ("song.wav", b"audio", "audio/wav")},
     )
     assert response.status_code == 200
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     assert reservations() == [(owner,)]
     monkeypatch.setattr(queue, "detect_key", lambda *args: None)
 
@@ -120,7 +120,7 @@ def test_drain_waits_for_request_admitted_before_gate_closed(client, monkeypatch
             release.set()
         assert request.result(timeout=2).status_code == 200
         waiting.result(timeout=2)
-    assert len(client.get("/api/jobs").json()) == 1
+    assert len(client.get("/api/songs").json()) == 1
 
 
 def test_socket_is_private_and_acknowledges_only_after_admitted_work_exits(
@@ -205,9 +205,11 @@ def test_drain_wakes_idle_worker_without_waiting_for_poll(monkeypatch):
 
 
 def test_claim_after_drain_does_not_change_queued_job():
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         "owner", "url", "https://example.com/song", SeparationOptions()
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
 
     async def exercise():
         await drain.state.begin()
@@ -221,12 +223,14 @@ def test_claim_after_drain_does_not_change_queued_job():
 def test_drain_serializes_with_inflight_claim_and_waits_for_worker(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    first = db.insert_job(
+    first_work = db.insert_job(
         "owner", "url", "https://example.com/one", SeparationOptions()
     )
-    second = db.insert_job(
+    second_work = db.insert_job(
         "owner", "url", "https://example.com/two", SeparationOptions()
     )
+    assert first_work.work_id is not None and second_work.work_id is not None
+    first, second = first_work.work_id, second_work.work_id
     claim_started = threading.Event()
     release_claim = threading.Event()
     real_claim = db.claim_oldest_queued
@@ -430,13 +434,17 @@ def test_unsafe_socket_prevents_worker_start(monkeypatch, tmp_path):
     path.write_text("unrelated")
     monkeypatch.setattr(drain, "SOCKET", path)
     monkeypatch.setattr(config, "QUEUE_CONCURRENCY", 1)
-    job_id = db.insert_job(
+    submitted = db.insert_job(
         "owner", "url", "https://example.com/song", SeparationOptions()
     )
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     assert db.claim_oldest_queued() is not None
-    queued_id = db.insert_job(
+    queued_work = db.insert_job(
         "owner", "url", "https://example.com/queued", SeparationOptions()
     )
+    assert queued_work.work_id is not None
+    queued_id = queued_work.work_id
 
     async def exercise():
         with pytest.raises(RuntimeError, match="not an owned socket"):

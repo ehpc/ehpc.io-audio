@@ -44,12 +44,14 @@ def durable_stage(tmp_path, monkeypatch):
     (tmp_path / "source.wav").write_bytes(source)
     (tmp_path / "different.wav").write_bytes(tone_wav((440,), 0.5))
     manifest = fixture_manifest(tmp_path / "producer")
-    owner = db.insert_job(
+    submitted = db.insert_job(
         "original-session",
         "upload",
         "source.wav",
         SeparationOptions(extract_lyrics=True),
     )
+    assert submitted.work_id is not None
+    owner = submitted.work_id
 
     def forbidden(*args):
         raise AssertionError("fixture setup cannot invoke a model")
@@ -142,12 +144,14 @@ def assert_result_receipt(root, key, output_id, *, cleanup_pending, cleaned):
 
 
 def new_equivalent_job():
-    return db.insert_job(
+    submitted = db.insert_job(
         "different-session",
         "upload",
         "renamed.wav",
         SeparationOptions(extract_lyrics=True),
     )
+    assert submitted.work_id is not None
+    return submitted.work_id
 
 
 def assert_single_acceptance(root, request):

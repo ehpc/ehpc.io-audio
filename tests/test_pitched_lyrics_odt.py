@@ -333,7 +333,7 @@ def test_private_http_odt_uses_stored_job_current_layout_and_stem(
         "/api/jobs",
         data={"url": "https://example.org/synthetic", "extract_pitched_lyrics": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     db.mark_done(job_id, [], transcript, pitch_to_json(analysis))
     db.set_title(job_id, "Synthetic [proof]")
     db.set_original_key(job_id, "C major")
@@ -396,7 +396,7 @@ def test_historical_karaoke_exports_saved_analysis_without_reprocessing(
             "extract_lyrics": "true",
         },
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     db.mark_done(job_id, [], transcript, pitch_to_json(analysis))
     db.set_title(job_id, "Synthetic [proof]")
     db.set_original_key(job_id, "C major")
@@ -436,7 +436,7 @@ def test_karaoke_exports_require_both_saved_inputs(
         "/api/jobs",
         data={"url": "https://example.org/synthetic", "detect_pitch": "true"},
     )
-    job_id = response.json()["id"]
+    job_id = response.json()["work_id"]
     db.mark_done(
         job_id,
         [],

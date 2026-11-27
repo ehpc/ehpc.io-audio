@@ -31,6 +31,7 @@ with cache_catalog.capture() as recorder:
 // backend. The runner keeps inference disabled; status transitions are seeded.
 export type SongRegenerationFixture = {
   songId: string;
+  sourceSongIds: number[];
   sourceJobIds: number[];
   title: string;
   sourceDigest: string;
@@ -64,13 +65,16 @@ source_digest = hashlib.sha256(audio).hexdigest()
 with cache_catalog._connection() as conn:
     song_id = conn.execute('SELECT id FROM songs WHERE digest=?', (source_digest,)).fetchone()[0]
 source_jobs = []
+source_songs = []
 options_list = [
     SeparationOptions(detect_pitch=True),
     SeparationOptions(extract_vocals=True, pitch_semitones=2, tempo_percent=90),
 ]
 for index, (owner, options) in enumerate(zip(owners, options_list, strict=True)):
     filename = f'regeneration-fixture-{index}.wav'
-    job_id = db.insert_job(owner.id, 'upload', filename, options)
+    library_song_id, job_id = db.insert_job(owner.id, 'upload', filename, options, source_digest=source_digest)
+    assert job_id is not None
+    source_songs.append(library_song_id)
     upload = config.UPLOADS_DIR / str(job_id)
     upload.mkdir(parents=True)
     (upload / filename).write_bytes(audio)
@@ -85,7 +89,7 @@ for index, (owner, options) in enumerate(zip(owners, options_list, strict=True))
     )])
     source_jobs.append(job_id)
 print(json.dumps({
-    'songId': song_id, 'sourceJobIds': source_jobs, 'title': title,
+    'songId': song_id, 'sourceJobIds': source_jobs, 'sourceSongIds': source_songs, 'title': title,
     'sourceDigest': source_digest, 'cachePaths': [f'keys/{cache_name}.bin'],
 }))
 ` , cacheIdentity], { cwd: process.env.E2E_REPO_ROOT, env: { ...process.env, DATA_DIR: process.env.E2E_DATA_DIR } });
@@ -191,6 +195,12 @@ with db._session() as conn:
     conn.executemany('DELETE FROM song_regeneration_items WHERE operation_id=?', ((value,) for value in operation_ids))
     conn.executemany('DELETE FROM song_regeneration_operations WHERE id=?', ((value,) for value in operation_ids))
     conn.executemany('DELETE FROM job_source_snapshots WHERE job_id=?', ((value,) for value in job_ids))
+    song_ids = [row['song_id'] for row in conn.execute(
+        f'SELECT song_id FROM library_song_jobs WHERE job_id IN ({marks})', source_ids)]
+    assert len(song_ids) == len(source_ids)
+    conn.executemany('DELETE FROM library_song_jobs WHERE job_id=?', ((value,) for value in job_ids))
+    conn.executemany('DELETE FROM library_song_sources WHERE song_id=?', ((value,) for value in song_ids))
+    conn.executemany('DELETE FROM library_songs WHERE id=?', ((value,) for value in song_ids))
     conn.executemany('DELETE FROM jobs WHERE id=?', ((value,) for value in job_ids))
 with cache_catalog._connection() as conn:
     song = conn.execute('SELECT digest FROM songs WHERE id=?', (fixture['songId'],)).fetchone()

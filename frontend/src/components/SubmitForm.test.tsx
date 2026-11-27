@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
+import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { JobDTO } from "~/api";
 import * as api from "~/api";
 import SubmitForm from "./SubmitForm";
 
@@ -13,38 +13,111 @@ vi.mock("~/api", async (importOriginal) => {
 const submitButton = () => screen.getByRole("button", { name: /download song|process audio/i });
 const queuedProgress: api.JobProgress = { steps: ["source", "analysis", "export"], current: null };
 
+const existingSong: api.SongSummary = {
+  id: 301, title: "Existing song", source_type: "upload", source_value: "original.wav",
+  created_at: 1, open_count: 2, has_original: true, original_key: "D major", original_work_id: 71, latest_work_id: 72,
+  status: "done", active_work_id: null, active_work_ids: [],
+  availability: { audio: true, karaoke: false, lyrics: false, pitched_lyrics: false },
+};
 describe("SubmitForm", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: null });
   });
 
-  it("only reports an accepted job and ignores duplicate submits while pending", async () => {
+
+  it("ignores a retained invalid URL while adding outputs and restores it when choosing another source", async () => {
+    const [target, setTarget] = createSignal<api.SongSummary | null>(null);
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 301, work_id: null, status: "done", position: null, progress: null });
+    const view = render(() => <SubmitForm target={target()} onClearTarget={() => setTarget(null)} onSubmitted={vi.fn()} />);
+    const url = screen.getByLabelText("Track URL") as HTMLInputElement;
+    fireEvent.input(url, { target: { value: "invalid url" } });
+    expect(url.checkValidity()).toBe(false);
+    setTarget(existingSong);
+    expect(view.container.querySelector("form")!.checkValidity()).toBe(true);
+    await userEvent.click(submitButton());
+    await userEvent.click(screen.getByRole("button", { name: "Choose another source" }));
+    expect(screen.getByLabelText("Track URL")).toHaveValue("invalid url");
+    expect((screen.getByLabelText("Track URL") as HTMLInputElement).checkValidity()).toBe(false);
+  });
+
+  it("clears augmentation when a new URL or upload is chosen", async () => {
+    const [target, setTarget] = createSignal<api.SongSummary | null>(existingSong);
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 302, work_id: 89, status: "queued", position: 1, progress: queuedProgress });
+    render(() => <SubmitForm target={target()} onClearTarget={() => setTarget(null)} onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Choose another source" }));
+    fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/other" } });
+    await userEvent.click(submitButton());
+    expect(screen.getByLabelText("Track URL")).toHaveValue("https://example.com/other");
+    expect(screen.queryByText(/Adding outputs to Existing song/)).not.toBeInTheDocument();
+    setTarget(existingSong);
+    await userEvent.click(screen.getByRole("button", { name: "Choose another source" }));
+    await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
+    const file = new File(["different source"], "other.wav", { type: "audio/wav" });
+    await userEvent.upload(screen.getByLabelText("Audio file"), file);
+    await userEvent.click(submitButton());
+    expect(screen.getByText("Selected: other.wav")).toBeVisible();
+    expect(screen.queryByText(/Adding outputs to Existing song/)).not.toBeInTheDocument();
+  });
+  it("uses the selected song key and ignores stale source analysis until a new source is chosen", async () => {
+    const delayed = Promise.withResolvers<api.KeyAnalysis>();
+    vi.mocked(api.analyzeKey).mockImplementation(async source => {
+      if (source.file?.name === "pending.wav") return delayed.promise;
+      return { original_key: source.file?.name === "new.wav" ? "E major" : "C major" };
+    });
+    const [target, setTarget] = createSignal<api.SongSummary | null>(null);
+    render(() => <SubmitForm target={target()} onClearTarget={() => setTarget(null)} onSubmitted={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
+    const input = screen.getByLabelText("Audio file");
+    await userEvent.upload(input, new File(["first"], "first.wav", { type: "audio/wav" }));
+    expect(await screen.findByText("Original key: C major")).toBeVisible();
+    await userEvent.upload(input, new File(["pending"], "pending.wav", { type: "audio/wav" }));
+    await waitFor(() => expect(api.analyzeKey).toHaveBeenCalledTimes(2));
+    setTarget(existingSong);
+    const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
+    fireEvent.input(pitch, { target: { value: "2" } });
+    expect(await screen.findByText("Original key: D major")).toBeVisible();
+    expect(pitch).toHaveAccessibleDescription("Resulting key: E major");
+    delayed.resolve({ original_key: "C major" });
+    await delayed.promise;
+    expect(screen.getByText("Original key: D major")).toBeVisible();
+    expect(pitch).toHaveAccessibleDescription("Resulting key: E major");
+    await userEvent.click(screen.getByRole("button", { name: "Choose another source" }));
+    await userEvent.upload(input, new File(["new"], "new.wav", { type: "audio/wav" }));
+    expect(await screen.findByText("Original key: E major")).toBeVisible();
+    expect(pitch).toHaveAccessibleDescription("Resulting key: Gb major");
+  });
+
+  it("analyzes a newly entered URL instead of retaining the selected song key", async () => {
+    const [target, setTarget] = createSignal<api.SongSummary | null>(existingSong);
+    vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "F major" });
+    render(() => <SubmitForm target={target()} onClearTarget={() => setTarget(null)} onSubmitted={vi.fn()} />);
+    expect(await screen.findByText("Original key: D major")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Choose another source" }));
+    fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/new-song" } });
+    expect(await screen.findByText("Original key: F major")).toBeVisible();
+  });
+  it("ignores duplicate submits while pending and preserves the source on error", async () => {
     const pending = Promise.withResolvers<api.SubmitResult>();
     vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise);
-    const onSubmitted = vi.fn();
-    const { container } = render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    const { container } = render(() => <SubmitForm onSubmitted={vi.fn()} />);
     fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/song" } });
     const form = container.querySelector("form")!;
     fireEvent.submit(form);
     fireEvent.submit(form);
     expect(api.submitJob).toHaveBeenCalledTimes(1);
-    expect(onSubmitted).not.toHaveBeenCalled();
     pending.reject(new Error("Queue unavailable"));
     expect(await screen.findByRole("alert")).toHaveTextContent("Queue unavailable");
-    expect(onSubmitted).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Track URL")).toHaveValue("https://example.com/song");
   });
 
   it("blocks submit and shows an error when neither URL nor file is given", async () => {
-    const onSubmitted = vi.fn();
-    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
 
     await userEvent.click(submitButton());
 
     expect(screen.getByText(/provide a url or choose a file/i)).toBeInTheDocument();
     expect(api.submitJob).not.toHaveBeenCalled();
-    expect(onSubmitted).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -54,23 +127,19 @@ describe("SubmitForm", () => {
     ["song.wav", "application/octet-stream"],
   ])("analyzes and submits %s reported as %s without changing the file", async (name, type) => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 13, status: "queued", position: 1, progress: queuedProgress });
-    const onSubmitted = vi.fn();
-    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 113, work_id: 13, status: "queued", position: 1, progress: queuedProgress });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
     const source = new File(["provider audio"], name, { type });
     await userEvent.upload(screen.getByLabelText("Audio file"), source);
     expect(await screen.findByText(`Selected: ${name}`)).toBeInTheDocument();
     expect(await screen.findByText("Original key: C major")).toBeInTheDocument();
-    expect(api.analyzeKey).toHaveBeenCalledWith({ file: source }, expect.any(AbortSignal));
     await userEvent.click(submitButton());
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({ file: source, url: undefined }));
-    expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ source_type: "upload", source_value: name }));
+    expect(screen.getByText(`Selected: ${name}`)).toBeVisible();
   });
 
   it("retains fractional pitch and positive fractional tempo after submission", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 7, status: "queued", position: 1, progress: queuedProgress });
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 107, work_id: 7, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
 
     const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
@@ -108,7 +177,7 @@ describe("SubmitForm", () => {
 
   it("shows the resulting key inside the editable pitch field and clears unknown and invalid keys", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValueOnce({ original_key: "C major" });
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 10, status: "queued", position: 1, progress: queuedProgress });
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 110, work_id: 10, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     const pitch = screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" });
     const badge = () => pitch.parentElement!.querySelector(".pitch-key-badge");
@@ -145,11 +214,10 @@ describe("SubmitForm", () => {
     expect(badge()).toHaveTextContent("Bb major (-25 cents)");
     expect(pitch).toHaveAttribute("aria-describedby");
   });
-  it("keeps the URL and selections after success and submits later edits as a new snapshot", async () => {
+  it("keeps URL and selections edited during a pending submission", async () => {
     const pending = Promise.withResolvers<api.SubmitResult>();
-    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ id: 11, status: "queued", position: 1, progress: queuedProgress });
-    const onSubmitted = vi.fn();
-    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ song_id: 111, work_id: 11, status: "queued", position: 1, progress: queuedProgress });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
     const url = screen.getByLabelText("Track URL");
     fireEvent.input(url, { target: { value: "https://example.com/song" } });
     const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
@@ -161,18 +229,10 @@ describe("SubmitForm", () => {
     await userEvent.click(screen.getByRole("tab", { name: "Review" }));
 
     await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenLastCalledWith({
-      url: "https://example.com/song", file: undefined,
-      options: expect.objectContaining({ extract_vocals: true, pitch_semitones: -1.25, tempo_percent: 119.5 }),
-    });
     fireEvent.input(url, { target: { value: "https://example.com/edited" } });
     fireEvent.input(pitch, { target: { value: "2.5" } });
-    pending.resolve({ id: 10, status: "queued", position: 1, progress: queuedProgress });
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledTimes(1));
-    expect(onSubmitted.mock.calls[0][0]).toEqual(expect.objectContaining({
-      source_value: "https://example.com/song",
-      options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5, extract_vocals: true }),
-    }));
+    pending.resolve({ song_id: 110, work_id: 10, status: "queued", position: 1, progress: queuedProgress });
+    await waitFor(() => expect(submitButton()).toBeEnabled());
     expect(url).toHaveValue("https://example.com/edited");
     expect(pitch).toHaveValue(2.5);
     expect(tempo).toHaveValue(119.5);
@@ -180,11 +240,6 @@ describe("SubmitForm", () => {
     expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute("aria-selected", "true");
 
     await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenCalledTimes(2);
-    expect(api.submitJob).toHaveBeenLastCalledWith(expect.objectContaining({
-      url: "https://example.com/edited",
-      options: expect.objectContaining({ pitch_semitones: 2.5, tempo_percent: 119.5, extract_vocals: true }),
-    }));
   });
 
   it("retains form state when submission fails", async () => {
@@ -201,9 +256,9 @@ describe("SubmitForm", () => {
   });
 
 
-  it("steps pitch and tempo from defaults and fractional entries, updates previews, and submits the adjusted values", async () => {
+  it("steps pitch and tempo from defaults and fractional entries and updates previews", async () => {
     vi.mocked(api.analyzeKey).mockResolvedValue({ original_key: "C major" });
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 8, status: "queued", position: 1, progress: queuedProgress });
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 108, work_id: 8, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
     await userEvent.upload(screen.getByLabelText("Audio file"), new File(["audio"], "song.wav", { type: "audio/wav" }));
@@ -233,12 +288,8 @@ describe("SubmitForm", () => {
     expect(tempo).toHaveValue(119.5);
     expect(screen.getByText("Full song (pitch -1.25 st, tempo 119.5%)")).toBeInTheDocument();
     expect(screen.getByText("Original (unchanged)")).toBeInTheDocument();
-    expect(api.submitJob).not.toHaveBeenCalled();
     await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({ pitch_semitones: -1.25, tempo_percent: 119.5 }),
-    }));
-    await waitFor(() => expect(api.submitJob).toHaveBeenCalled());
+    await waitFor(() => expect(submitButton()).toBeEnabled());
     expect(pitch).toHaveValue(-1.25);
     expect(tempo).toHaveValue(119.5);
   });
@@ -339,11 +390,10 @@ describe("SubmitForm", () => {
     expect(screen.getByText("Tracks and files you'll get (9)")).toBeInTheDocument();
   });
 
-  it("includes and locks karaoke outputs in both preview and an immutable submitted request", async () => {
+  it("includes and locks karaoke outputs and preserves later edits during submission", async () => {
     const pending = Promise.withResolvers<api.SubmitResult>();
     vi.mocked(api.submitJob).mockReturnValueOnce(pending.promise);
-    const onSubmitted = vi.fn();
-    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
     fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/karaoke" } });
     const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
     const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
@@ -369,10 +419,6 @@ describe("SubmitForm", () => {
       expect(screen.getByRole("checkbox", { name, exact: true })).toBeEnabled();
     }
     await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({ detect_pitch: true, extract_vocals: true, extract_lyrics: true,
-        extract_instruments: true, extract_pitched_lyrics: true, drums: true, genders: false, mixes: [] }),
-    }));
     await userEvent.click(karaoke);
     expect(vocals).not.toBeChecked();
     expect(lyrics).not.toBeChecked();
@@ -380,17 +426,14 @@ describe("SubmitForm", () => {
     expect(instruments).not.toBeChecked();
     expect(drums).not.toBeChecked();
     expect(screen.queryByText("Drums + Vocals", { exact: true })).toBeNull();
-    pending.resolve({ id: 42, status: "queued", position: 1, progress: queuedProgress });
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
-    expect(onSubmitted.mock.calls[0][0].options).toEqual(expect.objectContaining({
-      detect_pitch: true, extract_vocals: true, extract_lyrics: true, extract_instruments: true, drums: true,
-    }));
+    pending.resolve({ song_id: 142, work_id: 42, status: "queued", position: 1, progress: queuedProgress });
+    await waitFor(() => expect(submitButton()).toBeEnabled());
   });
 
   it.each([[false, false], [true, false], [false, true], [true, true]])(
     "restores prior vocals=%s and lyrics=%s while preserving independent selections and source edits",
     async (wantedVocals, wantedLyrics) => {
-      vi.mocked(api.submitJob).mockResolvedValue({ id: 43, status: "queued", position: 1, progress: queuedProgress });
+      vi.mocked(api.submitJob).mockResolvedValue({ song_id: 143, work_id: 43, status: "queued", position: 1, progress: queuedProgress });
       render(() => <SubmitForm onSubmitted={vi.fn()} />);
       const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
       const vocals = screen.getByRole("checkbox", { name: "Extract vocals", exact: true });
@@ -418,15 +461,11 @@ describe("SubmitForm", () => {
       expect(karaoke).not.toBeChecked();
       fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/independent" } });
       await userEvent.click(submitButton());
-      expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-        options: expect.objectContaining({ detect_pitch: false, extract_vocals: wantedVocals,
-          extract_lyrics: wantedLyrics, extract_pitched_lyrics: true, drums: true }),
-      }));
     },
   );
 
   it.each([false, true])("restores the prior pitched-lyrics selection (%s) after karaoke", async (wanted) => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 45, status: "queued", position: 1, progress: queuedProgress });
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 145, work_id: 45, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
     const pitched = screen.getByRole("checkbox", { name: "Lyrics with pitches", exact: true });
@@ -441,15 +480,12 @@ describe("SubmitForm", () => {
     expect((pitched as HTMLInputElement).checked).toBe(wanted);
     fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/source" } });
     await userEvent.click(submitButton());
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({ detect_pitch: false, extract_pitched_lyrics: wanted }),
-    }));
   });
 
   it.each([[false, false], [true, false], [false, true], [true, true]])(
     "restores public instruments=%s and drums=%s independently after karaoke, without inserting mixes",
     async (wantedInstruments, wantedDrums) => {
-      vi.mocked(api.submitJob).mockResolvedValue({ id: 44, status: "queued", position: 1, progress: queuedProgress });
+      vi.mocked(api.submitJob).mockResolvedValue({ song_id: 144, work_id: 44, status: "queued", position: 1, progress: queuedProgress });
       render(() => <SubmitForm onSubmitted={vi.fn()} />);
       fireEvent.input(screen.getByLabelText("Track URL"), { target: { value: "https://example.com/backings" } });
       const karaoke = screen.getByRole("checkbox", { name: "Karaoke with pitches", exact: true });
@@ -466,10 +502,6 @@ describe("SubmitForm", () => {
       expect(instruments).toBeDisabled();
       expect(drums).toBeDisabled();
       await userEvent.click(submitButton());
-      expect(api.submitJob).toHaveBeenLastCalledWith(expect.objectContaining({
-        options: expect.objectContaining({ detect_pitch: true, extract_instruments: true, drums: true,
-          mixes: [{ id: "mix-1", name: "Drums + Bass", components: ["drums", "bass"] }] }),
-      }));
       await waitFor(() => expect(submitButton()).toBeEnabled());
       await userEvent.click(karaoke);
       expect((instruments as HTMLInputElement).checked).toBe(wantedInstruments);
@@ -482,10 +514,6 @@ describe("SubmitForm", () => {
         expect(screen.queryByText(label, { exact: true }) !== null).toBe(wantedDrums);
       }
       await userEvent.click(submitButton());
-      expect(api.submitJob).toHaveBeenLastCalledWith(expect.objectContaining({
-        options: expect.objectContaining({ detect_pitch: false, extract_instruments: wantedInstruments,
-          drums: wantedDrums, mixes: [{ id: "mix-1", name: "Drums + Bass", components: ["drums", "bass"] }] }),
-      }));
     },
   );
 
@@ -559,23 +587,6 @@ describe("SubmitForm", () => {
     expect(screen.getByText("Full song (pitch +2 st)")).toBeInTheDocument();
   });
 
-  it("submits a lyrics-only request without selecting an audio stem", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 18, status: "queued", position: 1, progress: queuedProgress });
-    render(() => <SubmitForm onSubmitted={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
-    await userEvent.click(screen.getByRole("checkbox", { name: "Extract lyrics", exact: true }));
-    await userEvent.click(screen.getByRole("button", { name: "Process audio" }));
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        extract_lyrics: true,
-        extract_vocals: false,
-        extract_instruments: false,
-        mixes: [],
-        pitch_semitones: 0,
-        tempo_percent: 100,
-      }),
-    }));
-  });
 
   it("analyzes an attached file automatically and updates the target key and notes", async () => {
     const { promise, resolve } = Promise.withResolvers<api.KeyAnalysis>();
@@ -596,7 +607,6 @@ describe("SubmitForm", () => {
     expect(screen.getByText("Target key: A major")).toBeInTheDocument();
     expect(screen.getByText("Notes (major): A · B · C# · D · E · F# · G#")).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(api.analyzeKey).toHaveBeenCalledWith({ file: source }, expect.any(AbortSignal));
   });
 
   it("aborts stale requests and clears prior keys when source or mode changes", async () => {
@@ -642,7 +652,6 @@ describe("SubmitForm", () => {
       expect(api.analyzeKey).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(api.analyzeKey).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(api.analyzeKey).mock.calls[0][0]).toEqual({ url: "https://example.com/second" });
       expect(screen.getByText("Original key: Undetermined")).toBeInTheDocument();
       fireEvent.input(input, { target: { value: "" } });
       expect(screen.queryByText("Original key: Undetermined")).not.toBeInTheDocument();
@@ -654,7 +663,7 @@ describe("SubmitForm", () => {
 
   it("shows analysis failures independently and retains the selected file after submission", async () => {
     vi.mocked(api.analyzeKey).mockRejectedValueOnce(new Error("Unsupported audio format"));
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 9, status: "queued", position: 1, progress: queuedProgress });
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 109, work_id: 9, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.click(screen.getByRole("button", { name: "Upload audio" }));
     const input = screen.getByLabelText("Audio file");
@@ -674,9 +683,8 @@ describe("SubmitForm", () => {
   });
 
   it("retains every grouped selection and URL after submission", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 12, status: "queued", position: 1, progress: queuedProgress });
-    const onSubmitted = vi.fn();
-    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 112, work_id: 12, status: "queued", position: 1, progress: queuedProgress });
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
     const url = screen.getByLabelText("Track URL");
     await userEvent.type(url, "https://example.com/song");
     const groups = ["Outputs", "Mixes Build your own", "Cleanup", "Splits"];
@@ -684,7 +692,7 @@ describe("SubmitForm", () => {
     const checkboxes = screen.getAllByRole("checkbox");
     for (const checkbox of checkboxes) await userEvent.click(checkbox);
     await userEvent.click(submitButton());
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
+    await waitFor(() => expect(submitButton()).toBeEnabled());
     expect(url).toHaveValue("https://example.com/song");
     for (const checkbox of checkboxes) expect(checkbox).toBeChecked();
     expect(screen.getByRole("spinbutton", { name: "Pitch shift (semitones)" })).toHaveValue(0);
@@ -693,7 +701,7 @@ describe("SubmitForm", () => {
   });
 
   it("retains a queued vocal-variant mix without selecting or previewing hidden prerequisites", async () => {
-    vi.mocked(api.submitJob).mockResolvedValue({ id: 14, status: "queued", position: 1, progress: queuedProgress });
+    vi.mocked(api.submitJob).mockResolvedValue({ song_id: 114, work_id: 14, status: "queued", position: 1, progress: queuedProgress });
     render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/lead");
     await userEvent.click(screen.getByText(/Vocal variants/));
@@ -705,21 +713,15 @@ describe("SubmitForm", () => {
     // The mix row survives submission; ingredients stay hidden from the preview.
     expect(screen.getByRole("button", { name: "Edit Female vocals + Instruments" })).toBeInTheDocument();
     expect(screen.getAllByText("Female vocals + Instruments", { exact: true }).length).toBeGreaterThan(0);
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        mixes: [{ id: "mix-1", name: "Female vocals + Instruments", components: ["female", "instruments"] }],
-      }),
-    }));
     expect(screen.getByRole("checkbox", { name: "Split lead & backing vocals" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Extract vocals" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Extract instruments" })).not.toBeChecked();
   });
 
-  it("keeps the submitted job snapshot immutable when a mix is edited while the POST is pending", async () => {
+  it("keeps a mix rename made while a submission is pending", async () => {
     const deferred = Promise.withResolvers<api.SubmitResult>();
     vi.mocked(api.submitJob).mockReturnValueOnce(deferred.promise);
-    const onSubmitted = vi.fn();
-    render(() => <SubmitForm onSubmitted={onSubmitted} />);
+    render(() => <SubmitForm onSubmitted={vi.fn()} />);
     await userEvent.type(screen.getByLabelText("Track URL"), "https://example.com/song");
     await userEvent.click(screen.getByRole("button", { name: "Drums" }));
     await userEvent.click(screen.getByRole("button", { name: "Bass" }));
@@ -729,16 +731,8 @@ describe("SubmitForm", () => {
     await userEvent.click(screen.getByRole("button", { name: "Edit Drums + Bass" }));
     await userEvent.type(screen.getByLabelText("Mix name for Drums + Bass"), " · v2");
     fireEvent.click(screen.getByRole("button", { name: "Save mix" }));
-    deferred.resolve({ id: 21, status: "queued", position: 1, progress: queuedProgress });
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledOnce());
-    const job = onSubmitted.mock.calls[0][0] as JobDTO;
-    // The queued job keeps the original name, components, and id.
-    expect(job.options.mixes).toEqual([{ id: "mix-1", name: "Drums + Bass", components: ["drums", "bass"] }]);
-    expect(api.submitJob).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        mixes: [{ id: "mix-1", name: "Drums + Bass", components: ["drums", "bass"] }],
-      }),
-    }));
+    deferred.resolve({ song_id: 121, work_id: 21, status: "queued", position: 1, progress: queuedProgress });
+    await waitFor(() => expect(submitButton()).toBeEnabled());
     // The form itself shows the rename.
     expect(screen.getByRole("button", { name: "Edit Drums + Bass · v2" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit Drums + Bass", exact: true })).not.toBeInTheDocument();

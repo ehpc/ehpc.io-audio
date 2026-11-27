@@ -118,7 +118,7 @@ def test_ephemeral_gpu_queue_delivers_arbitrary_mixes(
                 },
             )
             submitted.raise_for_status()
-            job_id = submitted.json()["id"]
+            job_id = submitted.json()["work_id"]
             deadline = time.monotonic() + TIMEOUT + 120
             while True:
                 job = client.get(f"/api/jobs/{job_id}").json()

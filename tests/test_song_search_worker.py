@@ -34,7 +34,7 @@ LEGACY_COLUMNS = (
 def legacy_database(client):
     job_id = client.post(
         "/api/jobs", data={"url": "https://example.com/owned-history"}
-    ).json()["id"]
+    ).json()["work_id"]
     now = int(time.time())
     with sqlite3.connect(config.DB_PATH) as conn:
         conn.execute("DROP INDEX IF EXISTS idx_jobs_active_stage_key")
@@ -142,7 +142,7 @@ def test_job_claims_are_exclusive_and_stage_pair_survives_restart(
         conn.execute("INSERT INTO auth_settings VALUES ('user_queue', 8)")
     ids = {
         client.post("/api/jobs", data={"url": f"https://example.com/song-{i}"}).json()[
-            "id"
+            "work_id"
         ]
         for i in range(8)
     }
@@ -230,7 +230,7 @@ def test_slow_discovery_does_not_hold_post_or_other_http_requests(
         assert started.wait(5)
         path = "/api/song-search/" + response.json()["search_id"]
         assert worker_client.get(path).json() == {"status": "pending"}
-        assert worker_client.get("/api/jobs").json() == []
+        assert worker_client.get("/api/songs").json() == []
     finally:
         release.set()
     deadline = time.monotonic() + 5
@@ -297,7 +297,7 @@ def test_global_stage_claim_keeps_failed_uncertain_owner_across_new_jobs(client)
         conn.execute("INSERT INTO auth_settings VALUES ('user_queue', 8)")
     ids = [
         client.post("/api/jobs", data={"url": f"https://example.com/song-{i}"}).json()[
-            "id"
+            "work_id"
         ]
         for i in range(8)
     ]
@@ -317,7 +317,7 @@ def test_global_stage_claim_keeps_failed_uncertain_owner_across_new_jobs(client)
     db.reap_running_to_queued()
     new_job = client.post(
         "/api/jobs", data={"url": "https://example.com/new-job-same-input"}
-    ).json()["id"]
+    ).json()["work_id"]
     uncertain = db.claim_inference_stage(new_job, "shared-stage")
     assert not uncertain.newly_claimed
     assert uncertain.owner.id == owner.id
@@ -334,10 +334,10 @@ def test_global_stage_claim_keeps_failed_uncertain_owner_across_new_jobs(client)
 def test_verified_undispatched_release_preserves_history_and_allows_new_owner(client):
     first = client.post(
         "/api/jobs", data={"url": "https://example.com/first-attempt"}
-    ).json()["id"]
+    ).json()["work_id"]
     second = client.post(
         "/api/jobs", data={"url": "https://example.com/later-attempt"}
-    ).json()["id"]
+    ).json()["work_id"]
     assert db.claim_inference_stage(first, "owned-stage").newly_claimed
     db.mark_failed(first, "Dispatch outcome unknown.")
     before = db.get_job(first)

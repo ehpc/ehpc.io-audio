@@ -52,7 +52,9 @@ def test_atomic_grants_and_private_activity(client, other_client):
         client.post(f"/api/admin/users/{uid}/invite-slot").json()["invite_limit"] == 12
     )
     assert other_client.post("/api/auth/activity").status_code == 204
-    job = db.insert_job(uid, "upload", "personal.wav", SeparationOptions())
+    submitted = db.insert_job(uid, "upload", "personal.wav", SeparationOptions())
+    assert submitted.work_id is not None
+    job = submitted.work_id
     search = other_client.post(
         "/api/song-search", json={"query": "owned music clue"}
     ).json()["search_id"]
@@ -81,7 +83,9 @@ def test_atomic_grants_and_private_activity(client, other_client):
 def test_existing_owner_reconciliation_preserves_data(client):
     owner = client.get("/api/auth/me").json()
     invite = client.post("/api/auth/invites").json()
-    job_id = db.insert_job(owner["id"], "upload", "kept.wav", SeparationOptions())
+    submitted = db.insert_job(owner["id"], "upload", "kept.wav", SeparationOptions())
+    assert submitted.work_id is not None
+    job_id = submitted.work_id
     before = db.get_job(job_id)
     with db._session() as conn:
         conn.execute("UPDATE auth_users SET is_admin=0 WHERE id=?", (owner["id"],))
@@ -102,7 +106,7 @@ def test_last_activity_is_not_refreshed_by_background_reads(
     assert other_client.post("/api/auth/activity").status_code == 204
     observed = client.get(f"/api/admin/users/{uid}/activity").json()["last_activity_at"]
     monkeypatch.setattr(auth_store.time, "time", lambda: now + 100)
-    assert other_client.get("/api/jobs").status_code == 200
+    assert other_client.get("/api/songs").status_code == 200
     assert other_client.get("/api/auth/me").status_code == 200
     assert (
         client.get(f"/api/admin/users/{uid}/activity").json()["last_activity_at"]

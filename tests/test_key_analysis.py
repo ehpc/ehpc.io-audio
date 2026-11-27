@@ -27,7 +27,7 @@ def test_invalid_preview_source_is_actionable_and_stateless(
 ) -> None:
     response = client.post("/api/key-analysis", data=data)
     assert response.status_code == 400
-    assert client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
 
 
 def test_preview_requires_exactly_one_source(client: TestClient) -> None:
@@ -37,7 +37,7 @@ def test_preview_requires_exactly_one_source(client: TestClient) -> None:
         files={"file": ("song.wav", b"audio", "audio/wav")},
     )
     assert response.status_code == 400
-    assert client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
 
 
 @pytest.mark.skipif(not _NATIVE, reason="keyfinder-cli required")
@@ -56,7 +56,7 @@ def test_real_upload_preview_without_a_job_or_gpu(
     assert response.status_code == 200
     assert response.json() == {"original_key": None if silent else "C major"}
     assert "__Host-auth_session" in client.cookies
-    assert client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
 
 
 @pytest.mark.skipif(not _NATIVE, reason="keyfinder-cli required")
@@ -65,7 +65,7 @@ def test_native_preview_decode_failure_is_visible(client: TestClient) -> None:
         "/api/key-analysis", files={"file": ("broken.wav", b"not audio", "audio/wav")}
     )
     assert response.status_code == 422
-    assert client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
 
 
 def test_cancelled_download_keeps_temp_files_until_worker_exits(

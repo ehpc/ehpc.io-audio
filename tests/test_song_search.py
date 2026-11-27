@@ -233,8 +233,8 @@ def test_async_private_search_survives_reopen_and_never_creates_audio_job(
     assert client.get(path).json() == {"status": "done", "songs": [SONG]}
     assert not producer.finish()
     assert producer.calls == 1
-    assert client.get("/api/jobs").json() == []
-    assert other_client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
+    assert other_client.get("/api/songs").json() == []
     with sqlite3.connect(config.DB_PATH) as connection:
         assert connection.execute(
             "SELECT modal_call_id, pending_query, claimed_at FROM song_searches"
@@ -282,7 +282,7 @@ def test_terminal_failures_are_private_durable_and_do_not_repeat(
     assert client.get(path).json() == first.json()
     assert not producer.finish()
     assert producer.calls == 1
-    assert client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
 
 
 def test_expired_search_does_not_run_provider_and_clears_query(client, producer):
@@ -314,7 +314,7 @@ def test_discovery_schema_and_results_preserve_existing_jobs(client, producer):
     ).json()
     with sqlite3.connect(config.DB_PATH) as connection:
         before = connection.execute(
-            "SELECT * FROM jobs WHERE id = ?", (job["id"],)
+            "SELECT * FROM jobs WHERE id = ?", (job["work_id"],)
         ).fetchone()
         connection.execute("DROP TABLE song_searches")
     db.init_db()
@@ -324,7 +324,7 @@ def test_discovery_schema_and_results_preserve_existing_jobs(client, producer):
     assert client.get(path).status_code == 200
     with sqlite3.connect(config.DB_PATH) as connection:
         after = connection.execute(
-            "SELECT * FROM jobs WHERE id = ?", (job["id"],)
+            "SELECT * FROM jobs WHERE id = ?", (job["work_id"],)
         ).fetchone()
     assert before == after
 
@@ -352,7 +352,9 @@ def test_query_cache_survives_reopen_and_shares_result_not_session_handle(
     assert client.get(original).status_code == 404
     assert not producer.finish()
     assert producer.calls == 1
-    assert client.get("/api/jobs").json() == other_client.get("/api/jobs").json() == []
+    assert (
+        client.get("/api/songs").json() == other_client.get("/api/songs").json() == []
+    )
 
 
 def test_query_cache_expires_exactly_one_day_after_first_success_not_last_hit(

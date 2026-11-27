@@ -79,7 +79,8 @@ def test_submit_url_queues_job(client: TestClient) -> None:
     r = client.post("/api/jobs", data={"url": "https://example.com/x"})
     assert r.status_code == 200
     assert r.json() == {
-        "id": 1,
+        "song_id": 1,
+        "work_id": 1,
         "status": "queued",
         "position": 1,
         "progress": {"steps": ["source", "analysis", "export"], "current": None},
@@ -100,18 +101,13 @@ def test_submit_requires_exactly_one_source(client: TestClient) -> None:
     assert both.status_code == 400
 
 
-def test_current_and_get_by_id(client: TestClient) -> None:
-    jid = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()["id"]
-    current = client.get("/api/jobs/current").json()
-    assert current["id"] == jid
-    assert current["status"] == "queued"
-    assert client.get(f"/api/jobs/{jid}").json()["id"] == jid
-
-
-def test_list_newest_first(client: TestClient) -> None:
-    client.post("/api/jobs", data={"url": "https://example.com/1"})
-    client.post("/api/jobs", data={"url": "https://example.com/2"})
-    assert [j["id"] for j in client.get("/api/jobs").json()] == [2, 1]
+def test_work_get_and_library_song_projection(client: TestClient) -> None:
+    submitted = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()
+    work_id = submitted["work_id"]
+    assert client.get(f"/api/jobs/{work_id}").json()["id"] == work_id
+    assert client.get(f"/api/songs/{submitted['song_id']}").status_code == 200
+    assert client.get("/api/songs").status_code == 200
+    assert client.get("/api/songs/current").json()["id"] == submitted["song_id"]
 
 
 def test_queue_positions_increment(client: TestClient) -> None:
@@ -122,29 +118,36 @@ def test_queue_positions_increment(client: TestClient) -> None:
 
 
 def test_ownership_isolation(client: TestClient, other_client: TestClient) -> None:
-    jid = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()["id"]
-    assert other_client.get(f"/api/jobs/{jid}").status_code == 404
-    assert other_client.get("/api/jobs/current").json() is None
-    assert other_client.get("/api/jobs").json() == []
+    submitted = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()
+    assert other_client.get(f"/api/jobs/{submitted['work_id']}").status_code == 404
+    assert other_client.get(f"/api/songs/{submitted['song_id']}").status_code == 404
+    assert other_client.get("/api/songs/current").json() is None
+    assert other_client.get("/api/songs").json() == []
 
 
-def test_retry_creates_new_job(client: TestClient) -> None:
-    jid = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()["id"]
-    retried = client.post(f"/api/jobs/{jid}/retry")
+def test_retry_preserves_song_and_returns_work(client: TestClient) -> None:
+    submitted = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()
+    retried = client.post(f"/api/jobs/{submitted['work_id']}/retry")
     assert retried.status_code == 200
-    assert retried.json()["id"] != jid
-    assert len(client.get("/api/jobs").json()) == 2
+    assert retried.json()["song_id"] == submitted["song_id"]
+    assert retried.json()["work_id"] is not None
+    assert (
+        client.get(f"/api/jobs/{retried.json()['work_id']}").json()["id"]
+        == retried.json()["work_id"]
+    )
 
 
 def test_retry_requires_ownership(client: TestClient, other_client: TestClient) -> None:
-    jid = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()["id"]
-    assert other_client.post(f"/api/jobs/{jid}/retry").status_code == 404
+    work_id = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()[
+        "work_id"
+    ]
+    assert other_client.post(f"/api/jobs/{work_id}/retry").status_code == 404
 
 
 def test_original_download_for_upload(client: TestClient) -> None:
     jid = client.post(
         "/api/jobs", files={"file": ("My Song.mp3", b"rawaudio", "audio/mpeg")}
-    ).json()["id"]
+    ).json()["work_id"]
     resp = client.get(f"/api/jobs/{jid}/original")
     assert resp.status_code == 200
     assert resp.content == b"rawaudio"
@@ -181,32 +184,33 @@ def test_native_mp3_upload_analysis_and_original_ignore_provider_mime(
     analysis = client.post("/api/key-analysis", files=files)
     assert analysis.status_code == 200, analysis.text
     assert analysis.json() == {"original_key": "C major"}
-    assert client.get("/api/jobs").json() == []
 
     submitted = client.post("/api/jobs", files=files)
     assert submitted.status_code == 200, submitted.text
-    job_id = submitted.json()["id"]
-    job = client.get(f"/api/jobs/{job_id}").json()
+    work_id = submitted.json()["work_id"]
+    job = client.get(f"/api/jobs/{work_id}").json()
     assert job["source_type"] == "upload"
     assert job["source_value"] == "Native MP3.MP3"
-    original = client.get(f"/api/jobs/{job_id}/original")
+    original = client.get(f"/api/jobs/{work_id}/original")
     assert original.status_code == 200
     assert original.content == encoded
 
 
 def test_original_404_when_not_downloaded_yet(client: TestClient) -> None:
     # Workers are disabled, so a URL job has no downloaded original.
-    jid = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()["id"]
-    assert client.get(f"/api/jobs/{jid}/original").status_code == 404
+    work_id = client.post("/api/jobs", data={"url": "https://example.com/x"}).json()[
+        "work_id"
+    ]
+    assert client.get(f"/api/jobs/{work_id}/original").status_code == 404
 
 
 def test_original_requires_ownership(
     client: TestClient, other_client: TestClient
 ) -> None:
-    jid = client.post(
+    work_id = client.post(
         "/api/jobs", files={"file": ("s.mp3", b"x", "audio/mpeg")}
-    ).json()["id"]
-    assert other_client.get(f"/api/jobs/{jid}/original").status_code == 404
+    ).json()["work_id"]
+    assert other_client.get(f"/api/jobs/{work_id}/original").status_code == 404
 
 
 def test_status_aggregates_all_sessions(
@@ -247,13 +251,13 @@ def test_invalid_audio_settings_do_not_queue_jobs(
         "/api/jobs", data={"url": "https://example.com/song", field: value}
     )
     assert response.status_code == 422
-    assert client.get("/api/jobs").json() == []
+    assert client.get("/api/songs").json() == []
 
 
 def test_old_jobs_survive_key_metadata_migration(client: TestClient) -> None:
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs", files={"file": ("old.mp3", b"original", "audio/mpeg")}
-    ).json()["id"]
+    ).json()["work_id"]
     with sqlite3.connect(config.DB_PATH) as conn:
         conn.execute("ALTER TABLE jobs DROP COLUMN original_key")
         conn.execute(
@@ -270,24 +274,24 @@ def test_old_jobs_survive_key_metadata_migration(client: TestClient) -> None:
                         }
                     ]
                 ),
-                job_id,
+                work_id,
             ),
         )
-    directory = config.RESULTS_DIR / str(job_id)
+    directory = config.RESULTS_DIR / str(work_id)
     directory.mkdir(parents=True)
     (directory / "vocals.mp3").write_bytes(b"old")
 
     db.init_db()
-    job = client.get(f"/api/jobs/{job_id}").json()
+    job = client.get(f"/api/jobs/{work_id}").json()
     assert job["original_key"] is None
     assert job["output_key"] is None
     assert job["manifest"][0]["download_name"] == "old - vocals.mp3"
-    assert client.get(f"/api/jobs/{job_id}/results/vocals").content.endswith(b"old")
+    assert client.get(f"/api/jobs/{work_id}/results/vocals").content.endswith(b"old")
     assert job["options"]["extract_vocals"] is True
     assert job["options"]["extract_instruments"] is True
     assert job["options"]["mixes"] == []
-    retried_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
-    retried = client.get(f"/api/jobs/{retried_id}").json()
+    retry_work_id = client.post(f"/api/jobs/{work_id}/retry").json()["work_id"]
+    retried = client.get(f"/api/jobs/{retry_work_id}").json()
     assert retried["options"]["extract_vocals"] is True
     assert retried["options"]["extract_instruments"] is True
     assert retried["options"]["mixes"] == []
@@ -306,27 +310,27 @@ def test_explicit_outputs_survive_submission_and_retry(client: TestClient) -> No
             for part in ("female", "male", "backing", "lead")
         ],
     }
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs",
         data={
             "url": "https://example.com/song",
             **{name: json.dumps(value) for name, value in selected.items()},
         },
-    ).json()["id"]
+    ).json()["work_id"]
     db.init_db()
-    options = client.get(f"/api/jobs/{job_id}").json()["options"]
+    options = client.get(f"/api/jobs/{work_id}").json()["options"]
     assert {name: options[name] for name in selected} == selected
-    retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
-    assert client.get(f"/api/jobs/{retry_id}").json()["options"] == options
+    retry_work_id = client.post(f"/api/jobs/{work_id}/retry").json()["work_id"]
+    assert client.get(f"/api/jobs/{retry_work_id}").json()["options"] == options
 
 
 def test_historical_explicit_mix_options_do_not_enable_lead_on_retry(
     client: TestClient,
 ) -> None:
-    job_id = client.post(
+    work_id = client.post(
         "/api/jobs",
         data={"url": "https://example.com/song"},
-    ).json()["id"]
+    ).json()["work_id"]
     historical_options = {
         "extract_vocals": False,
         "extract_instruments": False,
@@ -335,13 +339,13 @@ def test_historical_explicit_mix_options_do_not_enable_lead_on_retry(
     with sqlite3.connect(config.DB_PATH) as conn:
         conn.execute(
             "UPDATE jobs SET options_json = ? WHERE id = ?",
-            (json.dumps(historical_options), job_id),
+            (json.dumps(historical_options), work_id),
         )
     db.init_db()
-    stored = db.get_job(job_id)
+    stored = db.get_job(work_id)
     assert stored is not None
     assert stored.options.output_labels == ["mix-legacy-backing"]
-    options = client.get(f"/api/jobs/{job_id}").json()["options"]
+    options = client.get(f"/api/jobs/{work_id}").json()["options"]
     assert options["mixes"] == [
         {
             "id": "mix-legacy-backing",
@@ -349,5 +353,5 @@ def test_historical_explicit_mix_options_do_not_enable_lead_on_retry(
             "components": ["backing", "instruments"],
         }
     ]
-    retry_id = client.post(f"/api/jobs/{job_id}/retry").json()["id"]
-    assert client.get(f"/api/jobs/{retry_id}").json()["options"] == options
+    retry_work_id = client.post(f"/api/jobs/{work_id}/retry").json()["work_id"]
+    assert client.get(f"/api/jobs/{retry_work_id}").json()["options"] == options

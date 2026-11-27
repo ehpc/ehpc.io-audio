@@ -53,7 +53,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
       await guest.screenshot({ path: info.outputPath(`register-${viewport.width}.png`) });
       await guest.getByRole('button', { name: 'Send verification code' }).click();
       await verify(guest, email);
-      await expect(guest.getByRole('button', { name: 'People', exact: true })).toHaveCount(0);
+      await expect(guest.getByRole('button', { name: 'Admin', exact: true })).toHaveCount(0);
       await guest.getByRole('button', { name: 'Profile', exact: true }).click();
       await expect(guest.getByText(email).first()).toBeVisible();
       await expect(guest.getByText('0 of 3 invite slots used · 3 remaining')).toBeVisible();
@@ -100,7 +100,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         multipart: { file: { name: 'local-tone.wav', mimeType: 'audio/wav', buffer: await readFile(resolve(directory, 'tone-fixture.wav')) } },
       });
       expect(queued.ok()).toBe(true);
-      const queuedId = (await queued.json()).id;
+      const queuedId = (await queued.json()).work_id;
       database('UPDATE jobs SET title=? WHERE id=?', 'Local fixture track', String(queuedId));
       database("INSERT INTO song_searches (id,session_id,created_at,result_json,activity_query) VALUES (?, ?, strftime('%s','now'), '[]', ?)", `fixture-${viewport.width}`, profile.id, 'Local fixture song');
       await guest.screenshot({ path: info.outputPath(`profile-${viewport.width}.png`) });
@@ -128,7 +128,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
         for (const id of adminInvites) expect((await page.request.delete(`/api/auth/invites/${id}`, { headers: { Origin: process.env.E2E_BASE_URL! } })).status()).toBe(204);
       }
       expect((await page.request.delete(`/api/auth/invites/${firstInvite.id}`, { headers: { Origin: process.env.E2E_BASE_URL! } })).status()).toBe(404);
-      await page.getByRole('button', { name: 'People', exact: true }).click();
+      await page.getByRole('button', { name: 'Admin', exact: true }).click();
       const card = page.locator('div').filter({ has: page.getByRole('heading', { name: email, exact: true }) }).filter({ has: page.getByRole('button', { name: 'Grant +1 invite' }) }).last();
       await expect(card.getByLabel('Invite limit')).toHaveValue('3');
       if (viewport.width === 390) await card.getByRole('button', { name: 'Grant +1 invite' }).tap();
